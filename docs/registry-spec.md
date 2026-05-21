@@ -151,8 +151,9 @@ stmt = (
 **Разбор `full_name`:**
 
 1. `tokens = full_name.strip().split()` (по любому whitespace).
-2. Если `len(tokens) >= 2`: `surname = tokens[0]`, `first_initial = tokens[1][0]`.
-3. Если `len(tokens) == 1` или после транслитерации получается пустая строка — **fallback**: имя колонки = `<full_name_без_изменений>_r<N>` (без транслитерации, кириллицей).
+2. Если `len(tokens) >= 2`: `surname = tokens[0]`, `first_initial_letter = tokens[1][0]`.
+3. После транслитерации первой буквы имени — **берём ровно один латинский символ** (`transliterate_icao_9303(letter)[:1]`). Иначе многосимвольные транслитерации (`Ю→IU`, `Я→IA`, `Ж→ZH`, `Ц→TS`, `Ч→CH`, `Ш→SH`, `Щ→SHCH`, `Ъ→IE`, `Х→KH`) ломают ширину колонки 14 (§5.3.2).
+4. Если `len(tokens) == 1` или после транслитерации получается пустая строка — **fallback**: имя колонки = `<full_name_без_изменений>_r<N>` (без транслитерации, кириллицей).
 
 **Таблица транслитерации — паспортный стандарт ICAO Doc 9303 (она же действующая редакция Приказа МВД РФ № 889 / Приказа МИД РФ № 4271 от 2014):**
 
@@ -195,7 +196,8 @@ def jury_column_name(full_name: str, round_no: int) -> str:
     tokens = full_name.strip().split()
     if len(tokens) >= 2 and tokens[0] and tokens[1]:
         surname = transliterate_passport(tokens[0])
-        initial = transliterate_passport(tokens[1][0])
+        # Ровно один символ латиницы: Ю→IU→I, Я→IA→I, Ж→ZH→Z и т. п.
+        initial = transliterate_passport(tokens[1][0])[:1]
         if surname and initial:
             return f"{surname.title()}.{initial.upper()}_r{round_no}"
     # fallback на исходное ФИО без транслитерации

@@ -26,6 +26,69 @@ MSK = ZoneInfo("Europe/Moscow")
 
 
 # =====================================================================
+# Транслитерация и заголовки колонок жюри (Q1 / §2.3.1)
+# =====================================================================
+#
+# Используется паспортный стандарт ICAO Doc 9303 (актуальная редакция
+# Приказа МВД РФ № 889 / Приказа МИД РФ № 4271 от 2014).
+# Регистр выхода — Title-case (Shcherbak, не SHCHERBAK).
+
+_ICAO_9303_MAP: dict[str, str] = {
+    "А": "A", "Б": "B", "В": "V", "Г": "G", "Д": "D",
+    "Е": "E", "Ё": "E", "Ж": "ZH", "З": "Z", "И": "I",
+    "Й": "I", "К": "K", "Л": "L", "М": "M", "Н": "N",
+    "О": "O", "П": "P", "Р": "R", "С": "S", "Т": "T",
+    "У": "U", "Ф": "F", "Х": "KH", "Ц": "TS", "Ч": "CH",
+    "Ш": "SH", "Щ": "SHCH", "Ъ": "IE", "Ы": "Y", "Ь": "",
+    "Э": "E", "Ю": "IU", "Я": "IA",
+}
+
+
+def transliterate_icao_9303(text: str) -> str:
+    """Транслитерация кириллицы по ICAO Doc 9303 (§2.3.1).
+
+    Прозрачно проходит через символы, не входящие в таблицу
+    (латиница, цифры, дефисы и т. п.) — это нужно для fallback'а на
+    смешанные ФИО (например, `O'Брайан`).
+    """
+    out: list[str] = []
+    for ch in text:
+        if ch.isupper():
+            out.append(_ICAO_9303_MAP.get(ch, ch))
+        elif ch.islower():
+            mapped = _ICAO_9303_MAP.get(ch.upper(), ch)
+            out.append(mapped.lower())
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def jury_column_header(full_name: str, round_no: int) -> str:
+    """Шапка динамической колонки листа `Голосование жюри` (§2.3.1).
+
+    Шаблон: ``<Фамилия>.<И>_r<N>`` (например, ``Vinokurova.E_r1``).
+
+    Алгоритм разбора ``full_name``:
+        1. Разбиваем по whitespace.
+        2. Если ≥2 токенов и оба непустые: фамилия = первый токен в
+           Title-case, инициал = первая буква второго токена в upper.
+        3. Иначе fallback: ``<full_name>_r<N>`` (без транслитерации).
+    """
+    tokens = full_name.strip().split()
+    if len(tokens) >= 2 and tokens[0] and tokens[1]:
+        surname_t = transliterate_icao_9303(tokens[0])
+        # Инициал ограничиваем РОВНО одной буквой латиницы: если первая
+        # буква имени даёт многосимвольную транслитерацию (Ю→IU, Я→IA,
+        # Ж→ZH, Х→KH, Ц→TS, Ч→CH, Ш→SH, Щ→SHCH, Ъ→IE) — берём только
+        # первый символ результата. Иначе ширина колонки 14 (§5.3.2)
+        # рассыпается на длинных инициалах.
+        initial_t = transliterate_icao_9303(tokens[1][0])[:1]
+        if surname_t and initial_t:
+            return f"{surname_t.title()}.{initial_t.upper()}_r{round_no}"
+    return f"{full_name.strip()}_r{round_no}"
+
+
+# =====================================================================
 # Публичные helpers (Q4 / §4)
 # =====================================================================
 
@@ -138,6 +201,8 @@ async def build_shortlist_xlsx() -> bytes:
 __all__ = [
     "MSK",
     "registry_export_filename",
+    "transliterate_icao_9303",
+    "jury_column_header",
     "view_command_or_link",
     "contact_field",
     "jury_outcome",
