@@ -89,4 +89,5 @@ Use these scopes based on the project structure:
 - `config` — configuration and environment
 - `docker` — containerization and deployment
 - `foundation` — общий каркас, на котором стоят несколько веток (Wave 1)
+- `moderator` — ветка модератора (Wave 2 / B): `app/handlers/moderator*.py` + `app/services/moderation.py`
 - `tz` — изменения в `ТЗ.md` (только Wave 0)
