@@ -96,7 +96,7 @@ app/
 | Enum | Значения | ТЗ |
 |---|---|---|
 | `Track` | TRADITIONAL / AI / HANDMADE_TO_AI | §10 |
-| `AgeCategory` | AGE_4_6 / AGE_7_10 / AGE_11_13 / AGE_14_18 (+ утилита `from_age`) | §9, §11.2 |
+| `AgeCategory` | AGE_0_6 / AGE_7_12 / AGE_13_18 (+ утилита `from_age`, диапазон 0–18) | §9, §11.2 |
 | `IntakeMode` | FILES / LINKS | §33.6 |
 | `ModerationStatus` | PRINYATO / NA_MODERATSII / DOPUSHCHENO / NUZHNO_ISPRAVIT / OTKLONENO | §26 |
 | `JuryStatus` | NE_PEREDANO_ZHYURI / NA_GOLOSOVANII / V_TOP_10 / NE_VOSHLO_V_TOP_10 | §26 |
@@ -189,8 +189,9 @@ app/
 | created_at | TIMESTAMP | |
 
 Уникальный индекс `(jury_huid, track, age_category)`. Если в таблице
-нет ни одной записи — все активные `JuryMember` участвуют во всех 12
-пулах (дефолтное поведение из ТЗ).
+нет ни одной записи — все активные `JuryMember` участвуют во всех
+пулах (`len(Track) × len(AgeCategory)`, после Wave 0 replay
+2026-05-21 это 9 пулов; дефолтное поведение из ТЗ §35.6).
 
 ### jury_rounds (§35.2, §35.4, §35.6)
 
