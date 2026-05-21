@@ -35,3 +35,7 @@ greenlet==2.0.2
 
 # ===== Development & Security =====
 bandit>=1.7.5
+
+# ===== Testing (см. docs/testing.md) =====
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
