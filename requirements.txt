@@ -24,6 +24,12 @@ apscheduler>=3.10.0
 typing-extensions>=4.5.0
 aiofiles>=23.2.0
 
+# ===== Excel и обработка изображений (Безопасные рисунки) =====
+# openpyxl — on-demand генерация registry.xlsx / shortlist.xlsx (§25.4)
+openpyxl>=3.1.0
+# Pillow — генерация превью работ для жюри (§35.3, 1280 px max)
+Pillow>=10.0.0
+
 # ===== Runtime =====
 greenlet==2.0.2
 
