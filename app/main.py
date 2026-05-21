@@ -3,6 +3,7 @@ kids_ai (pybotx)
 
 Точка входа приложения на базе Starlette и pybotx.
 """
+import asyncio
 from contextlib import asynccontextmanager
 from uuid import UUID
 
@@ -15,10 +16,12 @@ from config import (
     CTS_URL,
     BOT_SECRET_KEY,
     DEBUG,
+    DISK_CHECK_INTERVAL_SEC,
     ENABLE_SCHEDULER,
+    JURY_POOLS_CONFIG,
     UVICORN_WORKERS,
 )
-from database.db import engine
+from database.db import engine, get_session
 from database.models import Base
 from database.migrations import run_auto_migrations
 from fsm import init_fsm_storage, close_fsm_storage
@@ -86,24 +89,60 @@ async def lifespan(app: Starlette):
     # Автомиграция: добавление колонок, индексов, enum-значений
     await run_auto_migrations()
 
+    # Синхронизация справочников ролей и распределения судей по пулам.
+    # Делается в одной короткой сессии до старта FSM/бота, чтобы первый
+    # клик модератора/жюри сразу попадал в готовую БД (§5.2/§5.4/§35.6).
+    from services.access import sync_role_directories_from_config
+    from services.pools import sync_pool_assignments_from_config
+
+    async with get_session()() as session:
+        await sync_role_directories_from_config(session)
+        await sync_pool_assignments_from_config(JURY_POOLS_CONFIG, session=session)
+
     await init_fsm_storage()
 
     bot = create_bot()
     app.state.bot = bot
 
+    disk_monitor_task: asyncio.Task | None = None
     async with lifespan_wrapper(bot) as bot_wrapper:
+        # Фоновый мониторинг диска (§28.1). Запускается только в
+        # одном web-процессе: при UVICORN_WORKERS>1 + ENABLE_SCHEDULER=true
+        # выше уже бросается RuntimeError.
         if ENABLE_SCHEDULER:
-            # При появлении app/scheduler.py подключай его здесь:
-            #   from scheduler import setup_scheduler
-            #   setup_scheduler(bot)
+            from services.storage import start_disk_monitor_task
+
+            disk_monitor_task = start_disk_monitor_task(
+                bot, DISK_CHECK_INTERVAL_SEC
+            )
             logger.info(
-                "ENABLE_SCHEDULER=true, но app/scheduler.py ещё не создан — пропускаем"
+                "Фоновый монитор диска включён (ENABLE_SCHEDULER=true)",
+                interval_sec=DISK_CHECK_INTERVAL_SEC,
             )
         else:
-            logger.info("Scheduler отключён (ENABLE_SCHEDULER=false)")
+            logger.info(
+                "ENABLE_SCHEDULER=false → фоновый монитор диска НЕ запущен; "
+                "используй ручную команду /disk и помни про auto-switch в LINKS"
+            )
 
         logger.info("Бот успешно запущен и готов к работе!")
         yield
+
+    # Shutdown: остановить фоновые задачи и flush'нуть aggregator
+    # уведомлений жюри (§19 — иначе теряем pending-event'ы агрегации).
+    if disk_monitor_task is not None:
+        disk_monitor_task.cancel()
+        try:
+            await disk_monitor_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    try:
+        from services.notifications import flush_jury_event_aggregator
+
+        await flush_jury_event_aggregator()
+    except Exception:
+        logger.exception("Не удалось корректно остановить агрегатор jury-событий")
 
     await close_fsm_storage()
     from utils.message_tracking import close_redis
