@@ -29,12 +29,15 @@ from typing import (
     TYPE_CHECKING,
     Awaitable,
     Mapping,
+    Optional,
     Protocol,
     runtime_checkable,
 )
 from uuid import UUID
 
 if TYPE_CHECKING:  # pragma: no cover — только для type-checker'а
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from database.models import (
         AgeCategory,
         Application,
@@ -43,6 +46,7 @@ if TYPE_CHECKING:  # pragma: no cover — только для type-checker'а
         IntakeMode,
         JuryMember,
         JuryRound,
+        JuryVote,
         JuryVoteValue,
         ModerationStatus,
         Track,
@@ -228,10 +232,20 @@ class StorageService(Protocol):
 
 @runtime_checkable
 class RegistryService(Protocol):
-    """Контракт ``services.registry`` (Wave 0 §25.4: bytes, не файл)."""
+    """Контракт ``services.registry`` (Wave 0 §25.4: bytes, не файл).
+
+    ``registry_export_filename`` — единый источник правды по формату
+    имени файла (см. ``docs/registry-spec.md`` §4); используется
+    хендлерами `/export_registry` и `/export_shortlist`.
+    """
 
     async def build_registry_xlsx(self) -> bytes: ...
     async def build_shortlist_xlsx(self) -> bytes: ...
+    def registry_export_filename(
+        self,
+        kind: str,
+        now_msk: object | None = None,
+    ) -> str: ...
 
 
 @runtime_checkable
@@ -278,7 +292,11 @@ class NotificationsService(Protocol):
 
 @runtime_checkable
 class JuryService(Protocol):
-    """Контракт ``services.jury`` (§35.2, §35.5)."""
+    """Контракт ``services.jury`` (§35.2, §35.5).
+
+    Все async-методы поддерживают опциональный ``session: AsyncSession``
+    (если не передан — сервис открывает свою short-living-сессию).
+    """
 
     async def open_round(
         self,
@@ -287,6 +305,7 @@ class JuryService(Protocol):
         age_category: "AgeCategory",
         round_no: int,
         candidates: list["Application"],
+        session: "Optional[AsyncSession]" = None,
     ) -> "JuryRound": ...
     async def submit_votes(
         self,
@@ -294,25 +313,94 @@ class JuryService(Protocol):
         round_id: UUID,
         jury_huid: UUID,
         votes: Mapping[UUID, "JuryVoteValue"],
+        session: "Optional[AsyncSession]" = None,
     ) -> None: ...
-    async def close_round(self, round_id: UUID) -> RoundResult: ...
-    async def build_shortlist(self) -> list["Application"]: ...
+    async def upsert_draft_vote(
+        self,
+        *,
+        round_id: UUID,
+        jury_huid: UUID,
+        application_id: UUID,
+        value: "JuryVoteValue",
+        session: "Optional[AsyncSession]" = None,
+    ) -> "JuryVote": ...
+    async def close_round(
+        self,
+        round_id: UUID,
+        *,
+        session: "Optional[AsyncSession]" = None,
+    ) -> RoundResult: ...
+    async def compute_top_n(
+        self,
+        *,
+        track: "Track",
+        age_category: "AgeCategory",
+        round_no: int,
+        n: int = 10,
+        session: "Optional[AsyncSession]" = None,
+    ) -> list["Application"]: ...
+    async def apply_lot_if_needed(
+        self,
+        *,
+        track: "Track",
+        age_category: "AgeCategory",
+        round_no: int,
+        n: int = 10,
+        session: "Optional[AsyncSession]" = None,
+    ) -> list["Application"]: ...
+    async def build_shortlist(
+        self,
+        *,
+        session: "Optional[AsyncSession]" = None,
+    ) -> list["Application"]: ...
     async def get_open_tasks_for_jury(
-        self, jury_huid: UUID
+        self,
+        jury_huid: UUID,
+        *,
+        session: "Optional[AsyncSession]" = None,
     ) -> list[JuryTaskDTO]: ...
+    async def get_round_candidates_with_drafts(
+        self,
+        *,
+        round_id: UUID,
+        jury_huid: UUID,
+        session: "Optional[AsyncSession]" = None,
+    ) -> list[dict]: ...
+    async def get_jury_progress(
+        self,
+        jury_huid: UUID,
+        *,
+        session: "Optional[AsyncSession]" = None,
+    ) -> dict: ...
 
 
 @runtime_checkable
 class PoolsService(Protocol):
-    """Контракт ``services.pools`` (§35.1)."""
+    """Контракт ``services.pools`` (§35.1).
+
+    ``sync_pool_assignments_from_config`` вызывается один раз на старте
+    приложения (см. ``app/main.py``); распределение членов жюри по пулам
+    хранится в БД (``pool_jury_assignments``) и переживает рестарт.
+    """
 
     def all_pools(self) -> list[PoolKey]: ...
     async def get_pool_applications(
-        self, pool: PoolKey
+        self,
+        pool: PoolKey,
+        *,
+        session: "Optional[AsyncSession]" = None,
     ) -> list["Application"]: ...
     async def get_jury_for_pool(
-        self, pool: PoolKey
+        self,
+        pool: PoolKey,
+        *,
+        session: "Optional[AsyncSession]" = None,
     ) -> list["JuryMember"]: ...
+    async def sync_pool_assignments_from_config(
+        self,
+        *,
+        session: "Optional[AsyncSession]" = None,
+    ) -> int: ...
 
 
 @runtime_checkable
