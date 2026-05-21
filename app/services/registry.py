@@ -38,6 +38,8 @@ from database.models import (
     JuryVoteState,
     JuryVoteValue,
 )
+from services import pools as pools_service
+from utils.contracts import PoolKey
 
 MSK = ZoneInfo("Europe/Moscow")
 
@@ -256,6 +258,28 @@ _JURY_FIXED_COLUMNS: list[tuple[str, int, bool]] = [
     ("Возрастная категория", 12, False),
 ]
 _JURY_DYNAMIC_WIDTH = 14
+
+# Колонки листа `Шорт-лист` (§3.1, Q6.1): (заголовок, ширина, wrap_text).
+# 13 колонок в зафиксированном порядке.
+_SHORTLIST_COLUMNS: list[tuple[str, int, bool]] = [
+    ("ID заявки", 14, False),                                # 1
+    ("ФИО родителя", 28, False),                             # 2
+    ("Контакт", 18, False),                                  # 3
+    ("Имя ребёнка", 16, False),                              # 4
+    ("Возраст", 8, False),                                   # 5
+    ("Возрастная категория", 12, False),                     # 6
+    ("Трек", 22, False),                                     # 7
+    ("Название работы", 28, False),                          # 8
+    ("Описание работы", 40, True),                           # 9
+    ("Команда/ссылка просмотра файлов", 32, False),          # 10
+    ("Определено жребием", 12, False),                       # 11
+    ("Позиция в пуле", 10, False),                           # 12
+    ("Потенциал для мерча", 18, False),                      # 13
+]
+
+# Текст пустого пула на листе `Шорт-лист` (§3.2).
+# В шаблон подставляется TOP_N из конфига при первом вызове рендера.
+_EMPTY_POOL_TEXT_TEMPLATE = "Нет работ в топ-{top_n} для этого пула"
 
 
 # =====================================================================
@@ -589,14 +613,163 @@ async def build_registry_xlsx() -> bytes:
     return payload
 
 
-async def build_shortlist_xlsx() -> bytes:
-    """Собрать XLSX шорт-листа (§35.5) — топ-10 по каждому пулу.
+# =====================================================================
+# Лист `Шорт-лист` (§3, §3.1, §3.2)
+# =====================================================================
 
-    Будет реализовано следующим коммитом ветки E.
+
+def _row_for_shortlist(app: Application) -> list:
+    """13 значений одной строки шорт-листа (§3.1, Q6.1)."""
+    return [
+        app.br_id,                                                 # 1
+        app.parent_full_name,                                      # 2
+        contact_field(app),                                        # 3
+        app.child_name,                                            # 4
+        app.child_age,                                             # 5
+        app.age_category.value,                                    # 6
+        app.track.value,                                           # 7
+        app.title,                                                 # 8
+        app.description,                                           # 9
+        view_command_or_link(app),                                 # 10
+        _yesno_or_blank(app.jury_decided_by_lot),                  # 11
+        app.pool_position if app.pool_position is not None else "",  # 12
+        app.merch_potential or "",                                 # 13
+    ]
+
+
+def _merge_row_with_fill(
+    ws: Worksheet,
+    row: int,
+    n_cols: int,
+    text: str,
+    font: Font,
+    fill: PatternFill,
+) -> None:
+    """Заполнить строку-разделитель: merged через n_cols + заливка/шрифт."""
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=n_cols)
+    cell = ws.cell(row=row, column=1, value=text)
+    cell.font = font
+    cell.fill = fill
+    cell.alignment = _GROUP_ALIGN
+    # Заливка нужна на всех ячейках merge'а — иначе видно только в первой.
+    for col in range(2, n_cols + 1):
+        ws.cell(row=row, column=col).fill = fill
+
+
+def _build_shortlist_sheet(
+    ws: Worksheet,
+    pool_list: Sequence[PoolKey],
+    apps_by_pool: dict[tuple, list[Application]],
+    top_n: int,
+) -> tuple[int, int]:
+    """Заполнить лист `Шорт-лист` (§3.2, Q6.2). Возвращает (n_rows, n_cols).
+
+    Группировка строк — по `pool_list` в порядке, который отдал
+    `services.pools.all_pools()` (§1.6). Сортировка внутри пула —
+    `pool_position ASC, br_id ASC` (§3.2). Пустой пул выводится со
+    строкой-разделителем + строкой-подписью «Нет работ в топ-N».
     """
-    raise NotImplementedError(
-        "build_shortlist_xlsx будет реализован следующим коммитом ветки E"
+    _apply_columns_header(ws, _SHORTLIST_COLUMNS)
+    n_cols = len(_SHORTLIST_COLUMNS)
+    current_row = 2
+
+    for pool in pool_list:
+        # Строка-разделитель пула (§3.2).
+        header_text = f"{pool.track.value} / {pool.age_category.value}"
+        _merge_row_with_fill(
+            ws, current_row, n_cols, header_text, _GROUP_FONT, _GROUP_FILL,
+        )
+        current_row += 1
+
+        apps = apps_by_pool.get((pool.track, pool.age_category), [])
+        if not apps:
+            _merge_row_with_fill(
+                ws, current_row, n_cols,
+                _EMPTY_POOL_TEXT_TEMPLATE.format(top_n=top_n),
+                _EMPTY_GROUP_FONT, _EMPTY_GROUP_FILL,
+            )
+            current_row += 1
+            continue
+
+        # Стабильная сортировка по позиции в пуле (§3.2).
+        apps_sorted = sorted(
+            apps,
+            key=lambda a: (
+                a.pool_position if a.pool_position is not None else 9999,
+                a.br_id,
+            ),
+        )
+        for app in apps_sorted:
+            for col_idx, value in enumerate(_row_for_shortlist(app), start=1):
+                ws.cell(row=current_row, column=col_idx, value=value)
+            _apply_wrap_text(ws, current_row, _SHORTLIST_COLUMNS)
+            current_row += 1
+
+    n_rows = current_row - 1
+    _set_freeze_and_filter(ws, "A2", n_cols, n_rows)
+    return n_rows, n_cols
+
+
+def _render_shortlist_workbook(
+    pool_list: Sequence[PoolKey],
+    apps_by_pool: dict[tuple, list[Application]],
+    top_n: int,
+) -> tuple[bytes, int, int]:
+    """Собрать `shortlist.xlsx` в bytes; вернуть (bytes, n_cols, n_rows)."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Шорт-лист"
+    n_rows, n_cols = _build_shortlist_sheet(ws, pool_list, apps_by_pool, top_n)
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue(), n_cols, n_rows
+
+
+async def _fetch_top10_applications(session) -> list[Application]:
+    """Только заявки со статусом жюри `в топ-10` (§3, §35.5)."""
+    stmt = (
+        select(Application)
+        .where(Application.jury_status == JuryStatus.V_TOP_10)
+        .order_by(Application.br_id.asc())
     )
+    return list((await session.scalars(stmt)).all())
+
+
+async def build_shortlist_xlsx() -> bytes:
+    """Собрать XLSX шорт-листа (§35.5, §3) — топ-N по каждому пулу.
+
+    Структура:
+        - один лист ``Шорт-лист`` (§3.2);
+        - 13 колонок (§3.1, Q6.1);
+        - строки сгруппированы по пулам в порядке
+          ``services.pools.all_pools()`` (Q6.2); число пулов не
+          зашивается (§1.6);
+        - внутри пула — сортировка `pool_position ASC, br_id ASC`;
+        - пустые пулы выводятся со строкой-подписью «Нет работ в топ-N».
+
+    Не пишет на диск (§25.4), возвращает ``bytes``.
+    """
+    from config import TOP_N  # локально, чтобы тестировалось без TOP_N
+
+    t0 = time.perf_counter()
+    logger.info("registry build start", kind="shortlist")
+
+    async with get_session()() as session:
+        top_apps = await _fetch_top10_applications(session)
+        pool_list = pools_service.all_pools()
+
+    apps_by_pool: dict[tuple, list[Application]] = {}
+    for app in top_apps:
+        key = (app.track, app.age_category)
+        apps_by_pool.setdefault(key, []).append(app)
+
+    payload, n_cols, n_rows = _render_shortlist_workbook(
+        pool_list=pool_list, apps_by_pool=apps_by_pool, top_n=TOP_N,
+    )
+
+    duration_ms = (time.perf_counter() - t0) * 1000
+    _log_duration("shortlist", duration_ms, n_rows=n_rows, n_cols=n_cols)
+    return payload
 
 
 __all__ = [
