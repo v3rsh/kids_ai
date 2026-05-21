@@ -552,3 +552,47 @@ class JuryVote(Base):
             f"<JuryVote round={self.round_id} app={self.application_id}"
             f" vote={self.vote.name} state={self.state.name}>"
         )
+
+
+class AppSetting(Base):
+    """Key-value runtime-настройки бота.
+
+    Используется как минимум для:
+    - ``intake_mode`` — текущий режим приёма (``files`` / ``links``, §33.6).
+    Сохранение в БД нужно, чтобы переключение режима ``/intake_mode`` или
+    автопереход на 95 % диска переживало рестарт контейнера.
+    """
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+
+class DiskAlert(Base):
+    """Журнал автопредупреждений мониторинга диска (§28.1, §33.5).
+
+    Нужен для дедупликации: при достижении 80 % / 95 % бот шлёт
+    предупреждение в чат модерации не на каждой проверке (раз в 30 мин),
+    а только при первом срабатывании порога. Записи старше 30 дней
+    сервис ``storage`` может чистить вручную.
+    """
+
+    __tablename__ = "disk_alerts"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    threshold_pct: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, index=True
+    )
+
+    def __repr__(self) -> str:
+        return f"<DiskAlert {self.threshold_pct}% at {self.created_at}>"
