@@ -14,18 +14,10 @@
 (``/stats today`` и ``/stats all`` корректно роутятся pybotx, потому
 что первый токен совпадает с зарегистрированной командой).
 
-Excel собирается через ``services.registry``, который в Wave 1 — стаб
-с ``NotImplementedError``. Хендлер обрабатывает это ожидаемо: модератор
-получает информативное сообщение «Excel-сервис ещё не реализован».
-В Wave 2 / E2 стаб заменится — без правок этого хендлера.
-
-WAVE3-TODO: подключить ``collector`` в
-``app/handlers/__init__.py → get_all_collectors()`` за
-``handlers/moderator_actions.py``.
+Имя XLSX-файла собирается через ``registry.registry_export_filename(...)``
+(см. ``docs/registry-spec.md`` §4 — единый источник правды по формату).
 """
 from __future__ import annotations
-
-from datetime import datetime
 
 from loguru import logger
 from pybotx import (
@@ -35,7 +27,6 @@ from pybotx import (
 )
 from pybotx.models.attachments import OutgoingAttachment
 
-from config import COMPETITION_YEAR
 from fsm import cleanup_middleware, fsm_middleware
 from services.access import moderator_only
 from services.moderation import StatsCounters, StatsPeriod, count_stats
@@ -107,11 +98,6 @@ def _format_stats(stats: StatsCounters) -> str:
     return "\n".join(lines)
 
 
-def _xlsx_filename(prefix: str) -> str:
-    today = datetime.now().strftime("%Y-%m-%d")
-    return f"{prefix}_BR-{COMPETITION_YEAR}_{today}.xlsx"
-
-
 # =====================================================================
 # /export
 # =====================================================================
@@ -125,19 +111,10 @@ def _xlsx_filename(prefix: str) -> str:
 @moderator_only
 async def cmd_export(message: IncomingMessage, bot: Bot) -> None:
     """On-demand выгрузка ``registry.xlsx`` (§25.4, §27.1)."""
-    try:
-        from services import registry  # runtime-импорт (ветка E)
+    from services import registry
 
+    try:
         payload = await registry.build_registry_xlsx()
-    except NotImplementedError:
-        await reply_to_user(
-            message,
-            bot,
-            "⏳ Сервис генерации Excel-реестра ещё не реализован "
-            "(Wave 2 / E). Проверка пройдёт, когда ветка E подключит "
-            "build_registry_xlsx().",
-        )
-        return
     except Exception:
         logger.exception("Ошибка генерации registry.xlsx")
         await reply_to_user(
@@ -149,7 +126,7 @@ async def cmd_export(message: IncomingMessage, bot: Bot) -> None:
 
     attachment = OutgoingAttachment(
         content=payload,
-        filename=_xlsx_filename("registry"),
+        filename=registry.registry_export_filename("registry"),
     )
     try:
         await bot.answer_message(
@@ -179,18 +156,10 @@ async def cmd_export(message: IncomingMessage, bot: Bot) -> None:
 @moderator_only
 async def cmd_export_shortlist(message: IncomingMessage, bot: Bot) -> None:
     """On-demand выгрузка шорт-листа (§35.5)."""
-    try:
-        from services import registry  # runtime-импорт (ветка E)
+    from services import registry
 
+    try:
         payload = await registry.build_shortlist_xlsx()
-    except NotImplementedError:
-        await reply_to_user(
-            message,
-            bot,
-            "⏳ Сервис шорт-листа ещё не реализован (Wave 2 / E). "
-            "Доступен после подключения build_shortlist_xlsx().",
-        )
-        return
     except Exception:
         logger.exception("Ошибка генерации shortlist.xlsx")
         await reply_to_user(
@@ -202,7 +171,7 @@ async def cmd_export_shortlist(message: IncomingMessage, bot: Bot) -> None:
 
     attachment = OutgoingAttachment(
         content=payload,
-        filename=_xlsx_filename("shortlist"),
+        filename=registry.registry_export_filename("shortlist"),
     )
     try:
         await bot.answer_message(
