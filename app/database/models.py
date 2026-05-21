@@ -358,3 +358,47 @@ class ApplicationFile(Base):
 
     def __repr__(self) -> str:
         return f"<ApplicationFile {self.stored_filename!r} kind={self.kind.name}>"
+
+
+class Moderator(Base):
+    """Справочник модераторов (§5.2, §27.2).
+
+    Заполняется при старте бота из конфига ``MODERATOR_HUIDS``
+    (см. ``services/access.py`` / lifespan).
+    """
+
+    __tablename__ = "moderators"
+
+    huid: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    full_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, index=True
+    )
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+
+    def __repr__(self) -> str:
+        return f"<Moderator huid={self.huid} active={self.is_active}>"
+
+
+class JuryMember(Base):
+    """Справочник членов жюри (§5.4, §35.4).
+
+    Заполняется при старте бота из конфига ``JURY_HUIDS``.
+    Распределение по пулам — в ``JuryPoolAssignment`` (§35.6).
+    """
+
+    __tablename__ = "jury_members"
+
+    huid: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    full_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, index=True
+    )
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+
+    def __repr__(self) -> str:
+        return f"<JuryMember huid={self.huid} active={self.is_active}>"
