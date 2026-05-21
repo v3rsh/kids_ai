@@ -94,6 +94,6 @@ Use these scopes based on the project structure:
 - `storage` — локальное файловое хранилище (Wave 2 / D): `app/services/storage.py` — структура папок, переименование, мониторинг диска (§21–§24, §28.1)
 - `notifications` — автосообщения участникам и в чат модерации (Wave 2 / D): `app/services/notifications.py`, шаблоны §18 / §19
 - `intake` — пользовательский сценарий подачи заявки (Wave 2 / A): `app/handlers/user*.py`
-- `jury` — жюри-функционал (Wave 2 / C): `app/handlers/jury*.py`, `app/services/jury.py`
+- `jury` — жюри-функционал (Wave 2 / C): `app/handlers/jury*.py`, `app/services/jury.py`, `app/services/pools.py`
 - `registry` — Excel-выгрузка реестра / шорт-листа on-demand (Wave 2 / E): `app/services/registry.py`
 - `tz` — изменения в `ТЗ.md` (только Wave 0)
