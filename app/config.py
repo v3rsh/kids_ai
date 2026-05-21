@@ -92,6 +92,10 @@ ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
 DISK_WARN_PCT = int(os.getenv("DISK_WARN_PCT", "80"))
 DISK_BLOCK_PCT = int(os.getenv("DISK_BLOCK_PCT", "95"))
+# Интервал фонового мониторинга диска (§28.1). 1800 c = 30 мин.
+# Сам алёрт дедуплицируется внутри services.storage.check_and_alert_disk
+# (раз в 24 часа на каждый порог), так что 30 мин — безопасный дефолт.
+DISK_CHECK_INTERVAL_SEC = int(os.getenv("DISK_CHECK_INTERVAL_SEC", "1800"))
 
 # Режим приёма заявок по умолчанию (§33.6): "files" | "links".
 INTAKE_MODE_DEFAULT = os.getenv("INTAKE_MODE_DEFAULT", "files")

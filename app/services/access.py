@@ -128,6 +128,119 @@ admin_only = _make_role_decorator(
 """Защита хендлера от не-админов (разработчик / тех. админ)."""
 
 
+# =====================================================================
+# Синхронизация справочников Moderator/JuryMember (Wave 3, lifespan)
+# =====================================================================
+
+
+async def sync_role_directories_from_config(
+    session=None,
+) -> tuple[int, int]:
+    """Идемпотентный upsert ``MODERATOR_HUIDS`` / ``JURY_HUIDS`` в БД.
+
+    Заполняет таблицы ``moderators`` и ``jury_members`` из переменных
+    окружения. Помечает ``is_active=False`` для HUID, которые есть
+    в БД, но отсутствуют в конфиге (мягкое удаление: история голосов
+    и комментариев сохраняется, новых задач/команд они уже не получат).
+
+    Вызывается из ``app/main.py`` (lifespan) на каждом старте, чтобы
+    изменение списков в `.env` сразу отражалось в БД без миграций.
+
+    Returns:
+        (mods_active, jury_active) — итоговое число активных записей.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from database.models import JuryMember, Moderator
+
+    async def _do(s) -> tuple[int, int]:
+        mod_uuids: set[UUID] = set()
+        for raw in MODERATOR_HUIDS:
+            try:
+                mod_uuids.add(UUID(str(raw).strip()))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "MODERATOR_HUIDS: пропускаю невалидный UUID",
+                    value=raw,
+                )
+
+        jury_uuids: set[UUID] = set()
+        for raw in JURY_HUIDS:
+            try:
+                jury_uuids.add(UUID(str(raw).strip()))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "JURY_HUIDS: пропускаю невалидный UUID",
+                    value=raw,
+                )
+
+        if mod_uuids:
+            stmt = pg_insert(Moderator).values(
+                [
+                    {"huid": h, "full_name": "", "is_active": True}
+                    for h in sorted(mod_uuids, key=str)
+                ]
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[Moderator.huid],
+                set_={"is_active": True},
+            )
+            await s.execute(stmt)
+
+        if jury_uuids:
+            stmt = pg_insert(JuryMember).values(
+                [
+                    {"huid": h, "full_name": "", "is_active": True}
+                    for h in sorted(jury_uuids, key=str)
+                ]
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[JuryMember.huid],
+                set_={"is_active": True},
+            )
+            await s.execute(stmt)
+
+        existing_mods = (await s.execute(select(Moderator.huid))).scalars().all()
+        for h in existing_mods:
+            if h not in mod_uuids:
+                await s.execute(
+                    Moderator.__table__
+                    .update()
+                    .where(Moderator.huid == h)
+                    .values(is_active=False)
+                )
+
+        existing_jury = (await s.execute(select(JuryMember.huid))).scalars().all()
+        for h in existing_jury:
+            if h not in jury_uuids:
+                await s.execute(
+                    JuryMember.__table__
+                    .update()
+                    .where(JuryMember.huid == h)
+                    .values(is_active=False)
+                )
+
+        await s.commit()
+
+        return len(mod_uuids), len(jury_uuids)
+
+    if session is not None:
+        result = await _do(session)
+    else:
+        from database.db import get_session
+
+        async with get_session()() as s:
+            result = await _do(s)
+
+    logger.info(
+        "Справочники ролей синхронизированы из конфига",
+        moderators=result[0],
+        jury_members=result[1],
+    )
+    return result
+
+
 __all__ = [
     "is_moderator",
     "is_jury",
@@ -135,4 +248,5 @@ __all__ = [
     "moderator_only",
     "jury_only",
     "admin_only",
+    "sync_role_directories_from_config",
 ]

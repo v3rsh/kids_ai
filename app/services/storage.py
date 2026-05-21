@@ -712,6 +712,47 @@ async def _record_alert(threshold_pct: int) -> None:
         await session.commit()
 
 
+async def _disk_monitor_loop(bot, interval_sec: int) -> None:
+    """Бесконечный цикл периодического вызова ``check_and_alert_disk``.
+
+    Запускается из ``app/main.py`` (lifespan). Sleep сначала — чтобы
+    первый замер шёл уже после полной инициализации pybotx. Cancel'ом
+    выходит из цикла без traceback'ов в логах.
+    """
+    import asyncio
+
+    logger.info(
+        "Запущен фоновый монитор диска",
+        interval_sec=interval_sec,
+    )
+    try:
+        while True:
+            try:
+                await asyncio.sleep(interval_sec)
+                await check_and_alert_disk(bot=bot)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Ошибка в цикле мониторинга диска")
+    except asyncio.CancelledError:
+        logger.info("Фоновый монитор диска остановлен")
+        raise
+
+
+def start_disk_monitor_task(bot, interval_sec: int):
+    """Запустить фоновую задачу мониторинга диска и вернуть Task.
+
+    Использует ``asyncio.create_task`` — рассчитано на запуск из
+    lifespan-блока, когда event loop уже активен.
+    """
+    import asyncio
+
+    return asyncio.create_task(
+        _disk_monitor_loop(bot, interval_sec),
+        name="disk_monitor",
+    )
+
+
 async def check_and_alert_disk(bot=None) -> None:
     """Точка вызова после каждой загрузки файла (§28.1).
 
@@ -970,6 +1011,7 @@ __all__ = [
     "should_block_intake",
     "estimate_hours_left",
     "check_and_alert_disk",
+    "start_disk_monitor_task",
     # Preview / files
     "get_preview_path",
     "get_application_files_for_chat",
