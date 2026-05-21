@@ -3,7 +3,7 @@
 
 Реализует:
 
-- ``/jury_state`` — таблица текущего состояния всех 12 пулов: открытый
+- ``/jury_state`` — таблица текущего состояния всех пулов: открытый
   раунд, число судей, отправивших/назначенных, остаток до дедлайна;
 - ``/jury_close_round <пул>`` — досрочное закрытие текущего открытого
   раунда указанного пула;
@@ -16,10 +16,10 @@
 docstring):
 
 - Канонический: ``<track_slug>/<age_slug>``,
-  например ``traditional/7-10``, ``ai/4-6``, ``handmade_to_ai/11-13``.
+  например ``traditional/7-12``, ``ai/0-6``, ``handmade_to_ai/13-18``.
 - Альтернативы (модератор может набрать «как помнит»):
-  - ``Традиционное/7-10`` или ``Традиционное / 7–10`` (с длинным тире);
-  - английский алиас: ``traditional / 7-10``;
+  - ``Традиционное/7-12`` или ``Традиционное / 7–12`` (с длинным тире);
+  - английский алиас: ``traditional / 7-12``;
   - регистронезависимо.
 
 Все DB-агрегации сделаны без N+1: ``/jury_state`` строится двумя
@@ -65,9 +65,11 @@ collector = HandlerCollector()
 # Алиасы пулов
 # =====================================================================
 
-# Все 12 пулов (3 трека × 4 возраста, §35.1). Локальный список —
-# `services.pools.all_pools()` пока стаб; в Wave 3 ветка C
-# подменит его и хендлер сможет переехать на сервис без правок.
+# Все пулы конкурса (`len(Track) × len(AgeCategory)`, §35.1). После
+# Wave 0 replay 2026-05-21 это 9 пулов (3 × 3). Хардкода числа нет —
+# при правках enum сервис перестраивается автоматически. Локальный
+# список используется здесь, потому что `services.pools.all_pools()`
+# пока стаб; в Wave 3 хендлер переедет на сервис без правок алгоритма.
 ALL_POOLS: list[tuple[Track, AgeCategory]] = [
     (track, age) for track in Track for age in AgeCategory
 ]
@@ -90,18 +92,15 @@ _TRACK_ALIASES: dict[str, Track] = {
 }
 
 _AGE_ALIASES: dict[str, AgeCategory] = {
-    "4-6": AgeCategory.AGE_4_6,
-    "4–6": AgeCategory.AGE_4_6,
-    "age_4_6": AgeCategory.AGE_4_6,
-    "7-10": AgeCategory.AGE_7_10,
-    "7–10": AgeCategory.AGE_7_10,
-    "age_7_10": AgeCategory.AGE_7_10,
-    "11-13": AgeCategory.AGE_11_13,
-    "11–13": AgeCategory.AGE_11_13,
-    "age_11_13": AgeCategory.AGE_11_13,
-    "14-18": AgeCategory.AGE_14_18,
-    "14–18": AgeCategory.AGE_14_18,
-    "age_14_18": AgeCategory.AGE_14_18,
+    "0-6": AgeCategory.AGE_0_6,
+    "0–6": AgeCategory.AGE_0_6,
+    "age_0_6": AgeCategory.AGE_0_6,
+    "7-12": AgeCategory.AGE_7_12,
+    "7–12": AgeCategory.AGE_7_12,
+    "age_7_12": AgeCategory.AGE_7_12,
+    "13-18": AgeCategory.AGE_13_18,
+    "13–18": AgeCategory.AGE_13_18,
+    "age_13_18": AgeCategory.AGE_13_18,
 }
 
 
@@ -122,7 +121,7 @@ def parse_pool_token(token: str) -> tuple[Track, AgeCategory] | None:
 
     Допускает: латинский slug (``traditional``, ``ai``, ``handmade_to_ai``),
     русские названия (``Традиционное``, ``ИИ``, ``От руки к ИИ``),
-    короткое/длинное тире в возрасте (``7-10`` / ``7–10``), любой
+    короткое/длинное тире в возрасте (``7-12`` / ``7–12``), любой
     регистр.
     """
     if not token:
@@ -174,7 +173,7 @@ def _split_command_argument(message: IncomingMessage) -> str:
 )
 @moderator_only
 async def cmd_jury_state(message: IncomingMessage, bot: Bot) -> None:
-    """Сводка по 12 пулам без N+1.
+    """Сводка по всем пулам без N+1.
 
     Делает 3 запроса:
     1. Последние раунды по пулам (по одному на пул, по `round_no DESC`).
@@ -284,7 +283,7 @@ async def cmd_jury_close_round(message: IncomingMessage, bot: Bot) -> None:
             bot,
             (
                 "Команда: /jury_close_round <пул>  или  /jury_close_round all\n"
-                "Пример: /jury_close_round traditional/7-10"
+                "Пример: /jury_close_round traditional/7-12"
             ),
         )
         return
@@ -300,7 +299,7 @@ async def cmd_jury_close_round(message: IncomingMessage, bot: Bot) -> None:
             bot,
             (
                 f"Не понимаю пул «{arg}». Формат: <track>/<age>, "
-                "например traditional/7-10."
+                "например traditional/7-12."
             ),
         )
         return
