@@ -101,9 +101,13 @@ NEW_APPLICATION_MODERATION_TEMPLATE = (
     "Возрастная категория: {age_category}\n"
     "Трек: {track}\n"
     "Название работы: {title}\n"
-    "Команда просмотра файлов: {files_pointer}"
+    "Ссылка на папку: {files_pointer}"
 )
-"""§19 — новая заявка в чат модерации."""
+"""§19 — новая заявка в чат модерации.
+
+``files_pointer`` подставляет либо команду ``/files BR-XXXX`` (режим
+``FILES``), либо публичный URL папки (режим ``LINKS``, §33.6.3).
+"""
 
 JURY_ROUND_OPENED_TEMPLATE = (
     "Раунд {round_no} открыт в пулах:\n"
