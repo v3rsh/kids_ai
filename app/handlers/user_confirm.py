@@ -1,0 +1,549 @@
+"""
+Согласия, финальное резюме, отправка заявки (§13, §14, §15, §18).
+
+Состояния FSM:
+- ``user_intake_consents`` — отрисовка чекбоксов согласий (§13), кнопка
+  «Подтвердить и продолжить» появляется только когда оба отмечены.
+- ``user_intake_review`` — финальное резюме (§14): кнопки
+  «Отправить заявку» / «Заполнить заново».
+
+При нажатии «Отправить заявку»:
+1. ``services.applications.create_application`` — создаёт строку в БД,
+   присваивает ``br_id``, проверяет возможный дубль (§15.3).
+2. ``services.storage.create_application_folder`` + последовательное
+   ``services.storage.rename_and_save_file`` для каждого файла из
+   временного каталога (см. ``user_files.py``).
+3. ``services.storage.write_meta_txt`` + ``write_description_txt``.
+4. ``services.notifications.notify_participant_accepted`` (§18.1) и
+   ``services.notifications.notify_moderation_chat_new_application`` (§19).
+5. Очистка FSM + временного каталога анкеты.
+
+Все этапы 2–4 обёрнуты в общий try/except: реализации ветки D в Wave 2
+могут быть ещё ``NotImplementedError``. В этом случае запись в БД
+сохраняется (Wave 3 при интеграции D подцепит), а пользователю
+показываем сообщение 18.2 с понятной причиной — это даёт graceful
+degradation без потери данных. Логируем подробно (``br_id``,
+``parent_huid``).
+
+WAVE3-TODO: интеграция с ``services.intake_mode.get_intake_mode()`` —
+прокидывать актуальный режим в ``create_application`` (сейчас всегда
+``files``).
+"""
+from typing import Iterable
+
+from loguru import logger
+from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
+
+from database.models import AgeCategory, FileKind, Track
+from fsm import cleanup_middleware, fsm_middleware
+from handlers.common import register_state_handler
+from keyboards import consents_bubbles, final_confirm_bubbles, main_menu_bubbles
+from services import applications as applications_service
+from services import notifications as notifications_service
+from services import storage as storage_service
+from states import UserIntake
+from utils.bot_utils import reply_to_user, safe_answer_transient
+
+
+collector = HandlerCollector()
+
+
+# =====================================================================
+# Тексты (§13, §14, §18)
+# =====================================================================
+
+_CONSENTS_PROMPT = (
+    "Согласия.\n\n"
+    "1) Я подтверждаю, что ознакомился(лась) с правилами конкурса и "
+    "согласен(на) с условиями участия.\n"
+    "2) Я разрешаю публикацию имени ребёнка, возраста ребёнка и "
+    "изображения конкурсной работы во внутренних материалах, связанных "
+    "с проведением и подведением итогов конкурса.\n\n"
+    "Отметьте оба пункта и нажмите «Подтвердить и продолжить»."
+)
+
+_ACCEPTED_MESSAGE = (
+    "Спасибо! Заявка принята и передана на модерацию.\n"
+    "Если нам понадобится уточнение или более качественное изображение, "
+    "мы свяжемся с вами по указанному контакту."
+)
+
+_REJECTED_TECH_TEMPLATE = (
+    "Заявка не может быть принята: {reason}.\n"
+    "Пожалуйста, исправьте данные или загрузите файл в подходящем формате."
+)
+
+
+# =====================================================================
+# Шаг согласий (§13)
+# =====================================================================
+
+
+async def show_consents(message: IncomingMessage, bot: Bot) -> None:
+    """Показать чекбоксы согласий с актуальным состоянием отметок.
+
+    Вызывается:
+    - из ``user_files`` при переходе после файла;
+    - из самой ветки при перерисовке (toggle).
+    """
+    fsm = message.state.fsm
+    data = await fsm.get_data()
+    rules_checked = bool(data.get("consent_rules"))
+    publication_checked = bool(data.get("consent_publication"))
+    await reply_to_user(
+        message,
+        bot,
+        _CONSENTS_PROMPT,
+        bubbles=consents_bubbles(
+            rules_checked=rules_checked,
+            publication_checked=publication_checked,
+        ),
+    )
+
+
+@collector.command(
+    "/intake_consent_toggle",
+    description="Переключить чекбокс согласия",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+async def cmd_consent_toggle(message: IncomingMessage, bot: Bot) -> None:
+    """Toggle одного из двух чекбоксов и перерисовка экрана согласий."""
+    fsm = message.state.fsm
+    current = await fsm.get_state()
+    if current != UserIntake.user_intake_consents.value:
+        logger.debug(
+            "intake_consent_toggle вне состояния согласий — игнорируем",
+            current=current,
+        )
+        return
+
+    key = (message.data or {}).get("key")
+    if key not in ("rules", "publication"):
+        logger.warning("intake_consent_toggle: некорректный data.key", key=key)
+        return
+
+    data_key = f"consent_{key}"
+    data = await fsm.get_data()
+    new_value = not bool(data.get(data_key))
+    await fsm.update_data(**{data_key: new_value})
+    logger.debug(
+        "Переключён чекбокс согласия",
+        key=key,
+        new_value=new_value,
+        parent_huid=str(message.sender.huid),
+    )
+    await show_consents(message, bot)
+
+
+@collector.command(
+    "/intake_consents_confirm",
+    description="Подтвердить согласия",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+async def cmd_consents_confirm(
+    message: IncomingMessage, bot: Bot
+) -> None:
+    """Кнопка «Подтвердить и продолжить» — переход к финальному резюме."""
+    fsm = message.state.fsm
+    current = await fsm.get_state()
+    if current != UserIntake.user_intake_consents.value:
+        logger.debug(
+            "intake_consents_confirm вне состояния согласий — игнорируем",
+            current=current,
+        )
+        return
+
+    data = await fsm.get_data()
+    if not (data.get("consent_rules") and data.get("consent_publication")):
+        # §16 — без обязательных согласий заявка не принимается.
+        await safe_answer_transient(
+            message,
+            bot,
+            _REJECTED_TECH_TEMPLATE.format(
+                reason="не подтверждены обязательные согласия"
+            ),
+        )
+        return
+
+    await fsm.set_state(UserIntake.user_intake_review)
+    await _show_review(message, bot)
+
+
+# =====================================================================
+# Финальное резюме (§14)
+# =====================================================================
+
+
+def _build_review_text(data: dict) -> str:
+    """Сформировать текст резюме по шаблону §14."""
+    try:
+        track = Track[data["track"]]
+    except (KeyError, TypeError):
+        track_label = "?"
+    else:
+        track_label = track.value
+
+    child_age = data.get("child_age")
+    try:
+        age_category_label = (
+            AgeCategory.from_age(int(child_age)).value if child_age else "?"
+        )
+    except (ValueError, TypeError):
+        age_category_label = "?"
+
+    files = data.get("files") or []
+    return (
+        "Проверьте данные заявки:\n\n"
+        f"Родитель: {data.get('parent_full_name', '?')}\n"
+        f"Подразделение: {data.get('parent_division', '?')}\n"
+        "Контакт: подставляется автоматически из eXpress (HUID/ad_login)\n\n"
+        f"Ребёнок: {data.get('child_name', '?')}, {child_age if child_age else '?'}\n"
+        f"Возрастная категория: {age_category_label}\n\n"
+        f"Название работы: {data.get('title', '?')}\n"
+        f"Трек: {track_label}\n"
+        f"Описание: {data.get('description', '?')}\n\n"
+        f"Файлы: {len(files)}\n\n"
+        "Если всё верно, нажмите «Отправить заявку»."
+    )
+
+
+async def _show_review(message: IncomingMessage, bot: Bot) -> None:
+    fsm = message.state.fsm
+    data = await fsm.get_data()
+    await reply_to_user(
+        message,
+        bot,
+        _build_review_text(data),
+        bubbles=final_confirm_bubbles(),
+    )
+
+
+# =====================================================================
+# Отправка (§14, §18.1, §18.2)
+# =====================================================================
+
+
+@collector.command(
+    "/intake_submit",
+    description="Отправить заявку",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
+    """Финальный submit — создание заявки, сохранение файлов, нотификации."""
+    fsm = message.state.fsm
+    current = await fsm.get_state()
+    if current != UserIntake.user_intake_review.value:
+        logger.debug(
+            "intake_submit вне состояния review — игнорируем",
+            current=current,
+        )
+        return
+
+    data = await fsm.get_data()
+    parent_huid = message.sender.huid
+
+    # ----- Финальные проверки заполненности (защита от рассинхрона) -----
+    missing = _validate_required_fields(data)
+    if missing:
+        await safe_answer_transient(
+            message,
+            bot,
+            _REJECTED_TECH_TEMPLATE.format(
+                reason=f"не заполнены поля — {', '.join(missing)}"
+            ),
+        )
+        return
+
+    files_meta: list[dict] = data.get("files") or []
+    if not files_meta:
+        await safe_answer_transient(
+            message,
+            bot,
+            _REJECTED_TECH_TEMPLATE.format(reason="не загружен файл"),
+        )
+        return
+
+    # ----- Шаг 1: создание заявки в БД -----
+    try:
+        application = await applications_service.create_application(
+            parent_huid=parent_huid,
+            parent_full_name=data["parent_full_name"],
+            parent_division=data["parent_division"],
+            parent_ad_login=getattr(message.sender, "ad_login", None),
+            child_name=data["child_name"],
+            child_age=int(data["child_age"]),
+            track_name=data["track"],
+            title=data["title"],
+            description=data["description"],
+            # WAVE3-TODO: пробросить актуальный intake_mode через
+            # services.intake_mode.get_intake_mode() — пока всегда FILES.
+            intake_mode_value="files",
+        )
+    except ValueError as exc:
+        logger.warning(
+            "Не удалось создать заявку (валидация)",
+            parent_huid=str(parent_huid),
+            error=str(exc),
+        )
+        await safe_answer_transient(
+            message,
+            bot,
+            _REJECTED_TECH_TEMPLATE.format(reason=str(exc)),
+        )
+        return
+    except Exception:
+        logger.exception(
+            "Сбой при создании заявки",
+            parent_huid=str(parent_huid),
+        )
+        await safe_answer_transient(
+            message,
+            bot,
+            _REJECTED_TECH_TEMPLATE.format(
+                reason="временная техническая ошибка, попробуйте ещё раз"
+            ),
+        )
+        return
+
+    br_id = application.br_id
+    logger.info(
+        "Заявка зарегистрирована, начинаем материализацию",
+        br_id=br_id,
+        parent_huid=str(parent_huid),
+        files=len(files_meta),
+    )
+
+    # ----- Шаг 2: материализация файлов через services.storage -----
+    storage_ok = await _materialize_files(application, files_meta, data)
+
+    # ----- Шаг 3: уведомления (§18.1, §19) -----
+    await _send_notifications(bot, application, storage_ok)
+
+    # ----- Шаг 4: финал — главное меню -----
+    from handlers.user_files import _cleanup_intake_temp_dir
+
+    _cleanup_intake_temp_dir(parent_huid)
+    await fsm.clear()
+
+    await reply_to_user(
+        message,
+        bot,
+        _ACCEPTED_MESSAGE + f"\n\nНомер заявки: {br_id}",
+        bubbles=main_menu_bubbles(),
+    )
+
+
+@collector.command(
+    "/intake_restart",
+    description="Заполнить заново",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+async def cmd_restart(message: IncomingMessage, bot: Bot) -> None:
+    """Кнопка «Заполнить заново» — сброс FSM и старт анкеты с нуля."""
+    fsm = message.state.fsm
+    parent_huid = message.sender.huid
+
+    from handlers.user_files import _cleanup_intake_temp_dir
+
+    _cleanup_intake_temp_dir(parent_huid)
+    await fsm.clear()
+
+    await fsm.set_state(UserIntake.user_intake_parent_full_name)
+    await fsm.set_data({})
+
+    logger.info(
+        "Анкета перезапущена пользователем",
+        parent_huid=str(parent_huid),
+    )
+
+    await reply_to_user(
+        message,
+        bot,
+        (
+            "Начинаем заново.\n\n"
+            "Шаг 1 из 7. Как вас зовут? Укажите ФИО полностью "
+            "(например, «Иванова Анна Сергеевна»)."
+        ),
+        bubbles=BubbleMarkup(),
+    )
+
+
+# =====================================================================
+# Утилиты
+# =====================================================================
+
+
+_REQUIRED_FIELDS: tuple[tuple[str, str], ...] = (
+    ("parent_full_name", "ФИО родителя"),
+    ("parent_division", "Подразделение"),
+    ("child_name", "Имя ребёнка"),
+    ("child_age", "Возраст ребёнка"),
+    ("track", "Трек"),
+    ("title", "Название работы"),
+    ("description", "Описание"),
+)
+
+
+def _validate_required_fields(data: dict) -> list[str]:
+    """Вернуть список человекочитаемых имён незаполненных полей."""
+    missing: list[str] = []
+    for key, label in _REQUIRED_FIELDS:
+        value = data.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            missing.append(label)
+    return missing
+
+
+def _file_kinds_for_track(
+    track: Track, count: int
+) -> list[tuple[FileKind, int | None]]:
+    """Сформировать ожидаемый список ``(kind, angle_no)`` по треку (§22).
+
+    - TRADITIONAL: 1 файл → ORIGINAL; 2–4 → ANGLE с N=1..count.
+      (Бот не различает «обычный 2D» от «3D» сам, поэтому 1 файл —
+      всегда ORIGINAL, а 2+ — все ANGLE с порядковыми номерами.)
+    - AI: ровно 1 → AI_IMAGE.
+    - HANDMADE_TO_AI: ровно 1 → DIPTYCH.
+    """
+    if track == Track.TRADITIONAL:
+        if count == 1:
+            return [(FileKind.ORIGINAL, None)]
+        return [(FileKind.ANGLE, idx + 1) for idx in range(count)]
+    if track == Track.AI:
+        return [(FileKind.AI_IMAGE, None)]
+    if track == Track.HANDMADE_TO_AI:
+        return [(FileKind.DIPTYCH, None)]
+    raise ValueError(f"Неизвестный трек: {track!r}")
+
+
+async def _materialize_files(
+    application, files_meta: list[dict], data: dict
+) -> bool:
+    """Перенос временных файлов в постоянное хранилище ветки D.
+
+    Возвращает True при полном успехе. Если ``services.storage`` ещё
+    не реализован (Wave 1 stub) — логируем warning и возвращаем False.
+    Запись в БД остаётся в любом случае; Wave 3 интегратор сможет
+    донакатить файлы.
+    """
+    from pathlib import Path
+
+    try:
+        track = Track[data["track"]]
+    except KeyError:
+        logger.error("materialize_files: неверный track", data=data.get("track"))
+        return False
+
+    try:
+        await storage_service.create_application_folder(application)
+    except NotImplementedError:
+        logger.warning(
+            "services.storage.create_application_folder — stub Wave 1, пропускаем",
+            br_id=application.br_id,
+        )
+        return False
+    except Exception:
+        logger.exception(
+            "Не удалось создать папку заявки",
+            br_id=application.br_id,
+        )
+        return False
+
+    plan: Iterable[tuple[FileKind, int | None]] = _file_kinds_for_track(
+        track, len(files_meta)
+    )
+
+    for meta, (kind, angle_no) in zip(files_meta, plan):
+        try:
+            await storage_service.rename_and_save_file(
+                application,
+                kind,
+                angle_no,
+                Path(meta["temp_path"]),
+                meta["original_filename"],
+            )
+        except NotImplementedError:
+            logger.warning(
+                "services.storage.rename_and_save_file — stub Wave 1, пропускаем",
+                br_id=application.br_id,
+                file=meta.get("original_filename"),
+            )
+            return False
+        except Exception:
+            logger.exception(
+                "Не удалось сохранить файл",
+                br_id=application.br_id,
+                file=meta.get("original_filename"),
+            )
+            return False
+
+    for writer, label in (
+        (storage_service.write_description_txt, "description.txt"),
+        (storage_service.write_meta_txt, "meta.txt"),
+    ):
+        try:
+            await writer(application)
+        except NotImplementedError:
+            logger.warning(
+                "services.storage.%s — stub Wave 1, пропускаем",
+                label,
+                br_id=application.br_id,
+            )
+        except Exception:
+            logger.exception(
+                "Не удалось записать %s",
+                label,
+                br_id=application.br_id,
+            )
+
+    return True
+
+
+async def _send_notifications(bot, application, storage_ok: bool) -> None:
+    """Послать участнику §18.1 и в чат модерации §19.
+
+    Не критическая часть: сбои логируем, но не валим submit — заявка
+    уже в БД, и модератор может работать с ней через ``/queue``.
+    """
+    try:
+        await notifications_service.notify_participant_accepted(bot, application)
+    except NotImplementedError:
+        logger.warning(
+            "services.notifications.notify_participant_accepted — stub Wave 1",
+            br_id=application.br_id,
+        )
+    except Exception:
+        logger.exception(
+            "Сбой нотификации участнику (§18.1)",
+            br_id=application.br_id,
+        )
+
+    try:
+        await notifications_service.notify_moderation_chat_new_application(
+            bot, application
+        )
+    except NotImplementedError:
+        logger.warning(
+            "services.notifications.notify_moderation_chat_new_application — stub Wave 1",
+            br_id=application.br_id,
+        )
+    except Exception:
+        logger.exception(
+            "Сбой нотификации в чат модерации (§19)",
+            br_id=application.br_id,
+        )
+
+    if not storage_ok:
+        logger.warning(
+            "Заявка сохранена, но материализация файлов не выполнена "
+            "(скорее всего, services.storage ещё не реализован — Wave 2/D)",
+            br_id=application.br_id,
+        )
+
+
+# WAVE3-TODO: добавить collector в app/handlers/__init__.py:get_all_collectors()
+# (см. подробный список порядка в handlers/user.py).
