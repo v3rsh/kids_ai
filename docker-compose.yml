@@ -8,6 +8,11 @@ networks:
 volumes:
   pgdata:
   redisdata:
+  # Файлы заявок конкурса «Безопасные рисунки» (§21, §33.1).
+  # Именованный том вместо bind-mount: переживает docker compose down -v
+  # только при явном удалении, не мешает push образа без данных, и
+  # изолирован от bind-mountа ./data (он отдан под FSM SQLite и пр.).
+  attachments_volume:
 
 services:
   # ===== PostgreSQL (только для тестирования, профиль test) =====
@@ -77,6 +82,7 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./backup:/app/backup
+      - attachments_volume:/app/data/attachments
       - /etc/localtime:/etc/localtime:ro
     environment:
       - TZ=Europe/Moscow
@@ -85,6 +91,20 @@ services:
       - CTS_URL=${CTS_URL}
       - BOT_SECRET_KEY=${BOT_SECRET_KEY}
       - ADMIN_HUID=${ADMIN_HUID}
+      # Безопасные рисунки (см. .env-example и app/config.py)
+      - MODERATOR_HUIDS=${MODERATOR_HUIDS}
+      - JURY_HUIDS=${JURY_HUIDS}
+      - MODERATION_CHAT_ID=${MODERATION_CHAT_ID}
+      - ATTACHMENTS_DIR=${ATTACHMENTS_DIR:-/app/data/attachments}
+      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-10}
+      - DISK_WARN_PCT=${DISK_WARN_PCT:-80}
+      - DISK_BLOCK_PCT=${DISK_BLOCK_PCT:-95}
+      - INTAKE_MODE_DEFAULT=${INTAKE_MODE_DEFAULT:-files}
+      - TOP_N=${TOP_N:-10}
+      - JURY_ROUNDS=${JURY_ROUNDS:-3}
+      - JURY_ROUND_DEADLINE_HOURS=${JURY_ROUND_DEADLINE_HOURS:-48}
+      - JURY_POOLS_CONFIG=${JURY_POOLS_CONFIG}
+      - COMPETITION_YEAR=${COMPETITION_YEAR:-2026}
       # Server settings
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8000
