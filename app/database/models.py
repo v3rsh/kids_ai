@@ -16,16 +16,21 @@ SQLAlchemy-модели kids_ai.
   (в БД сохраняется `.name`, см. `database/migrations.py → sync_enum_values`)
 """
 import enum
+import uuid
 from datetime import datetime
 from uuid import UUID as PyUUID
 
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Enum as SAEnum,
+    ForeignKey,
+    Integer,
     String,
+    Text,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
@@ -207,3 +212,149 @@ class User(Base):
 
     def __repr__(self) -> str:
         return f"<User huid={self.huid} full_name={self.full_name!r}>"
+
+
+# =====================================================================
+# Доменные модели конкурса «Безопасные рисунки»
+# =====================================================================
+
+
+class Application(Base):
+    """Заявка на конкурс (§11, §15, §20, §25).
+
+    Источник правды по всем полям реестра (§25.4). Excel-реестр собирается
+    из этой таблицы по запросу `/export`, на диске не хранится.
+
+    Полное ФИО родителя — в ``parent_full_name``; в имени папки используется
+    только фамилия+имя (§21.2). ``ad_login`` ходит в ``meta.txt`` и Excel
+    (§11.1), ``huid`` — всегда доступен модератору в карточке.
+
+    Возрастная категория ``age_category`` вычисляется ботом
+    автоматически из ``child_age`` через ``AgeCategory.from_age`` (§8, §11.3).
+    """
+
+    __tablename__ = "applications"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    br_id: Mapped[str] = mapped_column(
+        String(20), unique=True, index=True, nullable=False
+    )
+    parent_huid: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), index=True, nullable=False
+    )
+    parent_full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    parent_division: Mapped[str] = mapped_column(String(255), nullable=False)
+    parent_ad_login: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    child_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    child_age: Mapped[int] = mapped_column(Integer, nullable=False)
+    age_category: Mapped[AgeCategory] = mapped_column(
+        SAEnum(AgeCategory, name="age_category"), nullable=False
+    )
+    track: Mapped[Track] = mapped_column(
+        SAEnum(Track, name="track"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+
+    intake_mode: Mapped[IntakeMode] = mapped_column(
+        SAEnum(IntakeMode, name="intake_mode"), nullable=False
+    )
+    cloud_link: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    moderation_status: Mapped[ModerationStatus] = mapped_column(
+        SAEnum(ModerationStatus, name="moderation_status"),
+        nullable=False,
+        default=ModerationStatus.NA_MODERATSII,
+    )
+    moderator_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    jury_status: Mapped[JuryStatus] = mapped_column(
+        SAEnum(JuryStatus, name="jury_status"),
+        nullable=False,
+        default=JuryStatus.NE_PEREDANO_ZHYURI,
+    )
+    voting_status: Mapped[VotingStatus] = mapped_column(
+        SAEnum(VotingStatus, name="voting_status"),
+        nullable=False,
+        default=VotingStatus.NE_UCHASTVUET,
+    )
+    merch_potential: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    is_possible_duplicate: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
+    )
+    related_application_br_id: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
+    is_actual_version: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
+
+    # ===== Агрегированные поля жюри (поля №№ 23–29 реестра, §25.3.1) =====
+    jury_round1_yes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    jury_round2_yes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    jury_round3_yes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    jury_final_round: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    jury_decided_by_lot: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    pool_position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    files: Mapped[list["ApplicationFile"]] = relationship(
+        back_populates="application",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    def __repr__(self) -> str:
+        return f"<Application br_id={self.br_id} track={self.track.name}>"
+
+
+class ApplicationFile(Base):
+    """Файл заявки (§12, §22, §23).
+
+    Имена ``stored_filename`` формируются сервисом ``storage`` по шаблону
+    §22 («BR-2026-XXXX_original.jpg» / «..._angle-N.<ext>» / ...).
+    Для ``ANGLE`` обязательно поле ``angle_no`` (1..4, §12.1).
+    ``relative_path`` — путь относительно ``ATTACHMENTS_DIR`` (см. config).
+    """
+
+    __tablename__ = "application_files"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    application_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("applications.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind: Mapped[FileKind] = mapped_column(
+        SAEnum(FileKind, name="file_kind"), nullable=False
+    )
+    angle_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    original_filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    stored_filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    relative_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+
+    application: Mapped[Application] = relationship(back_populates="files")
+
+    def __repr__(self) -> str:
+        return f"<ApplicationFile {self.stored_filename!r} kind={self.kind.name}>"
