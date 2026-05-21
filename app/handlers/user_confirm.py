@@ -25,10 +25,12 @@
 degradation без потери данных. Логируем подробно (``br_id``,
 ``parent_huid``).
 
-WAVE4-TODO (LINKS-режим): прокидывать актуальный режим из
-``services.intake_mode.get_intake_mode()`` в ``create_application``.
-Сейчас всегда передаётся ``"files"`` — для штатного UX это корректно,
-LINKS-режим требует отдельного ссылочного flow (см. user_files.py).
+Актуальный режим приёма прокидывается из
+``services.intake_mode.get_intake_mode()`` в ``create_application``,
+чтобы заявка корректно записалась с тем режимом, который активен на
+момент submit (важно для §33.6 — реестр различает FILES/LINKS по полю
+№13). Сам ссылочный UX (запрос URL вместо файла) — отдельная задача,
+см. ``docs/backlog.md`` → «WAVE4-LINKS-UX».
 """
 from typing import Iterable
 
@@ -40,6 +42,7 @@ from fsm import cleanup_middleware, fsm_middleware
 from handlers.common import register_state_handler
 from keyboards import consents_bubbles, final_confirm_bubbles, main_menu_bubbles
 from services import applications as applications_service
+from services import intake_mode as intake_mode_service
 from services import notifications as notifications_service
 from services import storage as storage_service
 from states import UserIntake
@@ -268,6 +271,12 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
         return
 
     # ----- Шаг 1: создание заявки в БД -----
+    # Актуальный режим приёма читаем непосредственно перед submit (§33.6):
+    # модератор/админ/диск-монитор могли переключить FILES↔LINKS, пока
+    # пользователь шёл по анкете. Сам UX сбора файла vs ссылки — пока
+    # только FILES (см. backlog «WAVE4-LINKS-UX»), но в БД запись должна
+    # отражать реальный режим, в котором заявка зафиксирована.
+    current_intake_mode = await intake_mode_service.get_intake_mode()
     try:
         application = await applications_service.create_application(
             parent_huid=parent_huid,
@@ -279,9 +288,7 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
             track_name=data["track"],
             title=data["title"],
             description=data["description"],
-            # WAVE4-TODO (LINKS-режим): пробросить актуальный intake_mode
-            # через services.intake_mode.get_intake_mode() — пока всегда FILES.
-            intake_mode_value="files",
+            intake_mode_value=current_intake_mode.value,
         )
     except ValueError as exc:
         logger.warning(
