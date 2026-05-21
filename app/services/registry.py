@@ -16,6 +16,11 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from config import COMPETITION_YEAR
+from database.models import (
+    Application,
+    IntakeMode,
+    JuryStatus,
+)
 
 MSK = ZoneInfo("Europe/Moscow")
 
@@ -64,6 +69,55 @@ def registry_export_filename(
 
 
 # =====================================================================
+# Helpers значений строк (Q9 / §2.2.2, §11.1, §25.3.3)
+# =====================================================================
+
+
+def view_command_or_link(app: Application) -> str:
+    """Значение поля №13 «Команда/ссылка просмотра файлов» (Q9 / §2.2.2).
+
+    - ``IntakeMode.LINKS`` → ``app.cloud_link`` (URL папки участника)
+      или пустая строка, если ссылка ещё не получена;
+    - ``IntakeMode.FILES`` → ``/files <br_id>`` (текстовая команда
+      модератора в чате).
+
+    Та же функция переиспользуется в шорт-листе (§3.1, поле №10).
+    """
+    if app.intake_mode is IntakeMode.LINKS:
+        return app.cloud_link or ""
+    return f"/files {app.br_id}"
+
+
+def contact_field(app: Application) -> str:
+    """Значение поля №5 «Контакт» (§11.1).
+
+    - Если у заявителя есть ``parent_ad_login`` — пишем ``@<login>``;
+    - иначе — ``HUID: <uuid>`` (HUID всегда доступен).
+    """
+    if app.parent_ad_login:
+        return f"@{app.parent_ad_login}"
+    return f"HUID: {app.parent_huid}"
+
+
+def jury_outcome(app: Application) -> str:
+    """Значение поля №27 «Итог по жюри» (§2.2 / §25.3.1, §25.3.3).
+
+    Производное от ``Application.jury_status``:
+    - ``не_передано_жюри`` → ``не оценивалась``;
+    - ``в_топ-10`` → ``в топ-10``;
+    - ``не_вошло_в_топ-10`` → ``не вошло в топ-10``;
+    - ``на_голосовании`` → пусто (пул ещё не завершён).
+    """
+    if app.jury_status is JuryStatus.NE_PEREDANO_ZHYURI:
+        return "не оценивалась"
+    if app.jury_status is JuryStatus.V_TOP_10:
+        return "в топ-10"
+    if app.jury_status is JuryStatus.NE_VOSHLO_V_TOP_10:
+        return "не вошло в топ-10"
+    return ""
+
+
+# =====================================================================
 # Стабы — будут реализованы в следующих коммитах ветки E
 # =====================================================================
 
@@ -84,6 +138,9 @@ async def build_shortlist_xlsx() -> bytes:
 __all__ = [
     "MSK",
     "registry_export_filename",
+    "view_command_or_link",
+    "contact_field",
+    "jury_outcome",
     "build_registry_xlsx",
     "build_shortlist_xlsx",
 ]
