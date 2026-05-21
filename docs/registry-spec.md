@@ -136,7 +136,7 @@ stmt = (
 
 Шаблон: `<Фамилия в транслитерации>.<инициал имени в транслитерации>_r<номер_раунда>`.
 
-**Примеры:**
+**Примеры финального заголовка колонки** (то, что записывается в шапку листа `Голосование жюри`):
 
 | `full_name` в `JuryMember` | Заголовок колонки (раунд 1) |
 |----------------------------|------------------------------|
@@ -145,8 +145,11 @@ stmt = (
 | `Кулаева Варвара` | `Kulaeva.V_r1` |
 | `Юдин Юрий` | `Iudin.I_r1` |
 | `Щербак Эльвира` | `Shcherbak.E_r1` |
+| `Жукова Алиса` | `Zhukova.A_r2` |
 
 > ⚠️ **Уточнение шаблона относительно исходного варианта C `E.Vinokurova_r1`.** В образце инициал стоит перед фамилией (`E.Vinokurova`), но для удобной сортировки модератором по фамилии в спецификации зафиксирован порядок `Фамилия.И_rN`. Если такое отклонение неприемлемо — нужно вернуться к Q1 и переутвердить.
+
+> 🔎 **Финальный регистр задаётся вызывающей стороной.** Сама `transliterate_icao_9303` сохраняет регистр посимвольно (исходная буква в верхнем регистре → латинская группа в верхнем; в нижнем — в нижнем). Поэтому сырой выход для многосимвольных групп даёт `IUdin`, `SHCHerbak`, `ZHukova`. Хелпер `jury_column_header` приводит фамилию к Title-case через `surname.title()` и инициал к UPPER через `initial.upper()` — отсюда финальные `Iudin`, `Shcherbak`, `Zhukova`. То есть таблица примеров выше = `transliterate_icao_9303(surname).title() + "." + transliterate_icao_9303(name[0])[:1].upper() + "_r" + N`.
 
 **Разбор `full_name`:**
 
@@ -172,12 +175,12 @@ stmt = (
 | Й | I | | | Я | IA |
 | К | K | | | | |
 
-> Регистр результата: первая буква каждого токена в **Title-case**, остальные — в lower-case (`KH` → `Kh`, `SHCH` → `Shch`). Это даёт чтение, привычное модератору: `Shcherbak` вместо `SHCHERBAK`.
+> **Регистр на выходе `transliterate_icao_9303` — посимвольный.** Заглавная исходная буква → группа латиницы в верхнем регистре (`Ю → IU`, `Х → KH`, `Щ → SHCH`); строчная → в нижнем (`ю → iu`, `х → kh`). Поэтому сырая транслитерация **`Юдин` даёт `IUdin`**, а не `Iudin`; **`Щербак` даёт `SHCHerbak`**; **`Жукова` даёт `ZHukova`**. Привычное модератору чтение (`Iudin`, `Shcherbak`, `Zhukova`) получается уже на уровне `jury_column_header` — через `surname.title()` (см. сноску о финальном регистре выше и алгоритм ниже).
 
-**Алгоритм (упрощённо):**
+**Алгоритм (упрощённо)** — имена в коде совпадают с этим псевдокодом:
 
 ```python
-def transliterate_passport(text: str) -> str:
+def transliterate_icao_9303(text: str) -> str:
     table = {"А": "A", "Б": "B", ..., "Я": "IA"}  # см. таблицу выше
     out = []
     for ch in text:
@@ -186,19 +189,22 @@ def transliterate_passport(text: str) -> str:
         elif ch.islower():
             up = ch.upper()
             mapped = table.get(up, ch)
-            out.append(mapped.lower())
+            out.append(mapped.lower())  # → "Юдин" даст "IUdin", "Щербак" → "SHCHerbak"
         else:
             out.append(ch)
     return "".join(out)
 
 
-def jury_column_name(full_name: str, round_no: int) -> str:
+def jury_column_header(full_name: str, round_no: int) -> str:
     tokens = full_name.strip().split()
     if len(tokens) >= 2 and tokens[0] and tokens[1]:
-        surname = transliterate_passport(tokens[0])
+        surname = transliterate_icao_9303(tokens[0])
         # Ровно один символ латиницы: Ю→IU→I, Я→IA→I, Ж→ZH→Z и т. п.
-        initial = transliterate_passport(tokens[1][0])[:1]
+        initial = transliterate_icao_9303(tokens[1][0])[:1]
         if surname and initial:
+            # .title() приводит фамилию к Title-case (IUdin → Iudin,
+            # SHCHerbak → Shcherbak); .upper() — гарантия заглавного
+            # инициала, см. сноску о финальном регистре выше.
             return f"{surname.title()}.{initial.upper()}_r{round_no}"
     # fallback на исходное ФИО без транслитерации
     return f"{full_name.strip()}_r{round_no}"
