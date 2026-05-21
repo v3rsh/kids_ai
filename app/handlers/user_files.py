@@ -27,12 +27,14 @@
   ``services.storage.rename_and_save_file`` уже в ``user_confirm.py``
   на submit (когда заявка имеет ``br_id``).
 
-WAVE4-TODO (LINKS-режим): интеграция с
-``services.intake_mode.get_intake_mode()`` — если режим ``LINKS``,
-вместо приёма файлов запрашивать ссылку на папку участника (§33.6).
-На текущем этапе режим всегда ``FILES``; ссылочный UX в
-``user_files`` / ``user_confirm`` будет добавлен отдельным
-feature-коммитом (см. ``docs/testing.md`` → §6 п. 19).
+Backlog: LINKS-режим UX — если ``intake_mode = LINKS`` (§33.6), бот
+должен запрашивать ссылку на облачную папку вместо файла. На текущем
+этапе данный модуль всегда работает как FILES; контракт ссылочного UX
+(новый FSM-state, валидация URL, smoke-тесты) описан в
+``docs/backlog.md`` → раздел ``WAVE4-LINKS-UX``. В реестре поле №13 уже
+учитывает оба режима через ``services.registry.view_command_or_link``
+(§25.1, §33.6.3), а ``intake_mode_value`` корректно прокидывается в БД
+через ``user_confirm.cmd_submit`` (Wave 4 A2).
 """
 import shutil
 import tempfile
