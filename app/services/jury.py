@@ -188,29 +188,26 @@ async def _get_round_candidates(
     return [apps_by_id[i] for i in next_ids if i in apps_by_id]
 
 
-async def _compute_round_outcome(
-    round_obj: JuryRound,
+def _compute_outcome_from_data(
+    candidates: list[Application],
+    counts: Mapping[UUID, int],
     *,
-    session: AsyncSession,
+    top_n: int = TOP_N,
 ) -> _RoundOutcome:
-    """Применить §35.2 к раунду: вернуть отсортированный результат + tie-зону.
+    """Чистая версия алгоритма §35.2 — без I/O.
 
-    Сортировка: по голосам ``YES`` DESC, при равных — по
-    ``(created_at ASC, id ASC)`` — единый детерминированный порядок,
-    совпадающий с порядком карусели судьи.
+    Выделена для unit-тестов (см. tests/test_jury_algorithm.py).
+    Сортировка по голосам ``YES`` DESC, тай-брейк — ``(created_at, id)`` ASC.
     """
-    candidates = await _get_round_candidates(round_obj, session=session)
-    counts = await _count_yes_per_app(round_obj.id, session=session)
-
     sorted_apps = sorted(
         candidates,
         key=lambda a: (-counts.get(a.id, 0), a.created_at, a.id),
     )
     sorted_ids = [a.id for a in sorted_apps]
 
-    if len(sorted_apps) <= TOP_N:
+    if len(sorted_apps) <= top_n:
         return _RoundOutcome(
-            counts=counts,
+            counts=dict(counts),
             sorted_app_ids=sorted_ids,
             top_ids=sorted_ids,
             above_tie_ids=sorted_ids,
@@ -218,12 +215,12 @@ async def _compute_round_outcome(
             is_tied=False,
         )
 
-    votes_at_n = counts.get(sorted_apps[TOP_N - 1].id, 0)
-    votes_at_n_plus_1 = counts.get(sorted_apps[TOP_N].id, 0)
+    votes_at_n = counts.get(sorted_apps[top_n - 1].id, 0)
+    votes_at_n_plus_1 = counts.get(sorted_apps[top_n].id, 0)
     if votes_at_n > votes_at_n_plus_1:
-        top_ids = sorted_ids[:TOP_N]
+        top_ids = sorted_ids[:top_n]
         return _RoundOutcome(
-            counts=counts,
+            counts=dict(counts),
             sorted_app_ids=sorted_ids,
             top_ids=top_ids,
             above_tie_ids=top_ids,
@@ -235,13 +232,27 @@ async def _compute_round_outcome(
     above_tie = [a.id for a in sorted_apps if counts.get(a.id, 0) > tie_votes]
     tie_zone = [a.id for a in sorted_apps if counts.get(a.id, 0) == tie_votes]
     return _RoundOutcome(
-        counts=counts,
+        counts=dict(counts),
         sorted_app_ids=sorted_ids,
         top_ids=[],
         above_tie_ids=above_tie,
         tie_ids=tie_zone,
         is_tied=True,
     )
+
+
+async def _compute_round_outcome(
+    round_obj: JuryRound,
+    *,
+    session: AsyncSession,
+) -> _RoundOutcome:
+    """Применить §35.2 к раунду: вернуть отсортированный результат + tie-зону.
+
+    Тонкая I/O-обёртка над ``_compute_outcome_from_data``.
+    """
+    candidates = await _get_round_candidates(round_obj, session=session)
+    counts = await _count_yes_per_app(round_obj.id, session=session)
+    return _compute_outcome_from_data(candidates, counts)
 
 
 # =====================================================================
