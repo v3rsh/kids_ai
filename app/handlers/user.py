@@ -98,7 +98,7 @@ EXAMPLES_TEXT = (
 
 # §5.2, §7 — контакты не зафиксированы в ТЗ как отдельный готовый
 # блок. Берём общую формулировку: координатор + чат модерации.
-# WAVE3-TODO: вынести в config (или AppSetting), чтобы заказчик мог
+# WAVE4-TODO: вынести в config (или AppSetting), чтобы заказчик мог
 # отредактировать без диффа в коде.
 CONTACTS_TEXT = (
     "Контакты организаторов:\n\n"
@@ -221,21 +221,10 @@ async def cmd_apply(message: IncomingMessage, bot: Bot) -> None:
 #
 # При импорте этого модуля в handlers/__init__.py подгружаются все
 # модули ветки A, и каждый регистрирует:
-# - свой ``collector`` (нужно вручную добавить в get_all_collectors() —
-#   см. WAVE3-TODO ниже);
+# - свой ``collector`` (в ``handlers/__init__.py:get_all_collectors()``);
 # - свои хендлеры FSM-состояний через
 #   ``handlers.common.register_state_handler``.
 
 from handlers import user_intake as _user_intake  # noqa: E402, F401
 from handlers import user_files as _user_files  # noqa: E402, F401
 from handlers import user_confirm as _user_confirm  # noqa: E402, F401
-
-
-# WAVE3-TODO: импортировать collector в app/handlers/__init__.py:get_all_collectors()
-# ВТОРЫМ (после common). Порядок:
-#   1) common_collector
-#   2) handlers.user.collector  ← этот файл (главное меню + /apply + info-экраны)
-#   3) handlers.user_intake.collector  ← анкета: кнопка /intake_track
-#   4) handlers.user_files.collector  ← файлы: кнопки /intake_file_more, /intake_file_done
-#   5) handlers.user_confirm.collector  ← согласия + submit: /intake_consent_toggle, /intake_consents_confirm, /intake_submit, /intake_restart
-#   6) затем — moderator → jury → admin (Wave 2 / B, C, D)

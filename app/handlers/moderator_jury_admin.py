@@ -26,7 +26,7 @@ docstring):
 запросами (открытые раунды + один GROUP BY по голосам), ``close_round``
 вызывает ``services.jury.close_round`` (стаб Wave 1, заполнит C2).
 
-WAVE3-TODO: подключить ``collector`` в
+``collector`` подключается в
 ``app/handlers/__init__.py → get_all_collectors()`` за
 ``handlers/moderator_export.py`` (последний файл ветки B).
 """

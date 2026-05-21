@@ -25,9 +25,10 @@
 degradation без потери данных. Логируем подробно (``br_id``,
 ``parent_huid``).
 
-WAVE3-TODO: интеграция с ``services.intake_mode.get_intake_mode()`` —
-прокидывать актуальный режим в ``create_application`` (сейчас всегда
-``files``).
+WAVE4-TODO (LINKS-режим): прокидывать актуальный режим из
+``services.intake_mode.get_intake_mode()`` в ``create_application``.
+Сейчас всегда передаётся ``"files"`` — для штатного UX это корректно,
+LINKS-режим требует отдельного ссылочного flow (см. user_files.py).
 """
 from typing import Iterable
 
@@ -278,8 +279,8 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
             track_name=data["track"],
             title=data["title"],
             description=data["description"],
-            # WAVE3-TODO: пробросить актуальный intake_mode через
-            # services.intake_mode.get_intake_mode() — пока всегда FILES.
+            # WAVE4-TODO (LINKS-режим): пробросить актуальный intake_mode
+            # через services.intake_mode.get_intake_mode() — пока всегда FILES.
             intake_mode_value="files",
         )
     except ValueError as exc:
@@ -539,11 +540,6 @@ async def _send_notifications(bot, application, storage_ok: bool) -> None:
 
     if not storage_ok:
         logger.warning(
-            "Заявка сохранена, но материализация файлов не выполнена "
-            "(скорее всего, services.storage ещё не реализован — Wave 2/D)",
+            "Заявка сохранена, но материализация файлов не выполнена",
             br_id=application.br_id,
         )
-
-
-# WAVE3-TODO: добавить collector в app/handlers/__init__.py:get_all_collectors()
-# (см. подробный список порядка в handlers/user.py).

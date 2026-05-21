@@ -415,5 +415,3 @@ register_state_handler(
 )
 
 
-# WAVE3-TODO: добавить collector в app/handlers/__init__.py:get_all_collectors()
-# (см. подробный список порядка в handlers/user.py).

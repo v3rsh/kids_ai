@@ -27,9 +27,12 @@
   ``services.storage.rename_and_save_file`` уже в ``user_confirm.py``
   на submit (когда заявка имеет ``br_id``).
 
-WAVE3-TODO: интеграция с ``services.intake_mode.get_intake_mode()`` —
-если режим ``LINKS``, вместо приёма файлов запрашивать ссылку на
-папку участника (§33.6). На момент Wave 2 / A режим всегда ``FILES``.
+WAVE4-TODO (LINKS-режим): интеграция с
+``services.intake_mode.get_intake_mode()`` — если режим ``LINKS``,
+вместо приёма файлов запрашивать ссылку на папку участника (§33.6).
+На текущем этапе режим всегда ``FILES``; ссылочный UX в
+``user_files`` / ``user_confirm`` будет добавлен отдельным
+feature-коммитом (см. ``docs/testing.md`` → §6 п. 19).
 """
 import shutil
 import tempfile
@@ -500,7 +503,3 @@ def _guess_mime_type(extension: str) -> str:
 register_state_handler(
     UserIntake.user_intake_files_collect.value, _handle_files_collect
 )
-
-
-# WAVE3-TODO: добавить collector в app/handlers/__init__.py:get_all_collectors()
-# (см. подробный список порядка в handlers/user.py).

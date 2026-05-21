@@ -28,9 +28,6 @@ from services.access import jury_only
 from utils.bot_utils import reply_to_user
 from utils.contracts import JuryTaskDTO, PoolKey
 
-# WAVE3-TODO: подключить collector в `app/handlers/__init__.py` после
-# того, как ветка C полностью протестирована (порядок:
-# common → user → moderator → jury → admin).
 collector = HandlerCollector()
 
 

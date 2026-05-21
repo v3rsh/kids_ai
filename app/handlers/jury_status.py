@@ -18,7 +18,6 @@ from services import jury as jury_service
 from services.access import jury_only
 from utils.bot_utils import reply_to_user
 
-# WAVE3-TODO: подключить collector в `app/handlers/__init__.py`.
 collector = HandlerCollector()
 
 

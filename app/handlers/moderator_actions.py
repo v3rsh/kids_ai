@@ -29,7 +29,7 @@
 ``handlers.common.register_state_handler``. ``default_message_handler``
 не создаётся — диспетчер живёт в ``handlers.common``.
 
-WAVE3-TODO: подключить ``collector`` в
+``collector`` подключается в
 ``app/handlers/__init__.py → get_all_collectors()`` за
 ``handlers/moderator_queue.py``.
 """

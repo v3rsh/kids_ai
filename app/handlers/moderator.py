@@ -15,9 +15,9 @@
 ``handlers.common.default_handler`` через
 ``register_state_handler`` (см. ``moderator_actions.py``).
 
-WAVE3-TODO: подключить ``collector`` в
+``collector`` подключается в
 ``app/handlers/__init__.py → get_all_collectors()`` после
-``common_collector`` и (если уже есть) ``user_collector``.
+ветки A (``user*``) и перед остальными модераторскими подмодулями.
 """
 from __future__ import annotations
 

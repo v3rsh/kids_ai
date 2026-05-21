@@ -18,7 +18,7 @@ HUID), поэтому переключение между ``/queue`` и ``/brows
 + один COUNT, без N+1 (правило `performance.mdc`). Здесь хендлеры лишь
 сериализуют результат в текст и собирают клавиатуры.
 
-WAVE3-TODO: подключить ``collector`` в
+``collector`` подключается в
 ``app/handlers/__init__.py → get_all_collectors()`` сразу за
 ``handlers/moderator.py`` (порядок внутри ветки B значения не имеет —
 конфликтов команд нет).

@@ -39,8 +39,6 @@ from utils.bot_utils import (
 )
 from utils.contracts import PoolKey
 
-# WAVE3-TODO: подключить collector в `app/handlers/__init__.py` после
-# того, как ветка C полностью протестирована.
 collector = HandlerCollector()
 
 

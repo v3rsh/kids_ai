@@ -260,9 +260,9 @@ async def sync_pool_assignments_from_config(
     в docstring ``_parse_pools_config``.
 
     Возвращает количество созданных назначений (после очистки).
-    Вызывается из ``app/main.py`` (Wave 3, см. ``# WAVE3-TODO``) в
-    рамках lifespan-блока, после регистрации справочника
-    ``JuryMember``.
+    Вызывается из ``app/main.py`` lifespan после
+    ``sync_role_directories_from_config`` (нужны заполненные
+    ``jury_members``, чтобы FK не падал).
 
     Безопасность: транзакция оборачивает delete+bulk insert одним
     блоком, чтобы при ошибке парсинга/вставки не остаться с

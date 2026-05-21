@@ -12,9 +12,8 @@
 - ``/admin_state`` — диагностический дамп текущих настроек (intake_mode,
   disk %, последние alert'ы).
 
-ВАЖНО: коллектор регистрируется в ``app/handlers/__init__.py`` барьер-
-агентом Wave 3 (см. WAVE3-TODO ниже). Сам файл — самостоятельный модуль
-со своим ``HandlerCollector``.
+Коллектор регистрируется в ``app/handlers/__init__.py`` — последним
+в списке ``get_all_collectors()``, после ветки C (жюри).
 
 Правила (`.cursor/rules/bot.mdc`, `message-navigation.mdc`):
 - все хендлеры обёрнуты ``@admin_only``;
@@ -23,9 +22,6 @@
 - ``wait_callback=False`` всегда;
 - никаких ``bubbles=None`` — либо передаём ``BubbleMarkup``, либо не
   передаём параметр вовсе.
-
-# WAVE3-TODO: подключить `admin_collector` в `app/handlers/__init__.py`
-# (последним в списке `get_all_collectors()` — см. барьер-агента Wave 3).
 """
 from __future__ import annotations
 
