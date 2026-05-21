@@ -1,0 +1,167 @@
+networks:
+  app_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  pgdata:
+  redisdata:
+
+services:
+  # ===== PostgreSQL (только для тестирования, профиль test) =====
+  postgres:
+    image: postgres:15-alpine
+    profiles: ["test"]
+    container_name: kids_ai_db
+    restart: always
+    networks:
+      app_network:
+        ipv4_address: 172.20.0.3
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=${DB_NAME:-kids_ai}
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: ${PG_MEM_LIMIT:-1G}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===== Redis (FSM storage) =====
+  redis:
+    image: redis:7-alpine
+    container_name: kids_ai_redis
+    restart: always
+    networks:
+      app_network:
+        ipv4_address: 172.20.0.4
+    volumes:
+      - redisdata:/data
+    command: redis-server --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-256mb} --maxmemory-policy volatile-lru
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_MEM_LIMIT:-512M}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===== Бот =====
+  bot:
+    image: kids_ai_bot:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kids_ai_bot
+    restart: always
+    networks:
+      app_network:
+        ipv4_address: 172.20.0.2
+    ports:
+      - "${SERVER_PORT:-8000}:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./backup:/app/backup
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - TZ=Europe/Moscow
+      # Bot settings
+      - BOT_ID=${BOT_ID}
+      - CTS_URL=${CTS_URL}
+      - BOT_SECRET_KEY=${BOT_SECRET_KEY}
+      - ADMIN_HUID=${ADMIN_HUID}
+      # Server settings
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8000
+      # Database settings
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      # Redis FSM storage
+      - REDIS_URL=${REDIS_URL:-redis://172.20.0.4:6379/0}
+      - FSM_TTL_DAYS=${FSM_TTL_DAYS:-30}
+      # Scheduler / workers
+      - ENABLE_SCHEDULER=${ENABLE_SCHEDULER:-true}
+      - UVICORN_WORKERS=${UVICORN_WORKERS:-1}
+    deploy:
+      resources:
+        limits:
+          memory: ${BOT_MEM_LIMIT:-2G}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+        required: false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ===== Scheduler (отдельный процесс для periodic jobs) =====
+  # Раскомментировать при появлении periodic задач и переходе на multi-worker деплой:
+  # 1. Создать app/scheduler.py и app/scheduler_worker.py
+  # 2. Установить ENABLE_SCHEDULER=false для bot
+  # 3. Установить UVICORN_WORKERS=2+ для bot
+  # 4. Раскомментировать этот сервис
+  #
+  # scheduler:
+  #   image: kids_ai_bot:latest
+  #   container_name: kids_ai_scheduler
+  #   restart: always
+  #   networks:
+  #     app_network:
+  #       ipv4_address: 172.20.0.5
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - ./data:/app/data
+  #     - ./logs:/app/logs
+  #     - ./backup:/app/backup
+  #     - /etc/localtime:/etc/localtime:ro
+  #   environment:
+  #     - TZ=Europe/Moscow
+  #     - BOT_ID=${BOT_ID}
+  #     - CTS_URL=${CTS_URL}
+  #     - BOT_SECRET_KEY=${BOT_SECRET_KEY}
+  #     - ADMIN_HUID=${ADMIN_HUID}
+  #     - DB_HOST=${DB_HOST}
+  #     - DB_PORT=${DB_PORT}
+  #     - DB_NAME=${DB_NAME}
+  #     - DB_USER=${DB_USER}
+  #     - DB_PASSWORD=${DB_PASSWORD}
+  #     - REDIS_URL=${REDIS_URL:-redis://172.20.0.4:6379/0}
+  #     - FSM_TTL_DAYS=${FSM_TTL_DAYS:-30}
+  #   command: ["python", "scheduler_worker.py"]
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 512M
+  #     replicas: 1
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #     postgres:
+  #       condition: service_healthy
+  #       required: false

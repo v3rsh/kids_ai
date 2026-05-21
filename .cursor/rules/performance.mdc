@@ -1,0 +1,127 @@
+---
+description: Database query performance patterns and session management
+globs: "app/**/*.py"
+alwaysApply: false
+---
+# Performance: Database & Session Patterns
+
+## CRITICAL: No queries inside loops (N+1)
+
+Главная причина деградации производительности — SELECT внутри `for` / `while`.
+
+### Batch-загрузка через IN(...)
+
+```python
+# ❌ BAD: N запросов (по одному на каждого пользователя)
+for user in users:
+    result = await session.execute(
+        select(Item).where(Item.user_id == user.huid)
+    )
+    items = result.scalars().all()
+
+# ✅ GOOD: 1 запрос
+user_ids = [u.huid for u in users]
+result = await session.execute(
+    select(Item.user_id, Item.title).where(Item.user_id.in_(user_ids))
+)
+rows = result.all()
+# Группировка в памяти
+```
+
+### Агрегация через GROUP BY
+
+```python
+# ❌ BAD: подсчёт в цикле — запрос на каждого кандидата
+for user in candidates:
+    result = await session.execute(
+        select(func.count()).where(Item.user_id == user.huid)
+    )
+
+# ✅ GOOD: один агрегирующий запрос
+result = await session.execute(
+    select(Item.user_id, func.count().label("cnt"))
+    .where(Item.created_at >= week_ago)
+    .group_by(Item.user_id)
+)
+counts = {row[0]: row[1] for row in result}
+# Фильтрация в памяти по counts dict
+```
+
+### Предзагрузка справочников
+
+```python
+# ❌ BAD: session.get() по одному ID в цикле
+for ref_id in needed_ids:
+    ref = await session.get(Reference, ref_id)
+
+# ✅ GOOD: один запрос, dict для lookup
+result = await session.execute(select(Reference))
+all_refs = {r.id: r for r in result.scalars().all()}
+# Далее: all_refs[ref_id]
+
+# ✅ GOOD (если нужны конкретные ID):
+result = await session.execute(
+    select(Reference).where(Reference.id.in_(needed_ids))
+)
+```
+
+## Session Management
+
+### Одна сессия на запрос
+
+```python
+# ❌ BAD: middleware открывает свою сессию + обработчик открывает свою
+async def my_middleware(message, bot, call_next):
+    async with get_session()() as session:  # Сессия 1
+        await session.execute(...)
+    await call_next(message, bot)
+
+async def handler(message, bot):
+    async with get_session()() as session:  # Сессия 2
+        await session.execute(...)
+
+# ✅ GOOD: вся работа с БД в одной сессии внутри обработчика
+async def handler(message, bot):
+    async with get_session()() as session:
+        # Все операции с БД здесь
+        ...
+```
+
+### Не открывать DB-сессии в middleware
+
+Middleware (`fsm/middleware.py`) работает с FSM storage (Redis/SQLite), но **НЕ** должен обращаться к PostgreSQL. Работа с пользовательскими данными — внутри хендлеров.
+
+## Batch Commit в periodic jobs
+
+### Массовые операции — один commit
+
+```python
+# ❌ BAD: commit на каждую итерацию
+for item in items:
+    obj = await create_object(session, ...)  # commit внутри
+    session.add(analytics_event)
+    await session.commit()
+
+# ✅ GOOD: flush в цикле + один commit в конце
+for item in items:
+    obj = await create_object(session, ..., auto_commit=False)  # flush
+    session.add(analytics_event)
+await session.commit()  # Один commit для всего
+```
+
+### auto_commit parameter
+
+Паттерн `auto_commit=True/False` для сервисных функций:
+
+- `create_*(auto_commit=True)` — единичные вызовы; `False` — batch внутри другой функции
+- При добавлении `auto_commit=False` caller **обязан** вызвать `session.commit()` после завершения всех операций.
+
+## Scheduler Jobs: чеклист производительности
+
+При написании periodic jobs:
+
+1. Загружать все нужные данные **перед** циклом (справочники, история)
+2. Использовать `auto_commit=False` для batch-создания записей
+3. Один `session.commit()` после цикла
+4. CPU-bound вычисления выносить в `run_in_executor()`
+5. Логировать количество операций (`processed=`, `sent=`)

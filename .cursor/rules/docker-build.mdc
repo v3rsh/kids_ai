@@ -1,0 +1,38 @@
+---
+description: Docker build rules for cross-platform deployment
+globs: "{Dockerfile,docker-compose.yml,build.sh,start.sh}"
+alwaysApply: false
+---
+
+# Docker Build: кросс-платформенная сборка
+
+## Целевая платформа — linux/amd64
+
+Разработка ведётся на macOS ARM (Apple Silicon), а целевой сервер — **linux/amd64**.
+Все образы для деплоя ДОЛЖНЫ собираться с `--platform linux/amd64`.
+
+```bash
+# ✅ GOOD — сборка для сервера
+docker build --platform linux/amd64 -t image_name .
+docker pull --platform linux/amd64 postgres:15-alpine
+
+# ❌ BAD — соберёт под arm64, не запустится на сервере
+docker build -t image_name .
+docker compose build bot
+```
+
+## start.sh: всегда пересобирать
+
+При запуске через `docker compose up` всегда добавлять `--build`, чтобы изменения в коде попадали в образ:
+
+```bash
+# ✅ GOOD
+docker compose --profile test up -d --build
+
+# ❌ BAD — использует закешированный образ
+docker compose --profile test up -d
+```
+
+## Базовый образ Debian Trixie
+
+`python:3.10-slim` базируется на Debian Trixie. Пакет `ntpdate` удалён, использовать `ntpsec-ntpdate`.

@@ -1,0 +1,160 @@
+---
+description: Coding standards for eXpress bot development with pybotx
+globs: "**/*.py"
+alwaysApply: false
+---
+# eXpress Bot Development (pybotx)
+
+> Архитектура проекта, точка входа, модель данных: `docs/architecture.md`
+
+## Handler Types (типы регистрации хендлеров)
+
+```python
+# Обычная команда (видна в CTS-меню)
+@collector.command("/cmd", description="Описание")
+async def handler(message: IncomingMessage, bot: Bot) -> None:
+    await bot.answer_message("Response", wait_callback=False)
+
+# Скрытая команда (вызывается только с кнопок, не видна в меню)
+@collector.command("/cmd", description="Описание", visible=False)
+async def hidden_handler(message: IncomingMessage, bot: Bot) -> None:
+    ...
+
+# Обработчик свободного текста (один на всё приложение!)
+@collector.default_message_handler(middlewares=[fsm_middleware])
+async def default_handler(message: IncomingMessage, bot: Bot) -> None:
+    ...
+
+# ❌ НЕ СУЩЕСТВУЕТ — нет такого декоратора:
+# @collector.default(command="/cmd")
+```
+
+## Keyboards
+
+```python
+# Bubbles (under message)
+bubbles = BubbleMarkup()
+bubbles.add_button(command="/action", label="Click", data={"key": "value"})
+
+# Keyboard (input area)
+keyboard = KeyboardMarkup()
+keyboard.add_button(command="/action", label="Button")
+```
+
+## State via Middleware
+
+```python
+async def state_middleware(
+    message: IncomingMessage,
+    bot: Bot,
+    call_next: IncomingMessageHandlerFunc,
+) -> None:
+    message.state.custom_data = "value"
+    await call_next(message, bot)
+```
+
+## FSM Conventions
+
+Класс состояний на каждую ветку сценария (наследование `str, Enum`):
+
+```python
+class UserReg(str, Enum):
+    """Регистрация пользователя"""
+    user_reg_privacy = "user:reg:privacy"
+    user_reg_name = "user:reg:name"
+    user_reg_city = "user:reg:city"
+
+class UserProfile(str, Enum):
+    """Редактирование профиля"""
+    user_profile_field = "user:profile:field"
+    user_profile_name = "user:profile:name"
+```
+
+**Именование:**
+- Атрибуты: `{раздел}_{подраздел}_{состояние}` — `user_reg_name`, `admin_city_rename`
+- Значения: `"{раздел}:{подраздел}:{состояние}"` — `"user:reg:name"`
+- Классы: один класс = одна ветка сценария
+
+**Правила:**
+- Обязательная очистка состояния после завершения flow: `await fsm.clear()`
+- Обработка блокирующих состояний с временными ограничениями (TTL через `FSM_TTL_DAYS`)
+- Все состояния определяются в `app/states.py`
+- Deprecated-состояния удаляются, не оставлять мёртвый код
+
+### FSM API в хендлерах
+
+```python
+# Внутри хендлера с middlewares=[fsm_middleware]:
+fsm = message.state.fsm
+
+await fsm.set_state(UserReg.user_reg_name)
+await fsm.set_data({"key": "value"})
+data = await fsm.get_data()
+current = message.state.current_state  # str или None
+await fsm.clear()
+
+# ❌ НЕПРАВИЛЬНО — у bot нет атрибута state.fsm:
+# await bot.state.fsm.set_state(...)
+```
+
+## Message Sending Best Practices
+
+### CRITICAL: Always use wait_callback=False
+
+**Проблема**: По умолчанию `pybotx` ждёт 60 секунд callback от CTS. Если callback не приходит, возникает `CallbackNotReceivedError`, хендлер падает.
+
+```python
+# ✅ ПРАВИЛЬНО
+await bot.answer_message("Text", wait_callback=False)
+await bot.send_message(bot_id=..., chat_id=..., body="Text", wait_callback=False)
+
+# ❌ НЕПРАВИЛЬНО (блокирует хендлер на 60 секунд)
+await bot.answer_message("Text")
+```
+
+### CRITICAL: Never pass bubbles=None to edit_message
+
+**Проблема**: CTS API отвергает `edit_event` с `bubble: null` (400 Bad Request).
+
+```python
+# ✅ ПРАВИЛЬНО
+kwargs = {"bot_id": bot_id, "sync_id": sync_id, "body": body}
+if bubbles is not None:
+    kwargs["bubbles"] = bubbles
+await bot.edit_message(**kwargs)
+
+# ❌ НЕПРАВИЛЬНО
+await bot.edit_message(bot_id=bot_id, sync_id=sync_id, body=body, bubbles=None)
+```
+
+### Use reply_to_user helper
+
+```python
+from utils.bot_utils import reply_to_user
+
+# Автоматически выбирает edit_message или answer_message
+await reply_to_user(message, bot, "Response", bubbles=bubbles)
+```
+
+### Wrap direct edit_message calls in try-except
+
+```python
+if message.source_sync_id:
+    try:
+        await bot.edit_message(
+            bot_id=message.bot.id,
+            sync_id=message.source_sync_id,
+            body="Updated text",
+            bubbles=bubbles
+        )
+    except Exception:
+        logger.warning("edit_message failed")
+```
+
+### System Events
+
+```python
+@collector.chat_created
+async def on_chat_created(event: ChatCreatedEvent, bot: Bot) -> None:
+    ...
+```

@@ -1,0 +1,118 @@
+---
+description: "Single-message navigation: edit-in-place + transient cleanup"
+alwaysApply: true
+---
+# Навигация в одном сообщении (Single-Message Navigation)
+
+> Подробное описание системы навигации, типов сообщений и механизмов: `docs/architecture.md` → «Навигация в одном сообщении»
+
+## Принцип
+
+- **Каждый клик по кнопке НЕ создаёт нового сообщения** — меню редактируется на месте
+- **Transient-сообщения** (фото, ошибки, уведомления) **удаляются автоматически** при следующей навигации
+- **История чата не копится** — пользователь видит только актуальное сообщение
+
+## Обязательные паттерны
+
+### 1. Меню и навигация — `reply_to_user()`
+
+```python
+# ✅ ПРАВИЛЬНО: меню редактируется на месте
+await reply_to_user(message, bot, "Главное меню", bubbles=menu_bubbles)
+```
+
+### 2. Фото с кнопками — `send_photo_transient()`
+
+```python
+# ✅ ПРАВИЛЬНО: фото трекается для удаления
+await send_photo_transient(
+    message, bot,
+    body=profile_text,
+    photo=photo,
+    bubbles=bubbles,
+)
+```
+
+### 3. Информационные сообщения — `safe_answer_transient()`
+
+```python
+# ✅ ПРАВИЛЬНО: сообщение трекается для удаления
+await safe_answer_transient(
+    message, bot,
+    "✅ Действие выполнено!",
+)
+```
+
+## Запрещённые паттерны
+
+### НЕ использовать `bot.answer_message()` без трекинга в обработчиках кнопок
+
+```python
+# ❌ НЕПРАВИЛЬНО: сообщение не трекается, засорит чат
+await bot.answer_message("Информация", wait_callback=False)
+```
+
+### НЕ отправлять новое сообщение вместо редактирования
+
+```python
+# ❌ НЕПРАВИЛЬНО: при клике по кнопке нужно редактировать
+if message.source_sync_id:
+    await bot.answer_message(...)  # Должен быть edit_message!
+```
+
+### НЕ вызывать cleanup_photo_message() вручную
+
+```python
+# ❌ УСТАРЕЛО: cleanup_middleware делает это автоматически
+await cleanup_photo_message(message, bot)  # НЕ НУЖНО
+```
+
+## Middleware
+
+На всех коллекторах с навигацией должен быть `cleanup_middleware`:
+
+```python
+from fsm import fsm_middleware, cleanup_middleware
+
+@collector.command(
+    "/my_command", 
+    middlewares=[fsm_middleware, cleanup_middleware]  # Порядок важен!
+)
+async def cmd_my_command(message: IncomingMessage, bot: Bot) -> None:
+    ...
+```
+
+## Исключения
+
+### Поэтапная регистрация / линейные сценарии
+Если сценарий идёт строго через FSM без навигации кнопками (например, поэтапный ввод данных), cleanup можно не подключать — пользователь не возвращается к предыдущим меню.
+
+### Проактивные сообщения
+В планировщиках/фоновых задачах используется `bot.send_message()` для уведомлений — они не трекаются, т.к. отправляются вне контекста навигации.
+
+### chat_created
+В `on_chat_created` используется `bot.send_message()` — это первое сообщение, очищать нечего.
+
+### Кнопки на проактивных уведомлениях
+
+Сами уведомления отправляются через `bot.send_message()` (вне контекста навигации) — они НЕ трекаются и НЕ удаляются.
+
+Но хендлеры кнопок на уведомлениях ДОЛЖНЫ:
+- Использовать `cleanup_middleware` в middlewares
+- Использовать `reply_to_user()` для ответа — это отредактирует уведомление на месте
+- НЕ использовать `bot.answer_message()` напрямую
+
+### Замена menu-сообщения на фото
+
+Фото нельзя отправить через `edit_message`. Если нужно заменить menu-сообщение на фото:
+1. Удалить исходное сообщение через `delete_source_message()`
+2. Отправить фото через `send_photo_transient()`
+
+### Замена фото-сообщения на текст
+
+Вложение (фото) нельзя убрать через `edit_message` — оно остаётся видимым.
+`edit_message` на удалённом сообщении НЕ бросает исключение (CTS принимает молча) — fallback в `reply_to_user()` НЕ сработает.
+
+Механизм: `cleanup_middleware` удаляет transient source и ставит флаг `message.state.transient_source_deleted = True`. `reply_to_user()` проверяет флаг и пропускает edit, сразу отправляя новое сообщение через `answer_message`.
+
+Ручных действий в хендлере не требуется — достаточно вызвать `reply_to_user()` как обычно.

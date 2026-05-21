@@ -1,0 +1,65 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE / Editor files
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+
+# Данные и логи (управляются через Docker Volumes)
+data/
+logs/
+backup/
+
+# Документация и тесты не нужны в контейнере
+docs/
+tests/
+
+# Security-сканы в корне (не нужны в образе)
+/scripts/
+
+# Системные файлы macOS
+.DS_Store
+
+# Docker-файлы (не нужны внутри образа)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Скрипты сборки/деплоя
+build.sh
+start.sh
+DEPLOY.md
+README.md
+
+# Файлы анализа безопасности
+security_reports/
+bandit-report*
+security_report_*
+.bandit
+.bandit.yaml

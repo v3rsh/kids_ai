@@ -1,0 +1,41 @@
+---
+description: Project file structure and security rules
+alwaysApply: true
+---
+# Infrastructure Rules
+
+> Подробная документация по инфраструктуре, деплою и Docker: `docs/deployment.md`
+
+## File Structure
+
+```
+├── docker-compose.yml  # Orchestration
+├── Dockerfile          # Image build
+├── .env-example        # Environment template
+├── build.sh            # Build & export script
+├── start.sh            # Startup helper
+├── DEPLOY.md           # Server installation guide
+├── requirements.txt    # Python dependencies
+├── docs/               # Documentation
+├── scripts/            # Utility scripts
+├── tests/              # Tests
+└── app/                # All Python source code
+    ├── main.py              # Entry point (Starlette + pybotx)
+    ├── config.py            # Configuration
+    ├── keyboards.py         # UI elements
+    ├── states.py            # FSM states
+    ├── routes.py            # HTTP endpoints
+    ├── logging_config.py    # Loguru setup
+    ├── handlers/            # Bot command handlers
+    ├── services/            # Business logic (CRUD, domain operations)
+    ├── database/            # Models, DB init, auto-migrations (migrations.py)
+    ├── fsm/                 # FSM middleware & storage (Redis primary, SQLite fallback)
+    └── utils/               # Helper functions
+```
+
+## Security
+
+- NEVER commit `.env` files
+- Use `.env-example` as template
+- Store secrets in environment variables only
+- Build images only on trusted machines with internet
