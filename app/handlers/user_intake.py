@@ -58,7 +58,7 @@ _MAX_TITLE_LEN = 200
 _MIN_DESCRIPTION_LEN = 10
 _MAX_DESCRIPTION_LEN = 2000
 
-_AGE_MIN = 4
+_AGE_MIN = 0
 _AGE_MAX = 18
 
 _PROMPT_PARENT_NAME = (
@@ -73,7 +73,7 @@ _PROMPT_CHILD_NAME = (
     "Шаг 3 из 7. Как зовут ребёнка? Достаточно имени (например, «Маша»)."
 )
 _PROMPT_CHILD_AGE = (
-    "Шаг 4 из 7. Сколько ребёнку полных лет? Введите число от 4 до 18."
+    "Шаг 4 из 7. Сколько ребёнку полных лет? Введите число от 0 до 18."
 )
 _PROMPT_TRACK = (
     "Шаг 5 из 7. Выберите конкурсный трек одной из кнопок ниже:\n\n"
@@ -188,7 +188,7 @@ async def _handle_child_name(message: IncomingMessage, bot: Bot) -> None:
 
 
 async def _handle_child_age(message: IncomingMessage, bot: Bot) -> None:
-    """§11.2, §9 — возраст ребёнка, число 4..18.
+    """§11.2, §9 — возраст ребёнка, число 0..18.
 
     На некорректный ввод — транзиентное сообщение об ошибке, состояние
     не меняется (см. требования ветки A пункт 4).
@@ -200,7 +200,7 @@ async def _handle_child_age(message: IncomingMessage, bot: Bot) -> None:
         await safe_answer_transient(
             message,
             bot,
-            "Возраст должен быть целым числом от 4 до 18. Попробуйте ещё раз.",
+            "Возраст должен быть целым числом от 0 до 18. Попробуйте ещё раз.",
         )
         return
 
