@@ -65,3 +65,47 @@ DEBUG = os.getenv("DEBUG", "False").lower() == "true"
 # Для multi-worker деплоя scheduler выносится в отдельный контейнер (ENABLE_SCHEDULER=false у web).
 ENABLE_SCHEDULER = os.getenv("ENABLE_SCHEDULER", "false").lower() == "true"
 UVICORN_WORKERS = max(1, int(os.getenv("UVICORN_WORKERS", "1")))
+
+# ===== Безопасные рисунки =====
+# Конвенция env-переменных проекта — UPPER_SNAKE_CASE без общего префикса
+# (см. ADMIN_HUID, REDIS_URL и т.п.). Все имена ниже подчиняются ей.
+
+# Списки HUID модераторов и членов жюри (через запятую), §5.2, §5.4, §27.2.
+_moderator_huids_env = os.getenv("MODERATOR_HUIDS", "")
+MODERATOR_HUIDS: list[str] = [
+    h.strip() for h in _moderator_huids_env.split(",") if h.strip()
+]
+_jury_huids_env = os.getenv("JURY_HUIDS", "")
+JURY_HUIDS: list[str] = [h.strip() for h in _jury_huids_env.split(",") if h.strip()]
+
+# UUID группового чата «Безопасные рисунки — модерация» (§19).
+MODERATION_CHAT_ID: str | None = os.getenv("MODERATION_CHAT_ID") or None
+
+# Локальное хранилище файлов конкурса (§21, §33.1).
+# В контейнере — именованный том attachments_volume (см. docker-compose.yml).
+ATTACHMENTS_DIR = Path(
+    os.getenv("ATTACHMENTS_DIR", str(DATA_DIR / "attachments"))
+)
+ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Лимит размера одного файла (§11.4, §16) и пороги мониторинга диска (§28.1).
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
+DISK_WARN_PCT = int(os.getenv("DISK_WARN_PCT", "80"))
+DISK_BLOCK_PCT = int(os.getenv("DISK_BLOCK_PCT", "95"))
+
+# Режим приёма заявок по умолчанию (§33.6): "files" | "links".
+INTAKE_MODE_DEFAULT = os.getenv("INTAKE_MODE_DEFAULT", "files")
+
+# Параметры жюри (§35).
+# TOP_N — размер шорт-листа на пул (по умолчанию 10, §35.1).
+# JURY_ROUNDS — максимальное число раундов до автоматического жребия (§35.2).
+# JURY_ROUND_DEADLINE_HOURS — дедлайн одного раунда (§35.6, по умолчанию 48 ч).
+# JURY_POOLS_CONFIG — JSON-конфиг распределения судей по пулам;
+#   пустая строка = все судьи во всех 12 пулах (поведение по умолчанию).
+TOP_N = int(os.getenv("TOP_N", "10"))
+JURY_ROUNDS = int(os.getenv("JURY_ROUNDS", "3"))
+JURY_ROUND_DEADLINE_HOURS = int(os.getenv("JURY_ROUND_DEADLINE_HOURS", "48"))
+JURY_POOLS_CONFIG = os.getenv("JURY_POOLS_CONFIG", "")
+
+# Год проведения конкурса — используется в формировании BR-ID (§20).
+COMPETITION_YEAR = int(os.getenv("COMPETITION_YEAR", "2026"))
