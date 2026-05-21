@@ -64,29 +64,26 @@ class AgeCategory(enum.Enum):
     ребёнка (§11.2, §11.3) — ручного выбора нет (Wave 0, §8).
     """
 
-    AGE_4_6 = "4–6"
-    AGE_7_10 = "7–10"
-    AGE_11_13 = "11–13"
-    AGE_14_18 = "14–18"
+    AGE_0_6 = "0–6"
+    AGE_7_12 = "7–12"
+    AGE_13_18 = "13–18"
 
     @classmethod
     def from_age(cls, age: int) -> "AgeCategory":
         """Возвращает категорию по возрасту в полных годах (§9, §11.2).
 
-        Возраст вне допустимого диапазона (4–18) → ``ValueError``.
-        Граничные значения 6/10/13 относятся к младшей категории.
+        Возраст вне допустимого диапазона (0–18) → ``ValueError``.
+        Граничные значения 6/12 относятся к младшей категории.
         """
-        if not isinstance(age, int) or age < 4 or age > 18:
+        if not isinstance(age, int) or age < 0 or age > 18:
             raise ValueError(
-                f"Недопустимый возраст: {age}. Допустим диапазон 4–18 лет (§9)."
+                f"Недопустимый возраст: {age}. Допустим диапазон 0–18 лет (§9, §11.2)."
             )
         if age <= 6:
-            return cls.AGE_4_6
-        if age <= 10:
-            return cls.AGE_7_10
-        if age <= 13:
-            return cls.AGE_11_13
-        return cls.AGE_14_18
+            return cls.AGE_0_6
+        if age <= 12:
+            return cls.AGE_7_12
+        return cls.AGE_13_18
 
 
 class IntakeMode(enum.Enum):
