@@ -25,9 +25,11 @@ from sqlalchemy import (
     DateTime,
     Enum as SAEnum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -402,3 +404,151 @@ class JuryMember(Base):
 
     def __repr__(self) -> str:
         return f"<JuryMember huid={self.huid} active={self.is_active}>"
+
+
+class JuryPoolAssignment(Base):
+    """Назначение члена жюри на пул (§35.6).
+
+    По умолчанию все судьи во всех 12 пулах; конфиг ``JURY_POOLS_CONFIG``
+    позволяет сузить состав по конкретному пулу. Уникальность пары
+    (huid, track, age_category) гарантирует, что один судья не будет
+    назначен на пул дважды.
+    """
+
+    __tablename__ = "jury_pool_assignments"
+    __table_args__ = (
+        UniqueConstraint(
+            "jury_huid",
+            "track",
+            "age_category",
+            name="uq_jury_pool_assignment_huid_pool",
+        ),
+        Index(
+            "ix_jury_pool_assignments_pool",
+            "track",
+            "age_category",
+        ),
+    )
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    jury_huid: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("jury_members.huid", ondelete="CASCADE"),
+        nullable=False,
+    )
+    track: Mapped[Track] = mapped_column(
+        SAEnum(Track, name="track"), nullable=False
+    )
+    age_category: Mapped[AgeCategory] = mapped_column(
+        SAEnum(AgeCategory, name="age_category"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+
+
+class JuryRound(Base):
+    """Раунд голосования по пулу (§35.2, §35.4, §35.6).
+
+    Один раунд = одна пара (пул, номер раунда 1..3). Дедлайн —
+    ``JURY_ROUND_DEADLINE_HOURS`` (по умолчанию 48 ч). Статус
+    ``DRAWN_BY_LOT`` ставится, если на текущем раунде сработал
+    автоматический жребий (§35.2).
+    """
+
+    __tablename__ = "jury_rounds"
+    __table_args__ = (
+        UniqueConstraint(
+            "track",
+            "age_category",
+            "round_no",
+            name="uq_jury_rounds_pool_round",
+        ),
+    )
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    track: Mapped[Track] = mapped_column(
+        SAEnum(Track, name="track"), nullable=False
+    )
+    age_category: Mapped[AgeCategory] = mapped_column(
+        SAEnum(AgeCategory, name="age_category"), nullable=False
+    )
+    round_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[JuryRoundStatus] = mapped_column(
+        SAEnum(JuryRoundStatus, name="jury_round_status"),
+        nullable=False,
+        default=JuryRoundStatus.OPEN,
+    )
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+    deadline_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    def __repr__(self) -> str:
+        return (
+            f"<JuryRound {self.track.name}/{self.age_category.name}"
+            f" r{self.round_no} {self.status.name}>"
+        )
+
+
+class JuryVote(Base):
+    """Голос судьи по заявке в рамках раунда (§35.3, §35.4).
+
+    Хранится в БД и переживает рестарт бота. Уникальность
+    (round, application, jury) исключает дубли. До нажатия
+    «Отправить оценки» — ``DRAFT``, не учитывается в подсчёте;
+    после — ``SUBMITTED`` с проставленным ``submitted_at``.
+    """
+
+    __tablename__ = "jury_votes"
+    __table_args__ = (
+        UniqueConstraint(
+            "round_id",
+            "application_id",
+            "jury_huid",
+            name="uq_jury_votes_round_app_jury",
+        ),
+        Index("ix_jury_votes_round_jury", "round_id", "jury_huid"),
+    )
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    round_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("jury_rounds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    application_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("applications.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    jury_huid: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("jury_members.huid", ondelete="CASCADE"),
+        nullable=False,
+    )
+    vote: Mapped[JuryVoteValue] = mapped_column(
+        SAEnum(JuryVoteValue, name="jury_vote_value"), nullable=False
+    )
+    state: Mapped[JuryVoteState] = mapped_column(
+        SAEnum(JuryVoteState, name="jury_vote_state"),
+        nullable=False,
+        default=JuryVoteState.DRAFT,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    def __repr__(self) -> str:
+        return (
+            f"<JuryVote round={self.round_id} app={self.application_id}"
+            f" vote={self.vote.name} state={self.state.name}>"
+        )
