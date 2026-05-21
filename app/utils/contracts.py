@@ -67,7 +67,7 @@ class PoolKey:
     age_category: "AgeCategory"
 
     def as_label(self) -> str:
-        """Человекочитаемое имя пула: ``Традиционное рисование / 7–10``."""
+        """Человекочитаемое имя пула: ``Традиционное рисование / 7–12``."""
         return f"{self.track.value} / {self.age_category.value}"
 
 
