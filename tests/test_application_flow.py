@@ -18,16 +18,20 @@ PostgreSQL. Полная интеграция с advisory_lock'ом провер
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from services.applications import (
+    ApplicationFileSpec,
     _select_next_br_number,
     find_possible_duplicate,
     normalize_child_name,
+    register_application_files,
 )
-from database.models import AgeCategory, IntakeMode
+from database.models import AgeCategory, FileKind, IntakeMode
+from services.storage import _format_files_block
 
 
 class TestNormalizeChildName:
@@ -135,3 +139,127 @@ class TestIntakeModeValidation:
     def test_unknown_mode_raises(self):
         with pytest.raises(ValueError):
             IntakeMode("ftp")
+
+
+class TestFormatFilesBlock:
+    """``_format_files_block`` — блок «Исходные имена файлов» в meta.txt."""
+
+    def test_empty_list(self):
+        assert _format_files_block([]) == "Исходные имена файлов: (нет)"
+
+    def test_single_original(self):
+        f = SimpleNamespace(
+            kind=FileKind.ORIGINAL,
+            original_filename="моя_работа.jpg",
+            stored_filename="BR-2026-0001_original.jpg",
+        )
+        block = _format_files_block([f])
+        assert block.startswith("Исходные имена файлов:")
+        assert "моя_работа.jpg → BR-2026-0001_original.jpg" in block
+
+    def test_sort_order_original_then_angle(self):
+        original = SimpleNamespace(
+            kind=FileKind.ORIGINAL,
+            original_filename="o.jpg",
+            stored_filename="BR-2026-0001_original.jpg",
+        )
+        angle1 = SimpleNamespace(
+            kind=FileKind.ANGLE,
+            original_filename="a1.jpg",
+            stored_filename="BR-2026-0001_angle-1.jpg",
+        )
+        block = _format_files_block([angle1, original])
+        original_pos = block.index("BR-2026-0001_original.jpg")
+        angle_pos = block.index("BR-2026-0001_angle-1.jpg")
+        assert original_pos < angle_pos
+
+
+class TestRegisterApplicationFiles:
+    """``register_application_files`` — INSERT файлов + reload с selectinload."""
+
+    async def test_missing_br_id_raises(self):
+        """Отсутствие заявки в БД → ValueError."""
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = None
+        session.execute = AsyncMock(return_value=result)
+
+        session_factory = MagicMock(return_value=session)
+        get_session_fn = MagicMock(return_value=session_factory)
+
+        with patch("services.applications.get_session", get_session_fn):
+            with pytest.raises(ValueError):
+                await register_application_files(br_id="BR-2026-9999", files=[])
+
+    async def test_inserts_specs_and_commits(self):
+        """Файлы добавляются через ``session.add_all`` + ровно один commit."""
+        app = SimpleNamespace(id=uuid.uuid4(), br_id="BR-2026-0001", files=[])
+
+        first_result = MagicMock()
+        first_result.scalar_one_or_none.return_value = app
+        reload_result = MagicMock()
+        reload_result.scalar_one.return_value = app
+
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.execute = AsyncMock(side_effect=[first_result, reload_result])
+        session.add_all = MagicMock()
+        session.commit = AsyncMock()
+        session.expunge = MagicMock()
+
+        session_factory = MagicMock(return_value=session)
+        get_session_fn = MagicMock(return_value=session_factory)
+
+        spec = ApplicationFileSpec(
+            kind=FileKind.ORIGINAL,
+            angle_no=None,
+            original_filename="моя_работа.jpg",
+            stored_filename="BR-2026-0001_original.jpg",
+            relative_path="Безопасные рисунки/2026-05-24/.../BR-2026-0001_original.jpg",
+            size_bytes=12345,
+            mime_type="image/jpeg",
+        )
+
+        with patch("services.applications.get_session", get_session_fn):
+            result = await register_application_files(
+                br_id="BR-2026-0001", files=[spec]
+            )
+
+        assert result is app
+        session.add_all.assert_called_once()
+        session.commit.assert_awaited_once()
+        # Два SELECT'а: исходный и reload с selectinload.
+        assert session.execute.await_count == 2
+
+    async def test_empty_files_no_commit_but_reload(self):
+        """Пустой список (например, LINKS) → INSERT нет, но reload есть."""
+        app = SimpleNamespace(id=uuid.uuid4(), br_id="BR-2026-0001", files=[])
+
+        first_result = MagicMock()
+        first_result.scalar_one_or_none.return_value = app
+        reload_result = MagicMock()
+        reload_result.scalar_one.return_value = app
+
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.execute = AsyncMock(side_effect=[first_result, reload_result])
+        session.add_all = MagicMock()
+        session.commit = AsyncMock()
+        session.expunge = MagicMock()
+
+        session_factory = MagicMock(return_value=session)
+        get_session_fn = MagicMock(return_value=session_factory)
+
+        with patch("services.applications.get_session", get_session_fn):
+            result = await register_application_files(
+                br_id="BR-2026-0001", files=[]
+            )
+
+        assert result is app
+        session.add_all.assert_not_called()
+        session.commit.assert_not_awaited()
+        assert session.execute.await_count == 2

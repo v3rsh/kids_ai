@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Awaitable,
+    Iterable,
     Mapping,
     Optional,
     Protocol,
@@ -199,6 +200,9 @@ class ApplicationsService(Protocol):
         child_name: str,
         track_name: str,
     ) -> "Application | None": ...
+    async def register_application_files(
+        self, *, br_id: str, files: Iterable
+    ) -> "Application": ...
     async def mark_as_actual_version(
         self, *, br_id: str, actual: bool, by_moderator_huid: UUID
     ) -> None: ...
