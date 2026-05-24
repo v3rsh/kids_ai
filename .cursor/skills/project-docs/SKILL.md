@@ -6,13 +6,20 @@ description: Find and maintain project documentation. Use when the user asks abo
 
 ## Documentation Index
 
+Точка входа в актуальную документацию — `docs/README.md`. Архивные документы (включая исходное ТЗ) — в `docs/history/`, они **не правятся**.
+
 | Document | Path | Content |
 |----------|------|---------|
+| Docs index | `docs/README.md` | Карта актуальной документации, правила её изменения |
 | Architecture | `docs/architecture.md` | Модули, модель данных, FSM, навигация, scheduler, логирование |
 | Deployment | `docs/deployment.md` | Docker, env vars, offline-деплой, мониторинг, troubleshooting, бэкапы |
+| Registry spec | `docs/registry-spec.md` | Формат Excel-выгрузок реестра и шорт-листа |
+| Testing | `docs/testing.md` | Что тестируется, как запускать pytest, ручной чек-лист |
+| Backlog | `docs/backlog.md` | Отложенные задачи и улучшения |
+| History | `docs/history/` | Архив (исходное `ТЗ.md` и ответы заказчика) — read-only |
 | README | `README.md` | Обзор проекта, быстрый старт, команды бота |
 
-> По мере развития проекта сюда добавляются предметные документы (например, `docs/feature-name.md`).
+> По мере развития проекта в `docs/` добавляются предметные документы (например, `docs/feature-name.md`). Любые требования и изменения поведения бота фиксируются прямо в актуальных файлах `docs/`, а не в архивном `ТЗ.md`.
 
 ## When to Consult Docs
 
@@ -20,7 +27,7 @@ description: Find and maintain project documentation. Use when the user asks abo
 
 Читай перед:
 - Добавлением нового handler, service, модели
-- Изменением periodic jobs (когда они появятся)
+- Изменением periodic jobs (мониторинг диска, scheduler-задачи)
 - Работой с FSM (состояния, middleware, storage)
 - Изменением навигации (menu/transient сообщения)
 - Введением новой бизнес-логики
@@ -32,6 +39,12 @@ description: Find and maintain project documentation. Use when the user asks abo
 - Добавлением переменных окружения
 - Работой с health checks или мониторингом
 - Troubleshooting на сервере
+
+### Registry / Testing / Backlog
+
+- `docs/registry-spec.md` — единственный источник правды по формату Excel-выгрузок (реестр, шорт-лист, лист «Голосование жюри»). Любые правки `services/registry.py` обязаны соответствовать описанному формату.
+- `docs/testing.md` — список тестовых модулей, инструкция по запуску `pytest`, ручной smoke-чек-лист.
+- `docs/backlog.md` — отложенные задачи (LINKS-UX и т.п.). При появлении новой отложенной идеи дописывай сюда.
 
 ## When to Consult Rules
 
@@ -84,6 +97,8 @@ Rules (`.cursor/rules/`) содержат стандарты написания 
 
 ## How to Update Docs
 
+Главное правило: **`docs/` — единственный источник правды**. Все требования и изменения поведения бота фиксируются прямо в актуальных файлах. `docs/history/ТЗ.md` не правится — это снапшот стартовых требований.
+
 ### architecture.md
 
 Документ разделён на секции (по мере появления функциональности):
@@ -93,7 +108,7 @@ Rules (`.cursor/rules/`) содержат стандарты написания 
 4. Модель данных
 5. FSM-система
 6. Навигация
-7. Scheduler (когда появится)
+7. Scheduler / фоновые задачи
 8. Логирование
 
 Обновляй только затронутые секции. Не переписывай весь документ.
