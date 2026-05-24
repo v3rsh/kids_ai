@@ -20,6 +20,7 @@ os.environ.setdefault("BOT_ID", "00000000-0000-0000-0000-000000000000")
 os.environ.setdefault("CTS_URL", "http://localhost")
 os.environ.setdefault("BOT_SECRET_KEY", "test-secret")
 os.environ.setdefault("ATTACHMENTS_DIR", "/tmp/kids_ai_tests_attachments")
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 
 _APP_DIR = Path(__file__).resolve().parents[1] / "app"
 if str(_APP_DIR) not in sys.path:
