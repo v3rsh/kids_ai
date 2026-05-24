@@ -393,11 +393,11 @@ class ApplicationFile(Base):
 class Moderator(Base):
     """Справочник модераторов.
 
-    Первичный bootstrap — из ``MODERATOR_HUIDS`` при первом запуске
-    (см. ``services/access.py::seed_access_from_config_if_empty``).
-    Дальше управляется командами admin'а через бот: discovery карточка
-    + кнопки одобрения (``handlers/admin_roles.py``). Источник правды
-    в рантайме — кэш ``services.access._moderator_huids``.
+    Управляется командами admin'а через бот: discovery-карточка
+    (``services/discovery.py``) + кнопки одобрения
+    (``handlers/admin_roles.py``). Env-seed (``MODERATOR_HUIDS``)
+    отключён, переменной больше нет. Источник правды в рантайме —
+    кэш ``services.access._moderator_huids``.
     """
 
     __tablename__ = "moderators"
@@ -422,10 +422,11 @@ class Moderator(Base):
 class JuryMember(Base):
     """Справочник членов жюри.
 
-    Первичный bootstrap — из ``JURY_HUIDS`` при первом запуске
-    (см. ``services/access.py::seed_access_from_config_if_empty``).
-    Дальше управляется командами admin'а через бот. Распределение по
-    пулам — в ``JuryPoolAssignment``.
+    Управляется командами admin'а через бот: discovery-карточка
+    (``services/discovery.py``) + кнопки одобрения
+    (``handlers/admin_roles.py``). Env-seed (``JURY_HUIDS``) отключён,
+    переменной больше нет. Распределение по пулам — в
+    ``JuryPoolAssignment``.
     """
 
     __tablename__ = "jury_members"

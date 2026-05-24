@@ -45,7 +45,7 @@ from pybotx import (
 
 from fsm import cleanup_middleware, fsm_middleware
 from keyboards import main_menu_bubbles
-from services import access, discovery
+from services import discovery
 from services import users as users_service
 from utils.bot_utils import reply_to_user
 
@@ -104,11 +104,14 @@ WELCOME_TEXT = (
 async def on_chat_created(event: ChatCreatedEvent, bot: Bot) -> None:
     """Первое сообщение при создании чата.
 
-    - PERSONAL_CHAT → welcome + главное меню (стандартный путь).
-    - Группа == текущий ``moderation_chat_id`` → только лог, никаких
-      сообщений в чат.
-    - Любой другой групповой чат → discovery-карточка админу
-      («сделать этот чат чатом модерации?»), welcome не шлём.
+    - PERSONAL_CHAT → eager-апсерт ``users.chat_id`` (чтобы DM от бота
+      админу/модератору проходили сразу), welcome + главное меню.
+    - Любой групповой чат → discovery-карточка админу с кнопкой
+      «Сделать этот чат чатом модерации». Карточка приходит **всегда**
+      (включая случай, когда чат уже совпадает с текущим
+      ``moderation_chat_id`` — это полезно как подтверждение и помогает
+      повторно одобрить чат, если бота переподключали). Дедуп на 1 час
+      внутри ``services.discovery._dedup_should_skip``.
 
     Бот в групповых чатах не отвечает на входящие (см. ``fsm/chat_gate.py``);
     единственная инициатива в чате модерации — это outbound-нотификации.
@@ -122,11 +125,21 @@ async def on_chat_created(event: ChatCreatedEvent, bot: Bot) -> None:
     )
 
     if chat_type == ChatTypes.PERSONAL_CHAT:
-        # Fire-and-forget прогрев CTS-кэша: к моменту первого /apply
-        # у нас уже будут ФИО и подразделение из CTS без задержки.
-        # creator_id есть только у personal-чатов из ChatCreatedEvent.
         creator_huid = getattr(event, "creator_id", None)
+        # Зафиксировать chat_id ДО welcome — иначе если админ/модератор
+        # инициирует discovery в первый же клик, у нас всё ещё не будет
+        # его chat_id и карточка ему не дойдёт.
         if creator_huid is not None:
+            try:
+                await users_service.set_user_chat_id(creator_huid, chat_id)
+            except Exception:
+                logger.exception(
+                    "on_chat_created: не удалось зафиксировать chat_id",
+                    huid=str(creator_huid),
+                    chat_id=str(chat_id),
+                )
+            # Fire-and-forget прогрев CTS-кэша: к моменту первого /apply
+            # у нас уже будут ФИО и подразделение из CTS без задержки.
             asyncio.create_task(
                 users_service.sync_user_from_cts(bot, creator_huid)
             )
@@ -136,14 +149,6 @@ async def on_chat_created(event: ChatCreatedEvent, bot: Bot) -> None:
             body=WELCOME_TEXT,
             bubbles=main_menu_bubbles(huid=creator_huid),
             wait_callback=False,
-        )
-        return
-
-    moderation_chat = access.get_moderation_chat_id()
-    if moderation_chat is not None and chat_id == moderation_chat:
-        logger.info(
-            "Бот добавлен в текущий чат модерации, welcome не шлём",
-            chat_id=str(chat_id),
         )
         return
 

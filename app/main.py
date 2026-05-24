@@ -46,6 +46,65 @@ async def _global_error_handler(
     )
 
 
+# ===== Валидация чата модерации =====
+
+async def _validate_moderation_chat(bot: Bot) -> None:
+    """Проверить, что бот реально является участником ``moderation_chat_id``.
+
+    Если в ``app_settings.moderation_chat_id`` лежит UUID, а бот в этом
+    чате не присутствует (или чата вообще нет), уведомления в чат
+    модерации будут уходить в никуда — pybotx с ``wait_callback=False``
+    не возвращает ошибку, и логи остаются «чистыми».
+
+    Решение: на старте дёрнуть ``bot.chat_info(chat_id=mod_chat)``. При
+    ошибке — сбросить настройку (``clear_moderation_chat``) и
+    дополнительно записать ERROR-лог, чтобы факт сброса был заметен.
+    """
+    from services import access
+    from utils.bot_utils import resolve_bot_id
+
+    mod_chat = access.get_moderation_chat_id()
+    if mod_chat is None:
+        logger.info(
+            "Валидация чата модерации: не настроен, пропускаю "
+            "(добавьте бота в групповой чат и одобрите карточку)"
+        )
+        return
+
+    bot_id = resolve_bot_id(bot)
+    if bot_id is None:
+        logger.error(
+            "Валидация чата модерации: не удалось определить bot_id, пропускаю",
+            chat_id=str(mod_chat),
+        )
+        return
+
+    try:
+        info = await bot.chat_info(bot_id=bot_id, chat_id=mod_chat)
+    except Exception as exc:
+        logger.error(
+            "Валидация чата модерации: бот не участник или чат недоступен, "
+            "сбрасываю moderation_chat_id",
+            chat_id=str(mod_chat),
+            error=repr(exc),
+        )
+        try:
+            await access.clear_moderation_chat()
+        except Exception:
+            logger.exception(
+                "Не удалось сбросить moderation_chat_id",
+                chat_id=str(mod_chat),
+            )
+        return
+
+    chat_name = getattr(info, "name", None) or getattr(info, "chat_name", None) or "—"
+    logger.info(
+        "Чат модерации валиден",
+        chat_id=str(mod_chat),
+        chat_name=chat_name,
+    )
+
+
 # ===== Инициализация бота =====
 
 def create_bot() -> Bot:
@@ -99,19 +158,15 @@ async def lifespan(app: Starlette):
     await run_auto_migrations()
 
     # Bootstrap ролей и кэша доступа:
-    # 1) seed из env, если таблицы пусты (одноразовая инициализация);
-    # 2) reload in-memory кэша (services.access._moderator_huids и др.) —
-    #    hot path (chat-gate, /moderator, /jury) после этого
-    #    отвечает без походов в БД.
-    # 3) sync пулов жюри.
-    from services.access import (
-        reload_access_cache,
-        seed_access_from_config_if_empty,
-    )
+    # 1) reload in-memory кэша (services.access._moderator_huids и др.) —
+    #    hot path (chat-gate, /moderator, /jury) после этого отвечает
+    #    без походов в БД. Env-seed модераторов/жюри/чата отключён,
+    #    управление через discovery (см. handlers/admin_roles.py).
+    # 2) sync пулов жюри.
+    from services.access import reload_access_cache
     from services.pools import sync_pool_assignments_from_config
 
     async with get_session()() as session:
-        await seed_access_from_config_if_empty(session)
         await reload_access_cache(session)
         await sync_pool_assignments_from_config(JURY_POOLS_CONFIG, session=session)
 
@@ -122,6 +177,12 @@ async def lifespan(app: Starlette):
 
     disk_monitor_task: asyncio.Task | None = None
     async with lifespan_wrapper(bot) as bot_wrapper:
+        # Валидация чата модерации: если в БД лежит UUID, проверяем
+        # фактическое членство бота через chat_info. Это ловит «болванки»
+        # из старого env-seed и случаи, когда бота выгнали — иначе
+        # ``_send_to_moderation_chat`` уходит в null без сигналов в логах.
+        await _validate_moderation_chat(bot)
+
         # Фоновый мониторинг диска. Запускается только в
         # одном web-процессе: при UVICORN_WORKERS>1 + ENABLE_SCHEDULER=true
         # выше уже бросается RuntimeError.

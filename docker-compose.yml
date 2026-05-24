@@ -102,10 +102,9 @@ services:
       - CTS_URL=${CTS_URL}
       - BOT_SECRET_KEY=${BOT_SECRET_KEY}
       - ADMIN_HUID=${ADMIN_HUID}
-      # Безопасные рисунки (см. .env-example и app/config.py)
-      - MODERATOR_HUIDS=${MODERATOR_HUIDS}
-      - JURY_HUIDS=${JURY_HUIDS}
-      - MODERATION_CHAT_ID=${MODERATION_CHAT_ID}
+      # Безопасные рисунки (см. .env-example и app/config.py).
+      # Модераторы/жюри/чат модерации НЕ задаются через env — только
+      # через discovery в боте (/moderator, /jury, /admin_chat_approve).
       - ATTACHMENTS_DIR=${ATTACHMENTS_DIR:-/app/data/attachments}
       - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-10}
       - DISK_WARN_PCT=${DISK_WARN_PCT:-80}

@@ -15,10 +15,11 @@
 - Кэш перезагружается через ``reload_access_cache(session)`` на старте
   бота и после каждой операции add/revoke/set.
 
-Bootstrap из env (одноразовый):
-- ``seed_access_from_config_if_empty(session)`` заполняет таблицы из
-  ``MODERATOR_HUIDS``, ``JURY_HUIDS``, ``MODERATION_CHAT_ID`` **только**
-  если соответствующая таблица/настройка пуста. Дальше env игнорируется.
+Bootstrap из env: **отключён**. Модераторы / жюри / чат модерации
+управляются только через discovery-флоу — никаких env-переменных для
+этих ролей больше нет (см. ``handlers.admin_roles`` и
+``services.discovery``). ``seed_access_from_config_if_empty`` оставлен
+как no-op ради обратной совместимости вызова из ``main.py`` lifespan.
 
 Сравнение UUID идёт через нормализованную строку (``str(uuid).lower()``).
 """
@@ -32,12 +33,9 @@ from uuid import UUID
 from loguru import logger
 
 try:  # config может быть недоступен в unit-тестах без env
-    from config import ADMIN_HUIDS, JURY_HUIDS, MODERATION_CHAT_ID, MODERATOR_HUIDS
+    from config import ADMIN_HUIDS
 except ImportError:  # pragma: no cover - safety net
     ADMIN_HUIDS = []
-    JURY_HUIDS = []
-    MODERATOR_HUIDS = []
-    MODERATION_CHAT_ID = None
 
 
 # Тип хендлера pybotx (без жёсткого импорта Bot/IncomingMessage —
@@ -436,117 +434,75 @@ async def _deactivate_role(role: str, *, huid: UUID, session) -> bool:
 
 
 # =====================================================================
-# Bootstrap из env (одноразовый seed)
+# Bootstrap из env (отключён — управление через discovery)
 # =====================================================================
 
 
 async def seed_access_from_config_if_empty(
     session=None,
 ) -> tuple[int, int, bool]:
-    """Заполнить таблицы ``moderators``, ``jury_members`` и настройку
-    ``moderation_chat_id`` из env — но **только если они пусты**.
+    """No-op. Env-переменные MODERATOR_HUIDS / JURY_HUIDS / MODERATION_CHAT_ID
+    больше не используются — модераторы, члены жюри и чат модерации
+    назначаются только через discovery-флоу:
 
-    Это первичный bootstrap. Дальше управление идёт через
-    discovery + кнопки админа (``handlers/admin_roles.py``).
+    - ``/moderator`` / ``/jury`` от не-роли → карточка админу с кнопками
+      «Назначить / Отклонить» (``handlers.admin_roles``);
+    - добавление бота в групповой чат → карточка админу с кнопкой
+      «Сделать чатом модерации».
+
+    Функция оставлена ради обратной совместимости вызова из ``main.py``
+    lifespan: возвращает нули и логирует факт вызова.
+    """
+    del session  # параметр оставлен ради сигнатуры
+    logger.info(
+        "seed_access_from_config_if_empty: env-seed отключён, "
+        "роли и чат модерации управляются через discovery (см. /moderator, /jury)",
+    )
+    return (0, 0, False)
+
+
+# =====================================================================
+# Сброс moderation_chat_id (валидация на старте, ручной reset)
+# =====================================================================
+
+
+async def clear_moderation_chat(*, session=None) -> bool:
+    """Снять текущий ``moderation_chat_id`` (удалить из ``app_settings``).
+
+    Используется, когда `bot.chat_info(moderation_chat_id)` на старте
+    показывает, что бот больше не участник чата (или чат не существует),
+    либо когда админ явно сбрасывает настройку. После сброса
+    ``get_moderation_chat_id()`` начинает возвращать ``None``, а
+    ``notify_moderation_chat_*`` тихо no-op'ает с WARNING.
 
     Returns:
-        (mods_added, jury_added, chat_seeded)
+        True, если запись была удалена; False, если её и так не было.
     """
-    from sqlalchemy import func, select
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlalchemy import delete
 
-    from database.models import AppSetting, JuryMember, Moderator
+    from database.models import AppSetting
 
-    async def _do(s) -> tuple[int, int, bool]:
-        mods_count = (
-            await s.execute(select(func.count()).select_from(Moderator))
-        ).scalar_one()
-        jury_count = (
-            await s.execute(select(func.count()).select_from(JuryMember))
-        ).scalar_one()
-        chat_setting = (
-            await s.execute(
-                select(AppSetting.value).where(
-                    AppSetting.key == _MODERATION_CHAT_SETTING_KEY
-                )
+    async def _do(s) -> bool:
+        result = await s.execute(
+            delete(AppSetting).where(
+                AppSetting.key == _MODERATION_CHAT_SETTING_KEY
             )
-        ).scalar_one_or_none()
-
-        mods_added = 0
-        if mods_count == 0 and MODERATOR_HUIDS:
-            uuids: list[UUID] = []
-            for raw in MODERATOR_HUIDS:
-                try:
-                    uuids.append(UUID(str(raw).strip()))
-                except (TypeError, ValueError):
-                    logger.warning(
-                        "MODERATOR_HUIDS (seed): пропускаю невалидный UUID",
-                        value=raw,
-                    )
-            if uuids:
-                await s.execute(
-                    pg_insert(Moderator).values(
-                        [{"huid": h, "is_active": True} for h in uuids]
-                    )
-                )
-                mods_added = len(uuids)
-
-        jury_added = 0
-        if jury_count == 0 and JURY_HUIDS:
-            uuids = []
-            for raw in JURY_HUIDS:
-                try:
-                    uuids.append(UUID(str(raw).strip()))
-                except (TypeError, ValueError):
-                    logger.warning(
-                        "JURY_HUIDS (seed): пропускаю невалидный UUID",
-                        value=raw,
-                    )
-            if uuids:
-                await s.execute(
-                    pg_insert(JuryMember).values(
-                        [{"huid": h, "is_active": True} for h in uuids]
-                    )
-                )
-                jury_added = len(uuids)
-
-        chat_seeded = False
-        if chat_setting is None and MODERATION_CHAT_ID:
-            try:
-                UUID(str(MODERATION_CHAT_ID).strip())
-                await s.execute(
-                    pg_insert(AppSetting).values(
-                        key=_MODERATION_CHAT_SETTING_KEY,
-                        value=str(MODERATION_CHAT_ID).strip(),
-                    )
-                )
-                chat_seeded = True
-            except (TypeError, ValueError):
-                logger.warning(
-                    "MODERATION_CHAT_ID (seed): невалидный UUID",
-                    value=MODERATION_CHAT_ID,
-                )
-
-        if mods_added or jury_added or chat_seeded:
-            await s.commit()
-
-        return mods_added, jury_added, chat_seeded
+        )
+        await s.commit()
+        return (result.rowcount or 0) > 0
 
     if session is not None:
-        result = await _do(session)
+        changed = await _do(session)
+        await reload_access_cache(session)
     else:
         from database.db import get_session
 
         async with get_session()() as s:
-            result = await _do(s)
+            changed = await _do(s)
+            await reload_access_cache(s)
 
-    logger.info(
-        "Seed access из env (только при пустых таблицах)",
-        moderators_seeded=result[0],
-        jury_seeded=result[1],
-        moderation_chat_seeded=result[2],
-    )
-    return result
+    logger.info("Сброшен chat модерации", changed=changed)
+    return changed
 
 
 __all__ = [
@@ -567,6 +523,7 @@ __all__ = [
     "revoke_moderator",
     "revoke_jury",
     "set_moderation_chat",
+    "clear_moderation_chat",
     # Lifespan
     "reload_access_cache",
     "seed_access_from_config_if_empty",

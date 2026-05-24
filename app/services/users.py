@@ -136,6 +136,48 @@ async def upsert_user_from_message(message: "IncomingMessage") -> None:
     await upsert_user_from_sender(sender=sender, chat_id=chat_id)
 
 
+async def set_user_chat_id(huid: UUID, chat_id: UUID) -> None:
+    """Минимальный апсерт ``users.chat_id`` по HUID.
+
+    Используется в ``on_chat_created`` (PERSONAL_CHAT) — чтобы у нас был
+    `chat_id` пользователя ещё до того, как он впервые что-то ввёл в боте.
+    Без этого discovery-карточки админу (`services.discovery._send_to_admin`)
+    молча no-op'аются, пока админ не пошлёт хотя бы одно сообщение в DM.
+
+    Не трогает ad/CTS-поля. Идемпотентно — INSERT ... ON CONFLICT UPDATE
+    только ``chat_id`` + ``updated_at``.
+    """
+    if huid is None or chat_id is None:
+        return
+
+    now = datetime.utcnow()
+    values = {
+        "huid": huid,
+        "chat_id": chat_id,
+        "created_at": now,
+        "updated_at": now,
+    }
+    stmt = pg_insert(User).values(**values).on_conflict_do_update(
+        index_elements=[User.huid],
+        set_={"chat_id": chat_id, "updated_at": now},
+    )
+    try:
+        async with get_session()() as session:
+            await session.execute(stmt)
+            await session.commit()
+        logger.info(
+            "set_user_chat_id: chat_id зафиксирован",
+            huid=str(huid),
+            chat_id=str(chat_id),
+        )
+    except Exception:
+        logger.exception(
+            "set_user_chat_id: не удалось записать chat_id",
+            huid=str(huid),
+            chat_id=str(chat_id),
+        )
+
+
 # ============================================================
 # Синхронизация с CTS
 # ============================================================
@@ -331,6 +373,7 @@ async def ensure_user_profile_loaded(
 
 __all__ = [
     "ensure_user_profile_loaded",
+    "set_user_chat_id",
     "sync_user_from_cts",
     "upsert_user_from_message",
     "upsert_user_from_sender",

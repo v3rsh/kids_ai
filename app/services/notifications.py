@@ -7,13 +7,14 @@
   переопределить тексты через конфиг без правки кода;
 - функции отправки участникам (через ``bot.send_message`` с
   ``wait_callback=False``);
-- функции отправки в чат «Безопасные рисунки — модерация» (UUID в
-  ``MODERATION_CHAT_ID``);
+- функции отправки в чат «Безопасные рисунки — модерация» (UUID
+  берётся из ``services.access.get_moderation_chat_id()`` — в БД
+  попадает через discovery-кнопку ``/admin_chat_approve``);
 - агрегатор событий жюри: одно сообщение со списком пулов на
   одновременные открытия/закрытия раундов (debounce 5 секунд).
 
 Безопасность доставки:
-- если ``MODERATION_CHAT_ID`` не задан — функции в чат модерации
+- если чат модерации не настроен — функции в чат модерации
   ничего не делают, пишут ``WARNING`` (бот пригоден к запуску без
   чата модерации, нужно для smoke / dev);
 - если у пользователя нет ``chat_id`` (не открывал бота с момента
@@ -219,22 +220,33 @@ async def _send_to_user(
             huid=str(huid),
         )
         return
+
+    bot_id = resolve_bot_id(bot)
+    if bot_id is None:
+        logger.error(
+            "Не отправили нотификацию участнику: не удалось определить bot_id",
+            purpose=purpose,
+            huid=str(huid),
+            chat_id=str(chat_id),
+        )
+        return
+
     try:
         await bot.send_message(
-            bot_id=bot.id if hasattr(bot, "id") else None,
+            bot_id=bot_id,
             chat_id=chat_id,
             body=body,
             wait_callback=False,
         )
-    except TypeError:
-        # ``bot.id`` может быть недоступен в pybotx — у Bot нет глобального ID.
-        # Тогда отправляем без bot_id и логируем; в pybotx это допустимо,
-        # если контекст вызова определён (например, из хендлера).
-        await bot.send_message(
-            chat_id=chat_id,
-            body=body,
-            wait_callback=False,
+    except Exception:
+        logger.exception(
+            "Не удалось отправить сообщение участнику",
+            purpose=purpose,
+            huid=str(huid),
+            chat_id=str(chat_id),
         )
+        return
+
     logger.info(
         "Отправлено сообщение участнику",
         purpose=purpose,
@@ -274,6 +286,9 @@ async def _send_to_moderation_chat(
     из БД, обновляется при ``/admin_chat_approve``). Если чат ещё не
     настроен — пишем WARNING и no-op (бот остаётся работоспособным
     без чата модерации).
+
+    Если ``bot_id`` не определяется (``bot_accounts`` пустой) — пишем
+    ERROR и no-op: без bot_id pybotx всё равно не сможет отправить.
     """
     chat_uuid = get_moderation_chat_id()
     if chat_uuid is None:
@@ -283,18 +298,25 @@ async def _send_to_moderation_chat(
         )
         return
 
-    bot_id = getattr(bot, "id", None) or resolve_bot_id(bot)
+    bot_id = resolve_bot_id(bot)
+    if bot_id is None:
+        logger.error(
+            "Не отправили нотификацию в чат модерации: bot_id не определяется",
+            purpose=purpose,
+            chat_id=str(chat_uuid),
+        )
+        return
 
     kwargs = {
+        "bot_id": bot_id,
         "chat_id": chat_uuid,
         "body": body,
         "wait_callback": False,
     }
-    if bot_id is not None:
-        kwargs["bot_id"] = bot_id
     if bubbles is not None:
         kwargs["bubbles"] = bubbles
 
+    body_preview = body[:120].replace("\n", " ")
     try:
         await bot.send_message(**kwargs)
         logger.info(
@@ -306,6 +328,9 @@ async def _send_to_moderation_chat(
         logger.exception(
             "Не удалось отправить сообщение в чат модерации",
             purpose=purpose,
+            chat_id=str(chat_uuid),
+            bot_id=str(bot_id),
+            body_preview=body_preview,
         )
 
 

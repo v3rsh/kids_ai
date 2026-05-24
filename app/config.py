@@ -74,21 +74,17 @@ UVICORN_WORKERS = max(1, int(os.getenv("UVICORN_WORKERS", "1")))
 # ===== Безопасные рисунки =====
 # Конвенция env-переменных проекта — UPPER_SNAKE_CASE без общего префикса
 # (см. ADMIN_HUID, REDIS_URL и т.п.). Все имена ниже подчиняются ей.
-
-# Списки HUID модераторов и членов жюри (через запятую).
-_moderator_huids_env = os.getenv("MODERATOR_HUIDS", "")
-MODERATOR_HUIDS: list[str] = [
-    h.strip() for h in _moderator_huids_env.split(",") if h.strip()
-]
-_jury_huids_env = os.getenv("JURY_HUIDS", "")
-JURY_HUIDS: list[str] = [h.strip() for h in _jury_huids_env.split(",") if h.strip()]
-
-# UUID группового чата «Безопасные рисунки — модерация».
-# В рантайме НЕ используется — служит только bootstrap'ом при первом
-# запуске (см. services/access.py::seed_access_from_config_if_empty).
-# Источник истины — таблица ``app_settings``, изменяется через
-# discovery-кнопки админа (``/admin_chat_approve``).
-MODERATION_CHAT_ID: str | None = os.getenv("MODERATION_CHAT_ID") or None
+#
+# Роли модераторов и членов жюри, а также UUID чата модерации
+# в env больше НЕ задаются. Управление полностью через discovery:
+# - не-модератор дёргает /moderator → админу приходит карточка с
+#   кнопками «Назначить модератором / Отклонить»;
+# - не-жюри дёргает /jury → аналогично, карточка с «Назначить жюри»;
+# - бот добавлен в групповой чат → админу приходит карточка
+#   «Сделать чатом модерации?»;
+# - диагностика: /admin_roles, /admin_state.
+# Источник истины — таблица ``app_settings`` (chat) и
+# ``moderators`` / ``jury_members`` (роли).
 
 # Шаблон URL-deeplink на DM с ботом для кнопок в чате модерации.
 # Точный синтаксис зависит от версии eXpress CTS — обычно вида

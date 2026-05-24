@@ -39,8 +39,9 @@ from sqlalchemy import select
 
 from config import DISK_BLOCK_PCT, DISK_WARN_PCT
 from database.db import get_session
-from database.models import DiskAlert, IntakeMode
+from database.models import DiskAlert, IntakeMode, JuryMember, Moderator, User
 from fsm import cleanup_middleware, fsm_middleware
+from services import access
 from services.access import admin_only, moderator_only
 from services.intake_mode import (
     SYSTEM_HUID,
@@ -52,7 +53,7 @@ from services.storage import (
     get_disk_usage_bytes,
     get_disk_usage_pct,
 )
-from utils.bot_utils import reply_to_user
+from utils.bot_utils import reply_to_user, resolve_bot_id
 
 
 collector = HandlerCollector()
@@ -129,6 +130,90 @@ async def _format_disk_block(
             for threshold, when in recent:
                 local = when.astimezone(_MOSCOW_TZ).strftime("%Y-%m-%d %H:%M")
                 lines.append(f"- {threshold} %: {local} (Europe/Moscow)")
+
+    return "\n".join(lines)
+
+
+async def _format_roles_block(bot: Bot, sender_huid: UUID | None) -> str:
+    """Диагностика ролей и канала уведомлений для ``/admin_state``.
+
+    Возвращает текст:
+    - moderation_chat_id (UUID + имя + статус членства бота);
+    - активные модераторы / жюри (кол-во);
+    - DM-канал админа (есть ли chat_id в таблице users).
+
+    Все вызовы безопасны: ошибки CTS/БД ловятся и пишутся в лог.
+    """
+    lines: list[str] = ["", "🛠 Роли и каналы уведомлений:"]
+
+    # 1) Чат модерации.
+    mod_chat = access.get_moderation_chat_id()
+    if mod_chat is None:
+        lines.append("- Чат модерации: НЕ настроен (добавь бота в групповой чат)")
+    else:
+        bot_id = resolve_bot_id(bot)
+        chat_status = "статус неизвестен"
+        if bot_id is None:
+            chat_status = "не удалось определить bot_id"
+        else:
+            try:
+                info = await bot.chat_info(bot_id=bot_id, chat_id=mod_chat)
+                chat_name = (
+                    getattr(info, "name", None)
+                    or getattr(info, "chat_name", None)
+                    or "—"
+                )
+                members = getattr(info, "members", None) or []
+                bot_is_member = any(
+                    getattr(m, "huid", None) == bot_id for m in members
+                )
+                chat_status = (
+                    f"имя=«{chat_name}», участников={len(members)}, "
+                    f"бот в чате={'да' if bot_is_member else 'НЕТ'}"
+                )
+            except Exception as exc:
+                chat_status = f"chat_info упал: {exc!r}"
+        lines.append(f"- Чат модерации: `{mod_chat}` ({chat_status})")
+
+    # 2) Счётчики ролей.
+    try:
+        async with get_session()() as session:
+            mods_count = (
+                await session.execute(
+                    select(Moderator).where(Moderator.is_active.is_(True))
+                )
+            ).scalars().all()
+            jury_count = (
+                await session.execute(
+                    select(JuryMember).where(JuryMember.is_active.is_(True))
+                )
+            ).scalars().all()
+            lines.append(f"- Модераторы (активные): {len(mods_count)}")
+            lines.append(f"- Жюри (активные): {len(jury_count)}")
+    except Exception as exc:
+        lines.append(f"- Счётчики ролей: ошибка БД — {exc!r}")
+
+    # 3) DM-канал админа (sender).
+    if sender_huid is None:
+        lines.append("- DM-канал админа: HUID отправителя не определён")
+    else:
+        try:
+            async with get_session()() as session:
+                row = (
+                    await session.execute(
+                        select(User.chat_id).where(User.huid == sender_huid)
+                    )
+                ).first()
+            admin_chat_id = row[0] if row else None
+            if admin_chat_id is None:
+                lines.append(
+                    "- DM-канал админа: НЕ зафиксирован "
+                    "(карточки discovery до тебя не дойдут — нажми /start в DM)"
+                )
+            else:
+                lines.append(f"- DM-канал админа: `{admin_chat_id}`")
+        except Exception as exc:
+            lines.append(f"- DM-канал админа: ошибка БД — {exc!r}")
 
     return "\n".join(lines)
 
@@ -301,15 +386,19 @@ async def cmd_admin_state(message: IncomingMessage, bot: Bot) -> None:
     """``/admin_state`` — внутренняя диагностика (не для модераторов).
 
     Текст содержит дамп: текущий intake_mode, ёмкость диска, последние
-    несколько disk_alerts. Используется разработчиком на этапе
-    тестирования/поддержки.
+    несколько disk_alerts + блок ролей (чат модерации, счётчики
+    модераторов/жюри, статус DM-канала самого админа). Используется
+    разработчиком на этапе тестирования/поддержки и для быстрой
+    самодиагностики потоков уведомлений.
     """
     current = await get_intake_mode()
     disk_block = await _format_disk_block(include_prediction=True)
+    roles_block = await _format_roles_block(bot, _sender_huid(message))
     body = (
         "🛠 Состояние бота (admin diagnostic):\n"
         f"- intake_mode: **{current.value.upper()}**\n\n"
-        f"{disk_block}"
+        f"{disk_block}\n"
+        f"{roles_block}"
     )
     await reply_to_user(message, bot, body)
 
