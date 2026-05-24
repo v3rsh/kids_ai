@@ -27,25 +27,25 @@ Side-effect импортов:
 """
 from .common import collector as common_collector
 
-# Ветка A — родитель/участник (§6–§18).
+# Ветка участника: главное меню, анкета, файлы, согласия.
 from .user import collector as user_collector
 from .user_intake import collector as user_intake_collector
 from .user_files import collector as user_files_collector
 from .user_confirm import collector as user_confirm_collector
 
-# Ветка B — модератор (§27, §34).
+# Ветка модератора: меню, очередь, действия, экспорт, jury-admin.
 from .moderator import collector as moderator_collector
 from .moderator_queue import collector as moderator_queue_collector
 from .moderator_actions import collector as moderator_actions_collector
 from .moderator_export import collector as moderator_export_collector
 from .moderator_jury_admin import collector as moderator_jury_admin_collector
 
-# Ветка C — жюри (§35).
+# Ветка жюри: главное меню, задачи, статус прогресса.
 from .jury import collector as jury_collector
 from .jury_tasks import collector as jury_tasks_collector
 from .jury_status import collector as jury_status_collector
 
-# Ветка D — админ-команды (§5.3, §27.1, §33.6).
+# Технические админ-команды: /disk, /intake_mode, /admin_state.
 from .admin import collector as admin_collector
 
 
@@ -53,7 +53,7 @@ def get_all_collectors() -> list:
     """Возвращает список коллекторов в порядке регистрации.
 
     ``common_collector`` ВСЕГДА первый — в нём диспетчер свободного
-    текста (``default_message_handler``). Дальше — ветки Wave 2:
+    текста (``default_message_handler``). Дальше — ветки бота:
     user → moderator → jury → admin.
     """
     return [

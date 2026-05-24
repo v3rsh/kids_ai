@@ -1,18 +1,18 @@
 """
-Очередь модератора и карусель просмотра (Wave 2 / B).
+Очередь модератора и карусель просмотра.
 
 Реализует:
 
-- ``/queue`` — постраничный список заявок (по 5, §34.2);
+- ``/queue`` — постраничный список заявок (по 5);
 - ``/browse`` — карусель просмотра (по одной заявке);
 - инлайн-кнопки навигации (``← Назад / Вперёд →``);
 - управление фильтрами по треку / возрастной категории / статусу
-  модерации / дате (§34.2);
+  модерации / дате;
 - сброс фильтров.
 
 Состояние пагинации/фильтров хранится в FSM-данных модератора (по его
 HUID), поэтому переключение между ``/queue`` и ``/browse`` помнит
-последний установленный фильтр (UX из §34).
+последний установленный фильтр.
 
 Все DB-запросы делаются ``services.moderation.list_queue`` — один SELECT
 + один COUNT, без N+1 (правило `performance.mdc`). Здесь хендлеры лишь
@@ -20,8 +20,8 @@ HUID), поэтому переключение между ``/queue`` и ``/brows
 
 ``collector`` подключается в
 ``app/handlers/__init__.py → get_all_collectors()`` сразу за
-``handlers/moderator.py`` (порядок внутри ветки B значения не имеет —
-конфликтов команд нет).
+``handlers/moderator.py`` (порядок внутри модераторских модулей значения
+не имеет — конфликтов команд нет).
 """
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ FSM_KEY_DATE_TO = "moderator_queue_date_to"
 FSM_KEY_QUEUE_PAGE = "moderator_queue_page"
 FSM_KEY_BROWSE_INDEX = "moderator_browse_index"
 
-QUEUE_PAGE_SIZE = 5  # §34.2
+QUEUE_PAGE_SIZE = 5
 
 
 async def _load_filters(message: IncomingMessage) -> QueueFilters:
@@ -163,7 +163,7 @@ def _short_card(app: Application) -> str:
 
 
 def _full_card(app: Application) -> str:
-    """Развёрнутая карточка для ``/browse`` и ``/find`` (§27.1)."""
+    """Развёрнутая карточка для ``/browse`` и ``/find``."""
     files_count = len(app.files) if app.files is not None else 0
     contact = (
         f"@{app.parent_ad_login}"
@@ -230,7 +230,7 @@ def _filters_summary(filters: QueueFilters) -> str:
 
 
 def _action_buttons_for_app(bubbles: BubbleMarkup, app: Application) -> None:
-    """Инлайн-кнопки действий по карточке (§27.1)."""
+    """Инлайн-кнопки действий по карточке заявки."""
     bubbles.add_button(
         command=f"/files {app.br_id}",
         label="📂 Файлы",
@@ -346,7 +346,7 @@ def _browse_navigation_buttons(
 )
 @moderator_only
 async def cmd_queue(message: IncomingMessage, bot: Bot) -> None:
-    """Постраничный список заявок (§34.2).
+    """Постраничный список заявок.
 
     По умолчанию выводятся заявки в активных статусах модерации
     (``на модерации`` + ``нужно исправить``); фильтры/страница
@@ -602,7 +602,7 @@ async def cmd_filter_status(message: IncomingMessage, bot: Bot) -> None:
     body = (
         "Выбор статусов модерации.\n"
         "Если ничего не выбрано — действуют дефолтные «на модерации» + "
-        "«нужно исправить» (§34.2).\n"
+        "«нужно исправить».\n"
         f"Текущие: {_filters_summary(filters)}"
     )
     await reply_to_user(message, bot, body, bubbles=bubbles)
@@ -616,7 +616,7 @@ async def cmd_filter_status(message: IncomingMessage, bot: Bot) -> None:
 )
 @moderator_only
 async def cmd_filter_clear(message: IncomingMessage, bot: Bot) -> None:
-    """Сбросить все фильтры (вернуть дефолт §34.2)."""
+    """Сбросить все фильтры (вернуть дефолт модерации)."""
     await _save_filters(message, QueueFilters())
     await _save_queue_page(message, 1)
     logger.info(
@@ -638,7 +638,7 @@ async def cmd_filter_clear(message: IncomingMessage, bot: Bot) -> None:
 )
 @moderator_only
 async def cmd_browse(message: IncomingMessage, bot: Bot) -> None:
-    """Запуск карусели просмотра (§34.2).
+    """Запуск карусели просмотра заявок.
 
     Использует тот же набор фильтров, что и ``/queue``. Текущая позиция
     сбрасывается к 0 (первая заявка по фильтру).

@@ -2,14 +2,15 @@
 Общие хендлеры (не привязаны к ветке сценария).
 
 Содержит:
-- ``on_chat_created`` — приветственное сообщение по §7.1 + главное меню;
-- ``/start`` — перерисовка главного меню (§6);
+- ``on_chat_created`` — приветственное сообщение и главное меню при
+  создании чата;
+- ``/start`` — перерисовка главного меню;
 - ``/help`` — короткая справка;
 - ``default_message_handler`` — единственный на приложение перехватчик
   свободного текста, реализованный как **диспетчер по FSM-состоянию**.
 
-Контракт диспетчера для веток Wave 2 (см. также docs/architecture.md
-→ «Диспетчер default_message_handler»):
+Контракт диспетчера (см. также ``docs/architecture.md`` →
+«Диспетчер default_message_handler»):
 
 - Каждая ветка, которой нужен свободный текст в каком-то FSM-состоянии,
   регистрирует хендлер через ``register_state_handler(state, handler)``
@@ -49,14 +50,14 @@ collector = HandlerCollector()
 
 
 # =====================================================================
-# Реестр обработчиков по FSM-состоянию (контракт для Wave 2)
+# Реестр обработчиков по FSM-состоянию
 # =====================================================================
 
 # Тип хендлера: корутина, совместимая с pybotx (message, bot).
 StateHandler = Callable[[IncomingMessage, Bot], Awaitable[None]]
 
 # Ключ — значение FSM-состояния (``Enum.value``), значение — хендлер.
-# Заполняется ветками Wave 2 в момент импорта их коллекторов.
+# Заполняется ветками бота в момент импорта их коллекторов.
 STATE_HANDLERS: dict[str, StateHandler] = {}
 
 
@@ -97,7 +98,7 @@ WELCOME_TEXT = (
 
 @collector.chat_created
 async def on_chat_created(event: ChatCreatedEvent, bot: Bot) -> None:
-    """Первое сообщение при создании чата (§7.1).
+    """Первое сообщение при создании чата.
 
     Используется ``bot.send_message``, потому что в момент chat_created
     нет ``IncomingMessage`` для трекинга — это первое сообщение в чате,
@@ -119,7 +120,7 @@ async def on_chat_created(event: ChatCreatedEvent, bot: Bot) -> None:
 
 @collector.command("/start", description="Главное меню бота")
 async def cmd_start(message: IncomingMessage, bot: Bot) -> None:
-    """Точка входа: показывает приветствие + главное меню (§6, §7.1)."""
+    """Точка входа: показывает приветствие + главное меню."""
     await reply_to_user(message, bot, WELCOME_TEXT, bubbles=main_menu_bubbles())
 
 

@@ -1,5 +1,5 @@
 """
-FSM-flow анкеты родителя (§8, §11).
+FSM-flow анкеты участника.
 
 Поэтапный сбор полей:
 1. ФИО родителя (UserIntake.user_intake_parent_full_name)
@@ -22,9 +22,9 @@ FSM-flow анкеты родителя (§8, §11).
 дополнительно защищается проверкой FSM-состояния, чтобы не сработать
 на «протухшую» кнопку из старого диалога.
 
-Возрастная категория **не запрашивается** — вычисляется автоматически
-из возраста через ``AgeCategory.from_age`` в момент создания заявки
-(§8 шаг 5, §11.3). Wave 0 явно убрала ручной выбор категории.
+Возрастная категория **не запрашивается у участника** — вычисляется
+автоматически из возраста через ``AgeCategory.from_age`` в момент
+создания заявки.
 """
 from loguru import logger
 from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
@@ -44,8 +44,8 @@ collector = HandlerCollector()
 # Ограничения и тексты ввода
 # =====================================================================
 #
-# Хранятся как константы рядом с хендлерами — Wave 3 при необходимости
-# может вынести в config/конфигурируемые тексты заказчика.
+# Хранятся как константы рядом с хендлерами — при необходимости можно
+# вынести в config / конфигурируемые тексты заказчика.
 
 _MIN_NAME_LEN = 2
 _MAX_NAME_LEN = 200
@@ -102,7 +102,7 @@ _PROMPT_DESCRIPTION_HANDMADE_TO_AI = (
 
 
 async def _handle_parent_full_name(message: IncomingMessage, bot: Bot) -> None:
-    """§11.1 — ФИО родителя (обязательно).
+    """Шаг 1: ФИО родителя (обязательно).
 
     Минимальная валидация — длина и непустота. Имя содержит пробелы,
     кириллицу, дефисы, поэтому регулярные ограничения utils.validation
@@ -134,7 +134,7 @@ async def _handle_parent_full_name(message: IncomingMessage, bot: Bot) -> None:
 
 
 async def _handle_parent_division(message: IncomingMessage, bot: Bot) -> None:
-    """§11.1 — подразделение родителя (обязательно)."""
+    """Шаг 2: подразделение родителя (обязательно)."""
     body = (message.body or "").strip()
     if len(body) < _MIN_DIVISION_LEN or len(body) > _MAX_DIVISION_LEN:
         await safe_answer_transient(
@@ -161,7 +161,7 @@ async def _handle_parent_division(message: IncomingMessage, bot: Bot) -> None:
 
 
 async def _handle_child_name(message: IncomingMessage, bot: Bot) -> None:
-    """§11.2 — имя ребёнка (обязательно)."""
+    """Шаг 3: имя ребёнка (обязательно)."""
     body = (message.body or "").strip()
     if len(body) < _MIN_CHILD_NAME_LEN or len(body) > _MAX_CHILD_NAME_LEN:
         await safe_answer_transient(
@@ -188,10 +188,11 @@ async def _handle_child_name(message: IncomingMessage, bot: Bot) -> None:
 
 
 async def _handle_child_age(message: IncomingMessage, bot: Bot) -> None:
-    """§11.2, §9 — возраст ребёнка, число 0..18.
+    """Шаг 4: возраст ребёнка, целое число 0..18.
 
     На некорректный ввод — транзиентное сообщение об ошибке, состояние
-    не меняется (см. требования ветки A пункт 4).
+    не меняется. Возрастная категория из возраста вычисляется позже
+    (см. ``AgeCategory.from_age``).
     """
     body = (message.body or "").strip()
     try:
@@ -235,7 +236,7 @@ async def _handle_child_age(message: IncomingMessage, bot: Bot) -> None:
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 async def cmd_intake_track(message: IncomingMessage, bot: Bot) -> None:
-    """§10, §11.3 — выбор трека кнопкой.
+    """Шаг 5: выбор конкурсного трека кнопкой.
 
     Защищены два сценария:
     1. Старая «протухшая» кнопка из прошлого диалога — handler не в
@@ -306,7 +307,7 @@ async def _handle_track_text_fallback(
 
 
 async def _handle_title(message: IncomingMessage, bot: Bot) -> None:
-    """§11.3 — название работы (обязательно)."""
+    """Шаг 6: название работы (обязательно)."""
     body = (message.body or "").strip()
     if len(body) < _MIN_TITLE_LEN or len(body) > _MAX_TITLE_LEN:
         await safe_answer_transient(
@@ -337,12 +338,12 @@ async def _handle_title(message: IncomingMessage, bot: Bot) -> None:
 
 
 async def _handle_description(message: IncomingMessage, bot: Bot) -> None:
-    """§11.3 — описание работы (обязательно).
+    """Шаг 7: описание работы (обязательно).
 
     После сохранения описания состояние переходит в
     ``user_intake_files_collect`` и управление передаётся в
     ``user_files.prompt_for_files`` — там формулируется инструкция по
-    загрузке файлов в зависимости от трека (§12).
+    загрузке файлов в зависимости от трека.
     """
     body = (message.body or "").strip()
     if (

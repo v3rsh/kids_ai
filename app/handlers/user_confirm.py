@@ -1,36 +1,35 @@
 """
-Согласия, финальное резюме, отправка заявки (§13, §14, §15, §18).
+Согласия, финальное резюме, отправка заявки.
 
 Состояния FSM:
-- ``user_intake_consents`` — отрисовка чекбоксов согласий (§13), кнопка
+- ``user_intake_consents`` — отрисовка чекбоксов согласий, кнопка
   «Подтвердить и продолжить» появляется только когда оба отмечены.
-- ``user_intake_review`` — финальное резюме (§14): кнопки
+- ``user_intake_review`` — финальное резюме: кнопки
   «Отправить заявку» / «Заполнить заново».
 
 При нажатии «Отправить заявку»:
 1. ``services.applications.create_application`` — создаёт строку в БД,
-   присваивает ``br_id``, проверяет возможный дубль (§15.3).
+   присваивает ``br_id``, проверяет возможный дубль по
+   ``(parent_huid, title)``.
 2. ``services.storage.create_application_folder`` + последовательное
    ``services.storage.rename_and_save_file`` для каждого файла из
    временного каталога (см. ``user_files.py``).
 3. ``services.storage.write_meta_txt`` + ``write_description_txt``.
-4. ``services.notifications.notify_participant_accepted`` (§18.1) и
-   ``services.notifications.notify_moderation_chat_new_application`` (§19).
+4. ``services.notifications.notify_participant_accepted`` и
+   ``services.notifications.notify_moderation_chat_new_application``.
 5. Очистка FSM + временного каталога анкеты.
 
-Все этапы 2–4 обёрнуты в общий try/except: реализации ветки D в Wave 2
-могут быть ещё ``NotImplementedError``. В этом случае запись в БД
-сохраняется (Wave 3 при интеграции D подцепит), а пользователю
-показываем сообщение 18.2 с понятной причиной — это даёт graceful
-degradation без потери данных. Логируем подробно (``br_id``,
-``parent_huid``).
+Все этапы 2–4 обёрнуты в общий try/except: на случай, если
+зависимости storage/notifications недоступны (например, поломка диска
+или чата модерации), запись в БД остаётся целой — пользователь видит
+понятное сообщение об ошибке, никаких частичных эффектов не остаётся.
 
 Актуальный режим приёма прокидывается из
 ``services.intake_mode.get_intake_mode()`` в ``create_application``,
 чтобы заявка корректно записалась с тем режимом, который активен на
-момент submit (важно для §33.6 — реестр различает FILES/LINKS по полю
-№13). Сам ссылочный UX (запрос URL вместо файла) — отдельная задача,
-см. ``docs/backlog.md`` → «WAVE4-LINKS-UX».
+момент submit — реестр различает FILES/LINKS по полю «Команда/ссылка
+просмотра файлов». Сам ссылочный UX (запрос URL вместо файла) —
+отдельная задача, см. ``docs/backlog.md`` → «LINKS-UX».
 """
 from typing import Iterable
 
@@ -53,7 +52,7 @@ collector = HandlerCollector()
 
 
 # =====================================================================
-# Тексты (§13, §14, §18)
+# Тексты экранов согласий / резюме / уведомлений
 # =====================================================================
 
 _CONSENTS_PROMPT = (
@@ -79,7 +78,7 @@ _REJECTED_TECH_TEMPLATE = (
 
 
 # =====================================================================
-# Шаг согласий (§13)
+# Шаг согласий
 # =====================================================================
 
 
@@ -161,7 +160,6 @@ async def cmd_consents_confirm(
 
     data = await fsm.get_data()
     if not (data.get("consent_rules") and data.get("consent_publication")):
-        # §16 — без обязательных согласий заявка не принимается.
         await safe_answer_transient(
             message,
             bot,
@@ -176,12 +174,12 @@ async def cmd_consents_confirm(
 
 
 # =====================================================================
-# Финальное резюме (§14)
+# Финальное резюме
 # =====================================================================
 
 
 def _build_review_text(data: dict) -> str:
-    """Сформировать текст резюме по шаблону §14."""
+    """Сформировать текст финального резюме перед отправкой заявки."""
     try:
         track = Track[data["track"]]
     except (KeyError, TypeError):
@@ -225,7 +223,7 @@ async def _show_review(message: IncomingMessage, bot: Bot) -> None:
 
 
 # =====================================================================
-# Отправка (§14, §18.1, §18.2)
+# Отправка заявки
 # =====================================================================
 
 
@@ -271,10 +269,10 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
         return
 
     # ----- Шаг 1: создание заявки в БД -----
-    # Актуальный режим приёма читаем непосредственно перед submit (§33.6):
+    # Актуальный режим приёма читаем непосредственно перед submit:
     # модератор/админ/диск-монитор могли переключить FILES↔LINKS, пока
     # пользователь шёл по анкете. Сам UX сбора файла vs ссылки — пока
-    # только FILES (см. backlog «WAVE4-LINKS-UX»), но в БД запись должна
+    # только FILES (см. backlog «LINKS-UX»), но в БД запись должна
     # отражать реальный режим, в котором заявка зафиксирована.
     current_intake_mode = await intake_mode_service.get_intake_mode()
     try:
@@ -327,7 +325,7 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
     # ----- Шаг 2: материализация файлов через services.storage -----
     storage_ok = await _materialize_files(application, files_meta, data)
 
-    # ----- Шаг 3: уведомления (§18.1, §19) -----
+    # ----- Шаг 3: уведомления участнику и в чат модерации -----
     await _send_notifications(bot, application, storage_ok)
 
     # ----- Шаг 4: финал — главное меню -----
@@ -409,7 +407,9 @@ def _validate_required_fields(data: dict) -> list[str]:
 def _file_kinds_for_track(
     track: Track, count: int
 ) -> list[tuple[FileKind, int | None]]:
-    """Сформировать ожидаемый список ``(kind, angle_no)`` по треку (§22).
+    """Сформировать ожидаемый список ``(kind, angle_no)`` по треку.
+
+    Контракт соответствует схеме именования файлов в хранилище заявки:
 
     - TRADITIONAL: 1 файл → ORIGINAL; 2–4 → ANGLE с N=1..count.
       (Бот не различает «обычный 2D» от «3D» сам, поэтому 1 файл —
@@ -431,12 +431,13 @@ def _file_kinds_for_track(
 async def _materialize_files(
     application, files_meta: list[dict], data: dict
 ) -> bool:
-    """Перенос временных файлов в постоянное хранилище ветки D.
+    """Перенос временных файлов в постоянное хранилище ``ATTACHMENTS_DIR``.
 
-    Возвращает True при полном успехе. Если ``services.storage`` ещё
-    не реализован (Wave 1 stub) — логируем warning и возвращаем False.
-    Запись в БД остаётся в любом случае; Wave 3 интегратор сможет
-    донакатить файлы.
+    Возвращает True при полном успехе. Если какая-то операция
+    ``services.storage`` пока не реализована (``NotImplementedError``)
+    или упала, логируем warning/exception и возвращаем False. Запись
+    в БД остаётся в любом случае — администратор сможет повторно
+    донакатить файлы из временного каталога.
     """
     from pathlib import Path
 
@@ -450,7 +451,7 @@ async def _materialize_files(
         await storage_service.create_application_folder(application)
     except NotImplementedError:
         logger.warning(
-            "services.storage.create_application_folder — stub Wave 1, пропускаем",
+            "services.storage.create_application_folder ещё не реализован, пропускаем",
             br_id=application.br_id,
         )
         return False
@@ -476,7 +477,7 @@ async def _materialize_files(
             )
         except NotImplementedError:
             logger.warning(
-                "services.storage.rename_and_save_file — stub Wave 1, пропускаем",
+                "services.storage.rename_and_save_file ещё не реализован, пропускаем",
                 br_id=application.br_id,
                 file=meta.get("original_filename"),
             )
@@ -497,7 +498,7 @@ async def _materialize_files(
             await writer(application)
         except NotImplementedError:
             logger.warning(
-                "services.storage.%s — stub Wave 1, пропускаем",
+                "services.storage.%s ещё не реализован, пропускаем",
                 label,
                 br_id=application.br_id,
             )
@@ -512,7 +513,7 @@ async def _materialize_files(
 
 
 async def _send_notifications(bot, application, storage_ok: bool) -> None:
-    """Послать участнику §18.1 и в чат модерации §19.
+    """Послать уведомление участнику и в чат модерации.
 
     Не критическая часть: сбои логируем, но не валим submit — заявка
     уже в БД, и модератор может работать с ней через ``/queue``.
@@ -521,12 +522,12 @@ async def _send_notifications(bot, application, storage_ok: bool) -> None:
         await notifications_service.notify_participant_accepted(bot, application)
     except NotImplementedError:
         logger.warning(
-            "services.notifications.notify_participant_accepted — stub Wave 1",
+            "services.notifications.notify_participant_accepted ещё не реализован",
             br_id=application.br_id,
         )
     except Exception:
         logger.exception(
-            "Сбой нотификации участнику (§18.1)",
+            "Сбой нотификации участнику",
             br_id=application.br_id,
         )
 
@@ -536,12 +537,12 @@ async def _send_notifications(bot, application, storage_ok: bool) -> None:
         )
     except NotImplementedError:
         logger.warning(
-            "services.notifications.notify_moderation_chat_new_application — stub Wave 1",
+            "services.notifications.notify_moderation_chat_new_application ещё не реализован",
             br_id=application.br_id,
         )
     except Exception:
         logger.exception(
-            "Сбой нотификации в чат модерации (§19)",
+            "Сбой нотификации в чат модерации",
             br_id=application.br_id,
         )
 

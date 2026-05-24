@@ -1,12 +1,12 @@
 """
-Выгрузки и статистика модератора (Wave 2 / B).
+Выгрузки и статистика модератора.
 
 Реализует:
 
 - ``/export`` — собрать ``registry.xlsx`` из БД и отправить в чат
-  attachment'ом (§25.4 on-demand);
-- ``/export_shortlist`` — то же для шорт-листа (§35.5, §27.1);
-- ``/stats today`` / ``/stats all`` — статистика по заявкам (§28).
+  attachment'ом (on-demand, без кэша);
+- ``/export_shortlist`` — то же для шорт-листа после финализации жюри;
+- ``/stats today`` / ``/stats all`` — статистика по заявкам.
 
 Аргументы команды ``/stats`` парсятся вручную (``today`` / ``all``);
 команда задекларирована один раз, чтобы она была видимой в меню — её
@@ -15,7 +15,7 @@
 что первый токен совпадает с зарегистрированной командой).
 
 Имя XLSX-файла собирается через ``registry.registry_export_filename(...)``
-(см. ``docs/registry-spec.md`` §4 — единый источник правды по формату).
+(см. ``docs/registry-spec.md`` — единый источник правды по формату).
 """
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ def _parse_stats_period(arg: str) -> StatsPeriod | None:
 
 
 def _format_stats(stats: StatsCounters) -> str:
-    """Текстовое представление статистики (§28)."""
+    """Текстовое представление статистики по заявкам."""
     period_text = stats.period_label
     if stats.period_from and stats.period_to:
         period_text += (
@@ -105,12 +105,12 @@ def _format_stats(stats: StatsCounters) -> str:
 
 @collector.command(
     "/export",
-    description="Прислать актуальный реестр заявок (XLSX, §25.4)",
+    description="Прислать актуальный реестр заявок (XLSX)",
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
 async def cmd_export(message: IncomingMessage, bot: Bot) -> None:
-    """On-demand выгрузка ``registry.xlsx`` (§25.4, §27.1)."""
+    """On-demand выгрузка ``registry.xlsx`` (без кэша)."""
     from services import registry
 
     try:
@@ -150,12 +150,12 @@ async def cmd_export(message: IncomingMessage, bot: Bot) -> None:
 
 @collector.command(
     "/export_shortlist",
-    description="Прислать XLSX шорт-листа (§35.5, §27.1)",
+    description="Прислать XLSX шорт-листа",
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
 async def cmd_export_shortlist(message: IncomingMessage, bot: Bot) -> None:
-    """On-demand выгрузка шорт-листа (§35.5)."""
+    """On-demand выгрузка XLSX шорт-листа по итогам жюри."""
     from services import registry
 
     try:
@@ -195,12 +195,12 @@ async def cmd_export_shortlist(message: IncomingMessage, bot: Bot) -> None:
 
 @collector.command(
     "/stats",
-    description="Статистика по заявкам: /stats today | /stats all (§28)",
+    description="Статистика по заявкам: /stats today | /stats all",
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
 async def cmd_stats(message: IncomingMessage, bot: Bot) -> None:
-    """Статистика модератора (§28)."""
+    """Статистика по заявкам — сегодня или за весь период."""
     arg = _split_command_argument(message)
     period = _parse_stats_period(arg)
     if period is None:

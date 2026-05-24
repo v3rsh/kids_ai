@@ -1,14 +1,14 @@
 """
-Handlers экрана задачи жюри (Wave 2 / ветка C).
+Handlers экрана задачи жюри.
 
-Реализует §35.3:
+Реализует UX оценки одного раунда судьёй:
 - карусель работ одного пула в одном раунде (одно сообщение с превью,
   заголовком и описанием, анонимность через локальный номер 1..N);
 - кнопки ``Да`` / ``Нет`` (черновик), помечаются эмодзи после выбора;
 - навигация ``← Предыдущая`` / ``Следующая →``;
 - ``📋 В меню задач`` — выход к списку задач (черновики сохраняются);
 - ``✓ Отправить оценки`` — активна только когда (а) все работы оценены
-  и (б) есть и YES, и NO (правило разброса §35.1).
+  и (б) есть и YES, и NO (правило разброса в одном раунде).
 
 Состояние карусели хранится в FSM (``JuryTaskFlow.jury_task_voting``):
 ``{"jury_task_round_id": uuid_str, "jury_task_index": int}``.
@@ -85,7 +85,7 @@ def _build_carousel_bubbles(
     current_vote: Optional[JuryVoteValue],
     can_submit: bool,
 ) -> BubbleMarkup:
-    """Клавиатура экрана задачи (§35.3)."""
+    """Клавиатура экрана задачи: голос / навигация / выход."""
     bubbles = BubbleMarkup()
     bubbles.add_button(
         command="/jt_vote",
@@ -139,7 +139,7 @@ def _render_task_text(
     cloud_link: Optional[str],
     can_submit: bool,
 ) -> str:
-    """Текст экрана задачи: анонимность + инструкция (§35.3, §35.4).
+    """Текст экрана задачи: анонимный заголовок + инструкция.
 
     Ничего идентифицирующего автора/родителя/BR-ID — только локальный
     номер работы, название, описание, возрастная категория и трек.
@@ -190,8 +190,8 @@ async def _resolve_preview_path(app_id: UUID) -> Optional[Path]:
     """Ленивый вызов ``services.storage.get_preview_path``.
 
     Контракт ``StorageService`` (utils/contracts.py) этой функции пока
-    не описывает — она добавляется веткой D. Чтобы не блокировать
-    Wave 2 / C, мы импортируем ленивыми и тихо игнорируем отсутствие.
+    не описывает — она добавляется опционально на стороне storage.
+    Поэтому импортируем лениво и тихо игнорируем отсутствие.
     """
     try:
         from services import storage as _storage
@@ -220,11 +220,12 @@ def _compute_submit_eligibility(
     drafts: Mapping[UUID, JuryVoteValue],
     candidates: list[Application],
 ) -> bool:
-    """Условие активации кнопки «Отправить оценки» (§35.3).
+    """Условие активации кнопки «Отправить оценки».
 
-    True, если: (а) каждый кандидат имеет голос, и (б) есть и YES, и NO
-    (правило разброса §35.1). При len(candidates) <= 1 правило
-    разброса не требует разнообразия — достаточно одной оценки.
+    True, если: (а) каждый кандидат имеет голос, и (б) среди голосов
+    есть и YES, и NO (правило разброса в одном раунде). При
+    len(candidates) <= 1 правило разброса не требует разнообразия —
+    достаточно одной оценки.
     """
     if not candidates:
         return False
@@ -416,7 +417,7 @@ async def cmd_jt_nav(message: IncomingMessage, bot: Bot) -> None:
 )
 @jury_only
 async def cmd_jt_vote(message: IncomingMessage, bot: Bot) -> None:
-    """Сохранить черновик голоса для текущей работы (§35.3)."""
+    """Сохранить черновик голоса для текущей работы карусели."""
     data = message.data or {}
     vote_name = data.get("vote")
     if vote_name not in JuryVoteValue.__members__:
@@ -499,7 +500,7 @@ async def cmd_jt_vote(message: IncomingMessage, bot: Bot) -> None:
 )
 @jury_only
 async def cmd_jt_back(message: IncomingMessage, bot: Bot) -> None:
-    """Вернуться к списку задач (§35.3 «В меню задач»).
+    """Вернуться к списку задач («В меню задач»).
 
     Черновики НЕ сбрасываются — они в БД. FSM-данные карусели
     очищаются, чтобы при возврате стартовать с позиции 0.
@@ -553,11 +554,12 @@ async def cmd_jury_tasks_internal(message: IncomingMessage, bot: Bot) -> None:
 )
 @jury_only
 async def cmd_jt_submit(message: IncomingMessage, bot: Bot) -> None:
-    """Финализация оценок судьи (§35.3, §35.4).
+    """Финализация оценок судьи за раунд.
 
-    Проверяет условия активации (§35.1), переводит черновики в
-    SUBMITTED через ``services.jury.submit_votes``, после успеха
-    очищает FSM и возвращает судью в список задач.
+    Проверяет условия активации (все работы оценены, среди оценок есть
+    и «Да», и «Нет»), переводит черновики в SUBMITTED через
+    ``services.jury.submit_votes``, после успеха очищает FSM и
+    возвращает судью в список задач.
     """
     fsm = message.state.fsm
     fsm_data = await fsm.get_data()
@@ -591,7 +593,7 @@ async def cmd_jt_submit(message: IncomingMessage, bot: Bot) -> None:
                 message,
                 bot,
                 "Сначала оцените все работы и убедитесь, что среди "
-                "оценок есть и «Да», и «Нет» (правило разброса §35.1).",
+                "оценок есть и «Да», и «Нет» (правило разброса в одном раунде).",
             )
             return
         try:
@@ -646,8 +648,7 @@ async def _voting_text_handler(message: IncomingMessage, bot: Bot) -> None:
     )
 
 
-# Регистрируется в handlers.common диспетчере при импорте этого модуля
-# (Wave 3 импортирует collector в `handlers/__init__.py`).
+# Регистрируется в handlers.common диспетчере при импорте этого модуля.
 from handlers.common import register_state_handler  # noqa: E402
 
 register_state_handler(

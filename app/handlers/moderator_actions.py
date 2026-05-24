@@ -1,20 +1,22 @@
 """
-Точечные действия модератора по заявке (Wave 2 / B).
+Точечные действия модератора по заявке.
 
 Команды:
 
-- ``/find BR-2026-XXXX`` — карточка заявки + кнопки действий (§27.1);
-- ``/status <ID> <группа> <значение>`` — смена статуса в группе (§26);
-- ``/comment <ID> <текст>`` — комментарий модератора (§25.1 №15);
-- ``/notify_fix <ID> [текст_уточнения]`` — §18.4
-  (с предупреждением, если до 21 июня меньше 24 ч);
-- ``/notify_reject <ID> <причина>`` — §18.3 + перенос в
-  ``99_Отклонено/<дата_модерации>/`` + физическое удаление файлов
-  работы (через ``services.storage``);
-- ``/notify_shortlist <ID>`` — §18.5;
+- ``/find BR-2026-XXXX`` — карточка заявки + кнопки действий;
+- ``/status <ID> <группа> <значение>`` — смена статуса в одной из
+  четырёх групп (модерация / жюри / голосование / попадание в шорт-лист);
+- ``/comment <ID> <текст>`` — комментарий модератора;
+- ``/notify_fix <ID> [текст_уточнения]`` — уведомление участнику
+  «требуется исправление» (с предупреждением, если до дедлайна приёма
+  заявок осталось меньше 24 ч);
+- ``/notify_reject <ID> <причина>`` — уведомление об отклонении
+  + перенос метаданных в ``99_Отклонено/<дата_модерации>/`` +
+  физическое удаление файлов работы (через ``services.storage``);
+- ``/notify_shortlist <ID>`` — уведомление о попадании в шорт-лист;
 - ``/files <ID>`` — отдать модератору файлы в чат
   (в режиме ``files`` — вложениями, в режиме ``links`` — ссылку
-  на папку участника, §33.6.4).
+  на папку участника).
 
 Если команда вызвана **с инлайн-кнопки карточки** без обязательного
 аргумента (``/notify_reject``, ``/comment``) или с пустым опциональным
@@ -70,11 +72,11 @@ collector = HandlerCollector()
 # Константы дедлайнов и форматов
 # =====================================================================
 
-# §18.4: дедлайн исправлений совпадает с финальной датой приёма заявок.
-# Год берётся из COMPETITION_YEAR (config), месяц/день фиксированы по ТЗ.
+# Дедлайн исправлений совпадает с финальной датой приёма заявок.
+# Год берётся из COMPETITION_YEAR (config), месяц/день — 21 июня.
 INTAKE_DEADLINE = date(COMPETITION_YEAR, 6, 21)
 
-# §18.4 ⓘ предупреждение модератору, если до дедлайна < 24 ч.
+# Предупреждение модератору, если до дедлайна < 24 ч.
 INTAKE_DEADLINE_WARNING_HOURS = 24
 
 
@@ -131,7 +133,7 @@ def _normalize_br_id(token: str) -> str:
 
 
 def _card_action_buttons(app: Application) -> BubbleMarkup:
-    """Полный набор инлайн-кнопок карточки (§27.1)."""
+    """Полный набор инлайн-кнопок карточки заявки."""
     bubbles = BubbleMarkup()
     bubbles.add_button(
         command=f"/files {app.br_id}",
@@ -180,7 +182,7 @@ def _card_action_buttons(app: Application) -> BubbleMarkup:
 )
 @moderator_only
 async def cmd_find(message: IncomingMessage, bot: Bot) -> None:
-    """Карточка заявки по ``BR-2026-XXXX`` (§27.1).
+    """Карточка заявки по ``BR-2026-XXXX``.
 
     Форматы вызова:
 
@@ -224,11 +226,13 @@ async def cmd_find(message: IncomingMessage, bot: Bot) -> None:
 )
 @moderator_only
 async def cmd_status(message: IncomingMessage, bot: Bot) -> None:
-    """Смена статуса в одной из 4 групп §26.
+    """Смена статуса заявки в одной из групп.
 
-    Группа ``жюри`` — read-only (§25.3.3): сервис вернёт ошибку.
-    Допустимые группы (любой регистр): ``модерация``, ``голосование``,
-    ``мерч``, ``moderation``, ``voting``, ``merch``.
+    Группа ``жюри`` — read-only, меняется автоматически по итогам
+    раундов жюри: сервис вернёт ошибку, если попытаться её
+    модифицировать вручную. Допустимые группы (любой регистр):
+    ``модерация``, ``голосование``, ``мерч``, ``moderation``,
+    ``voting``, ``merch``.
 
     Пример: ``/status BR-2026-0001 модерация допущено``.
     """
@@ -296,7 +300,7 @@ async def cmd_status(message: IncomingMessage, bot: Bot) -> None:
 )
 @moderator_only
 async def cmd_comment(message: IncomingMessage, bot: Bot) -> None:
-    """Добавить/перезаписать комментарий модератора (§25.1 №15).
+    """Добавить/перезаписать комментарий модератора к заявке.
 
     Если текст не указан — переходим в FSM-режим
     ``moderator_action_comment_input``: следующее текстовое сообщение
@@ -386,16 +390,15 @@ async def _state_handle_comment(message: IncomingMessage, bot: Bot) -> None:
 
 @collector.command(
     "/notify_fix",
-    description="Сообщение участнику: требуется исправление (§18.4)",
+    description="Сообщение участнику: требуется исправление",
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
 async def cmd_notify_fix(message: IncomingMessage, bot: Bot) -> None:
-    """§18.4: «Требуется исправление».
+    """Уведомление участнику «Требуется исправление».
 
     Сигнатура: ``/notify_fix <ID> [текст_уточнения]``. ``текст_уточнения``
-    — опциональный, добавляется отдельным абзацем «Уточнение модератора:
-    …» (см. §27.1 / Wave 0).
+    — опциональный, добавляется отдельным абзацем «Уточнение модератора: …».
 
     Если до дедлайна 21 июня осталось < 24 ч — модератор получает
     предупреждение перед отправкой.
@@ -435,7 +438,7 @@ async def _send_notify_fix(
             f"{max(0, hours_left):.1f} ч. Окно для родителя короткое.\n\n"
         )
 
-    # Изменим статус на «нужно исправить» (§26): это синхронизирует
+    # Изменим статус на «нужно исправить»: это синхронизирует
     # поле статуса с фактическим действием.
     if app.moderation_status != ModerationStatus.NUZHNO_ISPRAVIT:
         await change_status(
@@ -452,15 +455,15 @@ async def _send_notify_fix(
             bot, app=app, extra=extra
         )
     except NotImplementedError:
-        # Сервис уведомлений ещё не реализован (стаб Wave 1) — модератор
-        # получает явный диагностический ответ. На smoke-чеке Wave 2
-        # это допустимо; в Wave 3 ветка D подменит реализацию.
+        # Сервис уведомлений ещё не реализован — модератор получает
+        # явный диагностический ответ, и статус заявки всё равно
+        # переключён, чтобы очередь оставалась консистентной.
         await reply_to_user(
             message,
             bot,
             deadline_warning
             + (
-                f"⏳ Сервис уведомлений ещё не реализован (Wave 2 / D).\n"
+                "⏳ Сервис уведомлений ещё не реализован.\n"
                 f"Заявка {app.br_id}: статус переведён в «нужно исправить»."
             ),
         )
@@ -499,14 +502,14 @@ async def _send_notify_fix(
 
 @collector.command(
     "/notify_reject",
-    description="Отклонить заявку (§18.3 + 99_Отклонено/)",
+    description="Отклонить заявку и перенести в 99_Отклонено/",
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
 async def cmd_notify_reject(message: IncomingMessage, bot: Bot) -> None:
-    """§18.3 + §24: отклонить + перенести метаданные + удалить файлы.
+    """Отклонить заявку: перенести метаданные и удалить файлы.
 
-    Причина обязательная (§27.1) и пишется в ``reason.txt`` дословно.
+    Причина обязательная и пишется в ``reason.txt`` дословно.
     Если не указана — модератор переходит в FSM-режим
     ``moderator_action_reject_reason``.
     """
@@ -531,7 +534,7 @@ async def cmd_notify_reject(message: IncomingMessage, bot: Bot) -> None:
             bot,
             (
                 f"Отправьте причину отклонения заявки {br_id} следующим "
-                "сообщением. Текст уйдёт в reason.txt дословно (§24.1)."
+                "сообщением. Текст уйдёт в reason.txt дословно."
             ),
         )
         return
@@ -564,7 +567,7 @@ async def _apply_reject(
         storage_done = True
     except NotImplementedError:
         error_lines.append(
-            "Сервис storage ещё не реализован (Wave 2 / D): метаданные "
+            "Сервис storage ещё не реализован: метаданные "
             "не перенесены, файлы не удалены."
         )
     except Exception:
@@ -578,7 +581,7 @@ async def _apply_reject(
         )
 
     # Смена статуса — даже если storage не реализован, модератор
-    # должен видеть статус ОТКЛОНЕНО в очереди (§24.2).
+    # должен видеть статус ОТКЛОНЕНО в очереди.
     status_result = await change_status(
         br_id=br_id,
         group="moderation",
@@ -599,7 +602,7 @@ async def _apply_reject(
         notify_done = True
     except NotImplementedError:
         error_lines.append(
-            "Сервис уведомлений ещё не реализован (Wave 2 / D): "
+            "Сервис уведомлений ещё не реализован: "
             "сообщение участнику не отправлено."
         )
     except Exception:
@@ -648,7 +651,7 @@ async def _state_handle_reject_reason(
         await reply_to_user(
             message,
             bot,
-            "Причина не может быть пустой (§27.1).",
+            "Причина не может быть пустой.",
         )
         return
     await _apply_reject(message, bot, br_id=br_id, reason=reason)
@@ -687,12 +690,12 @@ async def _state_handle_fix_note(
 
 @collector.command(
     "/notify_shortlist",
-    description="Сообщение участнику: попадание в шорт-лист (§18.5)",
+    description="Сообщение участнику: попадание в шорт-лист",
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
 async def cmd_notify_shortlist(message: IncomingMessage, bot: Bot) -> None:
-    """§18.5: «Работа попала в шорт-лист»."""
+    """Уведомление участнику: «Работа попала в шорт-лист»."""
     arg = _split_command_argument(message)
     br_id_token, _ = _split_id_and_rest(arg)
     br_id = _normalize_br_id(br_id_token)
@@ -716,8 +719,8 @@ async def cmd_notify_shortlist(message: IncomingMessage, bot: Bot) -> None:
         await reply_to_user(
             message,
             bot,
-            f"⏳ Сервис уведомлений ещё не реализован (Wave 2 / D). "
-            f"{br_id} остался без сообщения 18.5.",
+            f"⏳ Сервис уведомлений ещё не реализован. "
+            f"{br_id} остался без сообщения о шорт-листе.",
         )
         return
     except Exception:
@@ -748,15 +751,15 @@ async def cmd_notify_shortlist(message: IncomingMessage, bot: Bot) -> None:
 
 @collector.command(
     "/files",
-    description="Получить файлы заявки в чат (§27.1, §33.6.4)",
+    description="Получить файлы заявки в чат",
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
 async def cmd_files(message: IncomingMessage, bot: Bot) -> None:
-    """Выдача файлов модератору (§27.1).
+    """Выдача файлов модератору.
 
-    В режиме ``files`` — каждое вложение отдельным сообщением
-    (``OutgoingAttachment``). В режиме ``links`` (§33.6.4) — текстовое
+    В режиме приёма ``files`` — каждое вложение отдельным сообщением
+    (``OutgoingAttachment``). В режиме ``links`` — текстовое
     сообщение со ссылкой на папку участника.
     """
     arg = _split_command_argument(message)
@@ -778,7 +781,7 @@ async def cmd_files(message: IncomingMessage, bot: Bot) -> None:
     if app.intake_mode == IntakeMode.LINKS:
         link = app.cloud_link or "—"
         body = (
-            f"🔗 Заявка {app.br_id} — режим приёма «links» (§33.6).\n"
+            f"🔗 Заявка {app.br_id} — режим приёма «links».\n"
             f"Ссылка на папку участника: {link}"
         )
         await reply_to_user(message, bot, body, bubbles=_card_action_buttons(app))
@@ -842,7 +845,7 @@ async def _read_application_file(
     """Прочитать файл из ``ATTACHMENTS_DIR`` и завернуть в OutgoingAttachment.
 
     ``relative_path`` — путь относительно ``ATTACHMENTS_DIR``, заданный
-    сервисом storage в момент сохранения файла (§22, §23). Имя
+    сервисом storage в момент сохранения файла. Имя
     результирующего вложения берём из ``stored_filename`` для
     консистентности с тем, что лежит на диске.
     """

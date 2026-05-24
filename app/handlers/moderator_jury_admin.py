@@ -1,5 +1,5 @@
 """
-Админ-команды модератора над жюри-логикой (Wave 2 / B, §27.5).
+Админ-команды модератора над жюри-логикой.
 
 Реализует:
 
@@ -10,7 +10,7 @@
 - ``/jury_close_round all`` — закрыть текущий открытый раунд во всех
   пулах разом;
 - ``/jury_finalize`` — аварийная финализация: остановить процесс,
-  зафиксировать топы и применить жребий, где нужно (§35.5).
+  зафиксировать топы и применить жребий там, где нужно.
 
 **Формат пула** (зафиксирован в этой команде; ответы пользователю в
 docstring):
@@ -24,11 +24,11 @@ docstring):
 
 Все DB-агрегации сделаны без N+1: ``/jury_state`` строится двумя
 запросами (открытые раунды + один GROUP BY по голосам), ``close_round``
-вызывает ``services.jury.close_round`` (стаб Wave 1, заполнит C2).
+вызывает ``services.jury.close_round``.
 
 ``collector`` подключается в
 ``app/handlers/__init__.py → get_all_collectors()`` за
-``handlers/moderator_export.py`` (последний файл ветки B).
+``handlers/moderator_export.py``.
 """
 from __future__ import annotations
 
@@ -65,11 +65,12 @@ collector = HandlerCollector()
 # Алиасы пулов
 # =====================================================================
 
-# Все пулы конкурса (`len(Track) × len(AgeCategory)`, §35.1). После
-# Wave 0 replay 2026-05-21 это 9 пулов (3 × 3). Хардкода числа нет —
-# при правках enum сервис перестраивается автоматически. Локальный
+# Все пулы конкурса — декартово произведение `Track × AgeCategory`
+# (на текущей конфигурации 3 × 3 = 9 пулов). Хардкода числа нет —
+# при правках enum список перестраивается автоматически. Локальный
 # список используется здесь, потому что `services.pools.all_pools()`
-# пока стаб; в Wave 3 хендлер переедет на сервис без правок алгоритма.
+# пока не реализован; при появлении сервиса хендлер переедет на него
+# без правок алгоритма.
 ALL_POOLS: list[tuple[Track, AgeCategory]] = [
     (track, age) for track in Track for age in AgeCategory
 ]
@@ -168,7 +169,7 @@ def _split_command_argument(message: IncomingMessage) -> str:
 
 @collector.command(
     "/jury_state",
-    description="Состояние процесса жюри по всем пулам (§27.5)",
+    description="Состояние процесса жюри по всем пулам",
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
@@ -217,7 +218,7 @@ async def cmd_jury_state(message: IncomingMessage, bot: Bot) -> None:
 
     now = datetime.utcnow()
     lines = [
-        "⚖️ Состояние жюри (§35, §27.5).",
+        "⚖️ Состояние жюри.",
         "Формат строки: <пул> · раунд · статус · "
         "судей submitted/назначено · до дедлайна.",
         "",
@@ -262,12 +263,12 @@ def _format_deadline(deadline_at: datetime, delta) -> str:
 
 @collector.command(
     "/jury_close_round",
-    description="Досрочное закрытие текущего раунда жюри (§27.5)",
+    description="Досрочное закрытие текущего раунда жюри",
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
 async def cmd_jury_close_round(message: IncomingMessage, bot: Bot) -> None:
-    """Закрытие открытого раунда (§35.4 пункт «в»).
+    """Досрочное закрытие открытого раунда жюри.
 
     Аргумент:
 
@@ -352,7 +353,7 @@ async def _close_open_rounds(
         except NotImplementedError:
             not_implemented = True
             failed.append(
-                f"{pool_label} р{r.round_no} — services.jury.close_round() — стаб (Wave 2 / C)"
+                f"{pool_label} р{r.round_no} — services.jury.close_round() ещё не реализован"
             )
             continue
         except Exception:
@@ -375,8 +376,7 @@ async def _close_open_rounds(
     if not_implemented:
         lines.append("")
         lines.append(
-            "Сервис жюри пока стаб (Wave 1) — закрытие фактически не выполнено. "
-            "Подождите Wave 2 / C."
+            "Сервис жюри ещё не реализован — закрытие фактически не выполнено."
         )
     if not lines:
         lines.append("Ничего не сделано.")
@@ -391,12 +391,12 @@ async def _close_open_rounds(
 
 @collector.command(
     "/jury_finalize",
-    description="Аварийная финализация процесса жюри (§27.5)",
+    description="Аварийная финализация процесса жюри",
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
 async def cmd_jury_finalize(message: IncomingMessage, bot: Bot) -> None:
-    """Финализация процесса (§35.5).
+    """Аварийная финализация процесса жюри.
 
     Если по пулу остался открытый раунд — применяется жребий на текущей
     стадии (логика — внутри ``services.jury.build_shortlist()``).
@@ -409,8 +409,8 @@ async def cmd_jury_finalize(message: IncomingMessage, bot: Bot) -> None:
         await reply_to_user(
             message,
             bot,
-            "⏳ services.jury.build_shortlist() пока стаб (Wave 2 / C). "
-            "Финализация будет доступна, когда ветка C подключит сервис.",
+            "⏳ services.jury.build_shortlist() ещё не реализован — "
+            "финализация будет доступна, когда сервис будет подключен.",
         )
         return
     except Exception:

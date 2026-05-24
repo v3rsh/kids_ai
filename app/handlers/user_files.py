@@ -1,22 +1,22 @@
 """
-Приём файлов работы по треку (§12, §16).
+Приём файлов работы по треку.
 
 Состояние FSM — ``UserIntake.user_intake_files_collect``. Поведение:
 
-- **Традиционное рисование (§12.1)**:
+- **Традиционное рисование**:
   - 1 файл — для 2D-работ (рисунок/открытка/коллаж/аппликация/комикс);
   - 2–4 файла — для поделки/3D-модели/фотоинсталляции.
   Бот не спрашивает заранее, какой подтип — после первого файла он
   показывает кнопки ``Добавить ещё файл`` / ``Завершить загрузку``.
-  После 4-го файла шаг завершается автоматически (§12.1).
-- **ИИ-рисунок (§12.2)**: ровно 1 файл. После приёма — автопереход
+  После 4-го файла шаг завершается автоматически.
+- **ИИ-рисунок**: ровно 1 файл. После приёма — автопереход
   к согласиям.
-- **От руки к ИИ (§12.3)**: ровно 1 файл (общий коллаж «до/после»).
-  Второй файл бот **отвергает** и просит заменить (§12.3).
+- **От руки к ИИ**: ровно 1 файл (общий коллаж «до/после»).
+  Второй файл бот отвергает и просит заменить.
 
-Валидация (§16):
+Валидация:
 - разрешённые расширения: ``.jpg .jpeg .png .heic .webp .pdf``;
-- максимальный размер одного файла — ``MAX_FILE_SIZE_MB`` (10 МБ по §11.4).
+- максимальный размер одного файла — ``MAX_FILE_SIZE_MB`` (по умолчанию 10 МБ).
 
 Хранение между шагами:
 - Файлы сохраняются во временный каталог
@@ -27,14 +27,13 @@
   ``services.storage.rename_and_save_file`` уже в ``user_confirm.py``
   на submit (когда заявка имеет ``br_id``).
 
-Backlog: LINKS-режим UX — если ``intake_mode = LINKS`` (§33.6), бот
-должен запрашивать ссылку на облачную папку вместо файла. На текущем
-этапе данный модуль всегда работает как FILES; контракт ссылочного UX
-(новый FSM-state, валидация URL, smoke-тесты) описан в
-``docs/backlog.md`` → раздел ``WAVE4-LINKS-UX``. В реестре поле №13 уже
-учитывает оба режима через ``services.registry.view_command_or_link``
-(§25.1, §33.6.3), а ``intake_mode_value`` корректно прокидывается в БД
-через ``user_confirm.cmd_submit`` (Wave 4 A2).
+Backlog: пользовательский UX режима LINKS (бот запрашивает ссылку на
+облачную папку вместо файла) — отдельная отложенная задача, см.
+``docs/backlog.md`` → раздел ``LINKS-UX``. На текущем этапе данный
+модуль всегда работает как FILES; в реестре поле «Команда/ссылка
+просмотра файлов» уже учитывает оба режима через
+``services.registry.view_command_or_link``, а ``intake_mode_value``
+корректно прокидывается в БД через ``user_confirm.cmd_submit``.
 """
 import shutil
 import tempfile
@@ -62,14 +61,14 @@ collector = HandlerCollector()
 
 
 # =====================================================================
-# Константы валидации (§16, §11.4)
+# Константы валидации
 # =====================================================================
 
 ALLOWED_EXTENSIONS: frozenset[str] = frozenset(
     {".jpg", ".jpeg", ".png", ".heic", ".webp", ".pdf"}
 )
 _MAX_FILE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
-_TRADITIONAL_MAX_FILES = 4  # §12.1 — лимит 4 файла для 3D-варианта
+_TRADITIONAL_MAX_FILES = 4  # лимит ракурсов для 3D-варианта трека «Традиционное рисование»
 
 
 # =====================================================================
@@ -98,7 +97,7 @@ def _cleanup_intake_temp_dir(huid: UUID | str) -> None:
 
 
 # =====================================================================
-# Тексты-инструкции по трекам (§12)
+# Тексты-инструкции по трекам
 # =====================================================================
 
 _PROMPT_TRADITIONAL = (
@@ -135,7 +134,7 @@ _PROMPT_HANDMADE_TO_AI = (
 async def prompt_for_files(
     message: IncomingMessage, bot: Bot, track: Track
 ) -> None:
-    """Показать инструкцию по загрузке файлов для выбранного трека (§12).
+    """Показать инструкцию по загрузке файлов для выбранного трека.
 
     Вызывается из ``user_intake._handle_description`` после установки
     состояния ``user_intake_files_collect``. Очищает временный каталог
@@ -206,9 +205,8 @@ async def _process_incoming_file(
 
     Алгоритм:
     1. Достать ``message.file`` (``IncomingFileAttachment``).
-    2. Валидировать расширение (§16) и размер (§11.4, §16).
-    3. Если ИИ или Handmade-to-AI и уже есть 1 файл — отвергнуть
-       (§12.2 / §12.3).
+    2. Валидировать расширение и размер.
+    3. Если трек AI или Handmade-to-AI и уже есть 1 файл — отвергнуть.
     4. Сохранить во временный каталог сессии с уникальным префиксом.
     5. Пополнить FSM ``data["files"]`` и:
        - для TRADITIONAL: показать кнопки (или автозавершить на 4-м);
@@ -242,7 +240,6 @@ async def _process_incoming_file(
     extension = Path(original_filename).suffix.lower()
 
     if extension not in ALLOWED_EXTENSIONS:
-        # §18.2 — «Заявка не может быть принята: неподдерживаемый формат»
         await safe_answer_transient(
             message,
             bot,
@@ -257,7 +254,6 @@ async def _process_incoming_file(
 
     file_size = getattr(incoming, "size", None) or len(incoming.content or b"")
     if file_size > _MAX_FILE_BYTES:
-        # §16 — фиксированный текст об ошибке размера.
         await safe_answer_transient(
             message,
             bot,
@@ -269,11 +265,8 @@ async def _process_incoming_file(
         )
         return
 
-    # Запрещаем второй файл в треках с лимитом 1 (§12.2 / §12.3).
+    # Запрещаем второй файл в треках с лимитом 1 (AI и Handmade-to-AI).
     if track in (Track.AI, Track.HANDMADE_TO_AI) and len(files) >= 1:
-        # §12.3 акцентирует слово «отвергает» — даём такую же
-        # формулировку для трека «От руки к ИИ»; для ИИ-трека рамка
-        # такая же.
         await safe_answer_transient(
             message,
             bot,
@@ -347,7 +340,6 @@ async def _process_incoming_file(
     # Дальше — траектория по треку.
     if track == Track.TRADITIONAL:
         if len(files) >= _TRADITIONAL_MAX_FILES:
-            # §12.1 — после 4-го файла шаг завершается автоматически.
             logger.debug(
                 "TRADITIONAL: достигнут лимит 4 файлов, автозавершение",
                 parent_huid=str(huid),
@@ -374,7 +366,7 @@ async def _process_incoming_file(
 
 
 async def _proceed_to_consents(message: IncomingMessage, bot: Bot) -> None:
-    """Переход в состояние согласий (§13).
+    """Переход в состояние согласий (LGPD/политика конкурса).
 
     Сами кнопки согласий рисует ``user_confirm.show_consents`` —
     импортируем локально, чтобы не было циклов на этапе загрузки модуля.
@@ -437,7 +429,7 @@ async def cmd_intake_file_more(
 async def cmd_intake_file_done(
     message: IncomingMessage, bot: Bot
 ) -> None:
-    """Кнопка «Завершить загрузку» — переход к согласиям (§13)."""
+    """Кнопка «Завершить загрузку» — переход к согласиям."""
     fsm = message.state.fsm
     current = await fsm.get_state()
     if current != UserIntake.user_intake_files_collect.value:
@@ -450,7 +442,6 @@ async def cmd_intake_file_done(
     data = await fsm.get_data()
     files = data.get("files") or []
     if not files:
-        # §16 — без файла заявка не принимается.
         await safe_answer_transient(
             message,
             bot,
@@ -476,7 +467,8 @@ def _sanitize_filename(filename: str) -> str:
     за пределы каталога. Остальной anti-traversal делает Path, а
     финальное переименование на сервере выполняет
     ``services.storage.rename_and_save_file`` (там используется шаблон
-    из §22, оригинальное имя в FS не сохраняется — только в meta.txt).
+    «BR_ID-ParentName-ChildName-Track-AgeCategory.ext»; оригинальное
+    имя в FS не сохраняется — только в meta.txt рядом с файлами).
     """
     cleaned = filename.replace("\x00", "").replace("/", "_").replace("\\", "_")
     cleaned = cleaned.strip().lstrip(".")
