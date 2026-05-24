@@ -188,8 +188,15 @@ class JuryVoteState(enum.Enum):
 class User(Base):
     """Пользователь бота.
 
-    huid — идентификатор из eXpress (приходит в каждом IncomingMessage).
-    chat_id — нужен для проактивных сообщений (push из планировщика).
+    ``huid`` — идентификатор из eXpress (приходит в каждом IncomingMessage).
+    ``chat_id`` — личный чат с ботом, нужен для проактивных сообщений
+    (push из планировщика и нотификаций).
+
+    CTS-кэш (поля ниже `last_activity`) заполняется
+    ``services.users.sync_user_from_cts`` через ``bot.search_user_by_huid``;
+    обновляется не чаще, чем раз в ``ensure_user_profile_loaded.max_age_sec``
+    (24 часа по умолчанию). Используется как источник ФИО и подразделения
+    для шага ``cmd_apply``, чтобы пользователь не вводил эти поля вручную.
     """
 
     __tablename__ = "users"
@@ -203,6 +210,19 @@ class User(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     last_activity: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+    # ===== CTS-кэш (заполняется sync_user_from_cts) =====
+    ad_login: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    ad_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    ip_phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    other_phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    department: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    company: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    company_position: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    public_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    cts_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -250,6 +270,12 @@ class Application(Base):
     parent_full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     parent_division: Mapped[str] = mapped_column(String(255), nullable=False)
     parent_ad_login: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Контакт для связи, который явно ввёл родитель на шаге «Контакт»
+    # анкеты (email или телефон). Тип определяется автоматически по
+    # наличию '@' и сохраняется отдельно для последующей валидации/UX
+    # (например, кликабельная ссылка mailto:/tel: в карточке модератора).
+    parent_contact: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    parent_contact_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
     child_name: Mapped[str] = mapped_column(String(255), nullable=False)
     child_age: Mapped[int] = mapped_column(Integer, nullable=False)
     age_category: Mapped[AgeCategory] = mapped_column(
@@ -367,14 +393,21 @@ class ApplicationFile(Base):
 class Moderator(Base):
     """Справочник модераторов.
 
-    Заполняется при старте бота из конфига ``MODERATOR_HUIDS``
-    (см. ``services/access.py`` / lifespan).
+    Первичный bootstrap — из ``MODERATOR_HUIDS`` при первом запуске
+    (см. ``services/access.py::seed_access_from_config_if_empty``).
+    Дальше управляется командами admin'а через бот: discovery карточка
+    + кнопки одобрения (``handlers/admin_roles.py``). Источник правды
+    в рантайме — кэш ``services.access._moderator_huids``.
     """
 
     __tablename__ = "moderators"
 
     huid: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    added_by_huid: Mapped[PyUUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, index=True
     )
@@ -389,14 +422,20 @@ class Moderator(Base):
 class JuryMember(Base):
     """Справочник членов жюри.
 
-    Заполняется при старте бота из конфига ``JURY_HUIDS``.
-    Распределение по пулам — в ``JuryPoolAssignment``.
+    Первичный bootstrap — из ``JURY_HUIDS`` при первом запуске
+    (см. ``services/access.py::seed_access_from_config_if_empty``).
+    Дальше управляется командами admin'а через бот. Распределение по
+    пулам — в ``JuryPoolAssignment``.
     """
 
     __tablename__ = "jury_members"
 
     huid: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    added_by_huid: Mapped[PyUUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, index=True
     )

@@ -172,9 +172,14 @@ def view_command_or_link(app: Application) -> str:
 def contact_field(app: Application) -> str:
     """Значение поля «Контакт».
 
-    - Если у заявителя есть ``parent_ad_login`` — пишем ``@<login>``;
-    - иначе — ``HUID: <uuid>`` (HUID всегда доступен).
+    Приоритет:
+    1. ``parent_contact`` — то, что родитель явно ввёл на шаге
+       «Контакт» в анкете (email или телефон);
+    2. ``@<parent_ad_login>`` — корпоративный логин из CTS, если есть;
+    3. ``HUID: <uuid>`` — последний fallback (HUID всегда доступен).
     """
+    if getattr(app, "parent_contact", None):
+        return app.parent_contact
     if app.parent_ad_login:
         return f"@{app.parent_ad_login}"
     return f"HUID: {app.parent_huid}"

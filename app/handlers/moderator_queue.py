@@ -163,13 +163,18 @@ def _short_card(app: Application) -> str:
 
 
 def _full_card(app: Application) -> str:
-    """Развёрнутая карточка для ``/browse`` и ``/find``."""
+    """Развёрнутая карточка для ``/browse`` и ``/find``.
+
+    Контакт собираем по приоритету: явно введённый родителем
+    ``parent_contact`` → ``@ad_login`` → ``HUID:`` (последний fallback).
+    """
     files_count = len(app.files) if app.files is not None else 0
-    contact = (
-        f"@{app.parent_ad_login}"
-        if app.parent_ad_login
-        else f"HUID: {app.parent_huid}"
-    )
+    if getattr(app, "parent_contact", None):
+        contact = app.parent_contact
+    elif app.parent_ad_login:
+        contact = f"@{app.parent_ad_login}"
+    else:
+        contact = f"HUID: {app.parent_huid}"
     duplicate_line = ""
     if app.is_possible_duplicate:
         related = app.related_application_br_id or "—"
@@ -342,6 +347,7 @@ def _browse_navigation_buttons(
 @collector.command(
     "/queue",
     description="Очередь заявок на модерации",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
@@ -634,6 +640,7 @@ async def cmd_filter_clear(message: IncomingMessage, bot: Bot) -> None:
 @collector.command(
     "/browse",
     description="Карусель просмотра заявок",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only

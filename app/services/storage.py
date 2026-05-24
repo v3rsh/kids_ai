@@ -32,7 +32,7 @@ import re
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 from uuid import UUID
 
 import aiofiles
@@ -344,7 +344,14 @@ async def rename_and_save_file(
 
 
 def _format_contact(app: Application) -> str:
-    """Контакт в meta.txt: ``@ad_login`` или ``HUID: <uuid>``."""
+    """Контакт для meta.txt и карточки модератора.
+
+    Приоритет: ``parent_contact`` (что родитель явно ввёл на шаге
+    «Контакт» в анкете) → ``@ad_login`` (если CTS-логин известен) →
+    ``HUID: <uuid>`` (последний fallback).
+    """
+    if getattr(app, "parent_contact", None):
+        return app.parent_contact
     if app.parent_ad_login:
         return f"@{app.parent_ad_login}"
     return f"HUID: {app.parent_huid}"
@@ -394,18 +401,33 @@ async def write_description_txt(app: Application) -> Path:
     return path
 
 
-async def write_meta_txt(app: Application) -> Path:
-    """Записать ``meta.txt`` рядом с файлами заявки."""
+async def write_meta_txt(
+    app: Application,
+    *,
+    files: Sequence[ApplicationFile] | None = None,
+) -> Path:
+    """Записать ``meta.txt`` рядом с файлами заявки.
+
+    Аргумент ``files`` — явный список файлов заявки. Передаётся
+    вызывающим кодом (``handlers.user_confirm._materialize_files``)
+    после ``register_application_files``. Если ``files=None`` — функция
+    пробует ``app.files`` (актуально только когда ``app`` всё ещё
+    привязан к сессии). Параметр введён, чтобы избежать
+    ``DetachedInstanceError`` при попытке lazy-load relationship на
+    expunge-объекте после закрытия сессии.
+    """
     folder = await create_application_folder(app)
     path = folder / META_TXT
-    files_block = _format_files_block(list(app.files or []))
+    files_block = _format_files_block(
+        list(files if files is not None else (app.files or []))
+    )
 
     body_lines = [
         f"ID заявки: {app.br_id}",
         f"Дата подачи: {_format_submission_dt(app)}",
         f"ФИО родителя: {app.parent_full_name}",
         f"Подразделение: {app.parent_division}",
-        f"Контакт (eXpress): {_format_contact(app)}",
+        f"Контакт: {_format_contact(app)}",
         f"Имя ребёнка: {app.child_name}",
         f"Возраст: {app.child_age}",
         f"Возрастная категория: {app.age_category.value}",

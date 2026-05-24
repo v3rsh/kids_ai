@@ -14,10 +14,14 @@
 2. ``services.storage.create_application_folder`` + последовательное
    ``services.storage.rename_and_save_file`` для каждого файла из
    временного каталога (см. ``user_files.py``).
-3. ``services.storage.write_meta_txt`` + ``write_description_txt``.
-4. ``services.notifications.notify_participant_accepted`` и
+3. ``services.applications.register_application_files`` — INSERT в
+   ``application_files`` и reload ``Application`` с ``selectinload``
+   (иначе ``write_meta_txt`` упадёт с ``DetachedInstanceError`` на
+   ``app.files``).
+4. ``services.storage.write_meta_txt`` + ``write_description_txt``.
+5. ``services.notifications.notify_participant_accepted`` и
    ``services.notifications.notify_moderation_chat_new_application``.
-5. Очистка FSM + временного каталога анкеты.
+6. Очистка FSM + временного каталога анкеты.
 
 Все этапы 2–4 обёрнуты в общий try/except: на случай, если
 зависимости storage/notifications недоступны (например, поломка диска
@@ -200,7 +204,7 @@ def _build_review_text(data: dict) -> str:
         "Проверьте данные заявки:\n\n"
         f"Родитель: {data.get('parent_full_name', '?')}\n"
         f"Подразделение: {data.get('parent_division', '?')}\n"
-        "Контакт: подставляется автоматически из eXpress (HUID/ad_login)\n\n"
+        f"Контакт: {data.get('parent_contact', '?')}\n\n"
         f"Ребёнок: {data.get('child_name', '?')}, {child_age if child_age else '?'}\n"
         f"Возрастная категория: {age_category_label}\n\n"
         f"Название работы: {data.get('title', '?')}\n"
@@ -281,6 +285,8 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
             parent_full_name=data["parent_full_name"],
             parent_division=data["parent_division"],
             parent_ad_login=getattr(message.sender, "ad_login", None),
+            parent_contact=data.get("parent_contact"),
+            parent_contact_type=data.get("parent_contact_type"),
             child_name=data["child_name"],
             child_age=int(data["child_age"]),
             track_name=data["track"],
@@ -323,7 +329,9 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
     )
 
     # ----- Шаг 2: материализация файлов через services.storage -----
-    storage_ok = await _materialize_files(application, files_meta, data)
+    storage_ok, application = await _materialize_files(
+        application, files_meta, data
+    )
 
     # ----- Шаг 3: уведомления участнику и в чат модерации -----
     await _send_notifications(bot, application, storage_ok)
@@ -349,33 +357,29 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 async def cmd_restart(message: IncomingMessage, bot: Bot) -> None:
-    """Кнопка «Заполнить заново» — сброс FSM и старт анкеты с нуля."""
-    fsm = message.state.fsm
+    """Кнопка «Заполнить заново» — сброс FSM и старт анкеты с нуля.
+
+    Делегирует на ``handlers.user.cmd_apply``, чтобы переиспользовать
+    единый flow с подтягиванием профиля из CTS (ФИО/подразделение) и
+    переходом сразу к шагу «Контакт». Старый прямой переход в FSM-шаг
+    «ФИО родителя» удалён вместе с самим шагом.
+    """
     parent_huid = message.sender.huid
+    fsm = message.state.fsm
 
     from handlers.user_files import _cleanup_intake_temp_dir
 
     _cleanup_intake_temp_dir(parent_huid)
     await fsm.clear()
 
-    await fsm.set_state(UserIntake.user_intake_parent_full_name)
-    await fsm.set_data({})
-
     logger.info(
         "Анкета перезапущена пользователем",
         parent_huid=str(parent_huid),
     )
 
-    await reply_to_user(
-        message,
-        bot,
-        (
-            "Начинаем заново.\n\n"
-            "Шаг 1 из 7. Как вас зовут? Укажите ФИО полностью "
-            "(например, «Иванова Анна Сергеевна»)."
-        ),
-        bubbles=BubbleMarkup(),
-    )
+    from handlers.user import cmd_apply
+
+    await cmd_apply(message, bot)
 
 
 # =====================================================================
@@ -386,6 +390,7 @@ async def cmd_restart(message: IncomingMessage, bot: Bot) -> None:
 _REQUIRED_FIELDS: tuple[tuple[str, str], ...] = (
     ("parent_full_name", "ФИО родителя"),
     ("parent_division", "Подразделение"),
+    ("parent_contact", "Контакт для связи"),
     ("child_name", "Имя ребёнка"),
     ("child_age", "Возраст ребёнка"),
     ("track", "Трек"),
@@ -430,22 +435,31 @@ def _file_kinds_for_track(
 
 async def _materialize_files(
     application, files_meta: list[dict], data: dict
-) -> bool:
+):
     """Перенос временных файлов в постоянное хранилище ``ATTACHMENTS_DIR``.
 
-    Возвращает True при полном успехе. Если какая-то операция
-    ``services.storage`` пока не реализована (``NotImplementedError``)
-    или упала, логируем warning/exception и возвращаем False. Запись
-    в БД остаётся в любом случае — администратор сможет повторно
-    донакатить файлы из временного каталога.
+    Возвращает ``(storage_ok, application)``. ``application`` —
+    перезагруженный из БД объект с ``selectinload(files)`` после
+    регистрации файлов в ``application_files``; нужен, потому что
+    объект, пришедший из ``create_application``, уже detached, и
+    обращение к ``app.files`` (например, из ``write_meta_txt``)
+    падает с ``DetachedInstanceError``.
+
+    Если какая-то операция ``services.storage`` пока не реализована
+    (``NotImplementedError``) или упала, логируем warning/exception
+    и возвращаем ``storage_ok=False`` с исходным объектом. Запись в БД
+    остаётся в любом случае — администратор сможет повторно донакатить
+    файлы из временного каталога.
     """
     from pathlib import Path
+
+    from config import ATTACHMENTS_DIR
 
     try:
         track = Track[data["track"]]
     except KeyError:
         logger.error("materialize_files: неверный track", data=data.get("track"))
-        return False
+        return False, application
 
     try:
         await storage_service.create_application_folder(application)
@@ -454,21 +468,22 @@ async def _materialize_files(
             "services.storage.create_application_folder ещё не реализован, пропускаем",
             br_id=application.br_id,
         )
-        return False
+        return False, application
     except Exception:
         logger.exception(
             "Не удалось создать папку заявки",
             br_id=application.br_id,
         )
-        return False
+        return False, application
 
     plan: Iterable[tuple[FileKind, int | None]] = _file_kinds_for_track(
         track, len(files_meta)
     )
 
+    file_specs: list[applications_service.ApplicationFileSpec] = []
     for meta, (kind, angle_no) in zip(files_meta, plan):
         try:
-            await storage_service.rename_and_save_file(
+            dst_path = await storage_service.rename_and_save_file(
                 application,
                 kind,
                 angle_no,
@@ -481,35 +496,73 @@ async def _materialize_files(
                 br_id=application.br_id,
                 file=meta.get("original_filename"),
             )
-            return False
+            return False, application
         except Exception:
             logger.exception(
                 "Не удалось сохранить файл",
                 br_id=application.br_id,
                 file=meta.get("original_filename"),
             )
-            return False
+            return False, application
 
-    for writer, label in (
-        (storage_service.write_description_txt, "description.txt"),
-        (storage_service.write_meta_txt, "meta.txt"),
-    ):
         try:
-            await writer(application)
+            relative_path = str(Path(dst_path).relative_to(ATTACHMENTS_DIR))
+        except ValueError:
+            relative_path = str(dst_path)
+
+        file_specs.append(
+            applications_service.ApplicationFileSpec(
+                kind=kind,
+                angle_no=angle_no,
+                original_filename=meta["original_filename"],
+                stored_filename=Path(dst_path).name,
+                relative_path=relative_path,
+                size_bytes=int(meta.get("size_bytes") or 0),
+                mime_type=str(meta.get("mime_type") or "application/octet-stream"),
+            )
+        )
+
+    try:
+        application = await applications_service.register_application_files(
+            br_id=application.br_id,
+            files=file_specs,
+        )
+    except Exception:
+        logger.exception(
+            "Не удалось зарегистрировать файлы заявки в БД",
+            br_id=application.br_id,
+        )
+        return False, application
+
+    # `application.files` уже материализован через `register_application_files`
+    # (populate_existing + list(...) до expunge), поэтому list(...) тут
+    # безопасен и не триггерит lazy load на detached-объекте.
+    materialized_files = list(application.files or [])
+    writer_plan: tuple[tuple, ...] = (
+        (storage_service.write_description_txt, "description.txt", {}),
+        (
+            storage_service.write_meta_txt,
+            "meta.txt",
+            {"files": materialized_files},
+        ),
+    )
+    for writer, label, writer_kwargs in writer_plan:
+        try:
+            await writer(application, **writer_kwargs)
         except NotImplementedError:
             logger.warning(
-                "services.storage.%s ещё не реализован, пропускаем",
+                "services.storage.{} ещё не реализован, пропускаем",
                 label,
                 br_id=application.br_id,
             )
         except Exception:
             logger.exception(
-                "Не удалось записать %s",
+                "Не удалось записать {}",
                 label,
                 br_id=application.br_id,
             )
 
-    return True
+    return True, application
 
 
 async def _send_notifications(bot, application, storage_ok: bool) -> None:

@@ -189,6 +189,8 @@ async def create_application(
     title: str,
     description: str,
     intake_mode_value: str,
+    parent_contact: str | None = None,
+    parent_contact_type: str | None = None,
     cloud_link: str | None = None,
 ) -> "Application":
     """Создать новую заявку.
@@ -254,6 +256,8 @@ async def create_application(
                 parent_full_name=parent_full_name,
                 parent_division=parent_division,
                 parent_ad_login=parent_ad_login,
+                parent_contact=parent_contact,
+                parent_contact_type=parent_contact_type,
                 child_name=child_name,
                 child_age=child_age,
                 age_category=age_category,
@@ -299,12 +303,13 @@ async def register_application_files(
 
     Вызывается из ``handlers.user_confirm._materialize_files`` после
     того, как все файлы успешно перенесены в папку заявки сервисом
-    ``storage.rename_and_save_file``. Запись делается одним batch INSERT
-    в общей с reload транзакции, после ``commit()`` объект ``Application``
-    перезагружается с ``selectinload(Application.files)`` — это даёт
-    bound-объект с заполненной коллекцией ``files`` для последующих
-    шагов (``write_meta_txt`` лезет в ``app.files`` через lazy load,
-    но после reload коллекция уже в памяти).
+    ``storage.rename_and_save_file``. Запись делается одним batch INSERT,
+    после ``commit()`` объект ``Application`` перезагружается с
+    ``selectinload(Application.files)`` и ``execution_options(populate_existing=True)``,
+    а коллекция явно материализуется через ``list(reloaded.files)`` до
+    ``session.expunge``. Это даёт detached-объект с уже заполненной
+    коллекцией ``files`` — последующий ``write_meta_txt(app, files=...)``
+    не упадёт ``DetachedInstanceError``.
 
     Args:
         br_id: ID заявки (``BR-2026-XXXX``).
@@ -344,8 +349,15 @@ async def register_application_files(
             select(Application)
             .where(Application.br_id == br_id)
             .options(selectinload(Application.files))
+            .execution_options(populate_existing=True)
         )
         reloaded = (await session.execute(reload_stmt)).scalar_one()
+        # Форсируем материализацию коллекции `files` до expunge.
+        # populate_existing=True гарантирует, что selectinload отработает,
+        # даже если Application уже в identity map; list(...) даёт прямую
+        # уверенность, что .files лежит в __dict__ и не потребует lazy load
+        # после отвязки от сессии (DetachedInstanceError в write_meta_txt).
+        _ = list(reloaded.files)
         session.expunge(reloaded)
 
     logger.info(

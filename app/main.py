@@ -24,8 +24,9 @@ from config import (
 from database.db import engine, get_session
 from database.models import Base
 from database.migrations import run_auto_migrations
-from fsm import init_fsm_storage, close_fsm_storage
+from fsm import chat_gate_middleware, init_fsm_storage, close_fsm_storage
 from handlers import get_all_collectors
+from handlers._user_sync_middleware import user_sync_middleware
 from routes import routes
 
 
@@ -64,6 +65,14 @@ def create_bot() -> Bot:
                 secret_key=BOT_SECRET_KEY,
             ),
         ],
+        # Глобальный chat-gate: всё, что прилетает из не-личных чатов
+        # (включая чат модерации), молча игнорируется. См. fsm/chat_gate.py.
+        # После него — user_sync_middleware: апсертит юзера в `users`
+        # (huid + chat_id + ad_*) на каждом входящем из личного чата.
+        # Это гарантирует, что у нас есть `chat_id` для проактивных DM
+        # (notifications/discovery), даже если юзер ещё ни разу не дёргал
+        # `/start`. См. handlers/_user_sync_middleware.py.
+        middlewares=[chat_gate_middleware, user_sync_middleware],
         exception_handlers={Exception: _global_error_handler},
     )
 
@@ -89,14 +98,21 @@ async def lifespan(app: Starlette):
     # Автомиграция: добавление колонок, индексов, enum-значений
     await run_auto_migrations()
 
-    # Синхронизация справочников ролей и распределения судей по пулам.
-    # Делается в одной короткой сессии до старта FSM/бота, чтобы первый
-    # клик модератора/жюри сразу попадал в готовую БД.
-    from services.access import sync_role_directories_from_config
+    # Bootstrap ролей и кэша доступа:
+    # 1) seed из env, если таблицы пусты (одноразовая инициализация);
+    # 2) reload in-memory кэша (services.access._moderator_huids и др.) —
+    #    hot path (chat-gate, /moderator, /jury_menu) после этого
+    #    отвечает без походов в БД.
+    # 3) sync пулов жюри.
+    from services.access import (
+        reload_access_cache,
+        seed_access_from_config_if_empty,
+    )
     from services.pools import sync_pool_assignments_from_config
 
     async with get_session()() as session:
-        await sync_role_directories_from_config(session)
+        await seed_access_from_config_if_empty(session)
+        await reload_access_cache(session)
         await sync_pool_assignments_from_config(JURY_POOLS_CONFIG, session=session)
 
     await init_fsm_storage()

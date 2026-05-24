@@ -49,7 +49,7 @@
 | 2 | Дата и время подачи (Europe/Moscow) | `Application.created_at` | ISO-строка `YYYY-MM-DD HH:MM` (см. §2.2.1) |
 | 3 | ФИО родителя | `Application.parent_full_name` | строка |
 | 4 | Подразделение | `Application.parent_division` | строка |
-| 5 | Контакт | `parent_ad_login` → `@<login>`, иначе `HUID: <uuid>` (§11.1) | строка |
+| 5 | Контакт | `parent_contact` → `parent_ad_login` (`@<login>`) → `HUID: <uuid>` (§11.1) | строка |
 | 6 | Имя ребёнка | `Application.child_name` | строка |
 | 7 | Возраст ребёнка | `Application.child_age` | целое |
 | 8 | Возрастная категория | `Application.age_category.value` | `0–6` / `7–12` / `13–18` |
@@ -246,7 +246,7 @@ def jury_column_header(full_name: str, round_no: int) -> str:
 |---|-----------|----------|------------------|
 | 1 | ID заявки | `Application.br_id` | `BR-2026-0001` |
 | 2 | ФИО родителя | `Application.parent_full_name` | строка |
-| 3 | Контакт | `parent_ad_login` → `@<login>`, иначе `HUID: <uuid>` (§11.1) | строка |
+| 3 | Контакт | `parent_contact` → `parent_ad_login` (`@<login>`) → `HUID: <uuid>` (§11.1) | строка |
 | 4 | Имя ребёнка | `Application.child_name` | строка |
 | 5 | Возраст | `Application.child_age` | целое |
 | 6 | Возрастная категория | `Application.age_category.value` | строка (значение enum `AgeCategory`) |

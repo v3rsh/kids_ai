@@ -15,10 +15,18 @@ from enum import Enum
 
 
 class UserIntake(str, Enum):
-    """Поэтапная подача заявки родителем."""
+    """Поэтапная подача заявки родителем.
 
-    user_intake_parent_full_name = "user:intake:parent_full_name"
-    user_intake_parent_division = "user:intake:parent_division"
+    ФИО и подразделение участника подтягиваются автоматически из CTS
+    (``services.users.ensure_user_profile_loaded``) при старте анкеты в
+    ``handlers.user.cmd_apply``. Если CTS не дал какое-то поле — анкета
+    включает один fallback-шаг под него (``*_fb``-состояния ниже).
+    Стандартный «горячий» путь: contact → child_name → child_age →
+    track → title → description → files_collect → consents → review.
+    """
+
+    # Контакт для связи: email или телефон, автоопределение по '@'.
+    user_intake_parent_contact = "user:intake:parent_contact"
     user_intake_child_name = "user:intake:child_name"
     user_intake_child_age = "user:intake:child_age"
     user_intake_track = "user:intake:track"
@@ -27,6 +35,11 @@ class UserIntake(str, Enum):
     user_intake_files_collect = "user:intake:files_collect"
     user_intake_consents = "user:intake:consents"
     user_intake_review = "user:intake:review"
+
+    # Fallback-шаги: включаются, только если соответствующее поле не
+    # пришло из CTS. На горячем пути не используются.
+    user_intake_parent_full_name_fb = "user:intake:parent_full_name_fb"
+    user_intake_parent_division_fb = "user:intake:parent_division_fb"
 
 
 class ModeratorAction(str, Enum):

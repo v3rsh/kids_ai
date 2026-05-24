@@ -31,18 +31,22 @@
 
     register_state_handler(UserIntake.user_intake_parent_full_name.value, on_parent_full_name)
 """
+import asyncio
 from typing import Awaitable, Callable
 
 from loguru import logger
 from pybotx import (
     Bot,
     ChatCreatedEvent,
+    ChatTypes,
     HandlerCollector,
     IncomingMessage,
 )
 
 from fsm import cleanup_middleware, fsm_middleware
 from keyboards import main_menu_bubbles
+from services import access, discovery
+from services import users as users_service
 from utils.bot_utils import reply_to_user
 
 
@@ -100,27 +104,70 @@ WELCOME_TEXT = (
 async def on_chat_created(event: ChatCreatedEvent, bot: Bot) -> None:
     """Первое сообщение при создании чата.
 
-    Используется ``bot.send_message``, потому что в момент chat_created
-    нет ``IncomingMessage`` для трекинга — это первое сообщение в чате,
-    очищать нечего (см. .cursor/rules/message-navigation.mdc, исключения).
+    - PERSONAL_CHAT → welcome + главное меню (стандартный путь).
+    - Группа == текущий ``moderation_chat_id`` → только лог, никаких
+      сообщений в чат.
+    - Любой другой групповой чат → discovery-карточка админу
+      («сделать этот чат чатом модерации?»), welcome не шлём.
+
+    Бот в групповых чатах не отвечает на входящие (см. ``fsm/chat_gate.py``);
+    единственная инициатива в чате модерации — это outbound-нотификации.
     """
+    chat_id = event.chat.id
+    chat_type = event.chat.type
     logger.info(
         "Создан новый чат",
-        chat_id=str(event.chat.id),
-        chat_type=event.chat.type,
+        chat_id=str(chat_id),
+        chat_type=str(chat_type),
     )
-    await bot.send_message(
-        bot_id=event.bot.id,
-        chat_id=event.chat.id,
-        body=WELCOME_TEXT,
-        bubbles=main_menu_bubbles(),
-        wait_callback=False,
+
+    if chat_type == ChatTypes.PERSONAL_CHAT:
+        # Fire-and-forget прогрев CTS-кэша: к моменту первого /apply
+        # у нас уже будут ФИО и подразделение из CTS без задержки.
+        # creator_id есть только у personal-чатов из ChatCreatedEvent.
+        creator_huid = getattr(event, "creator_id", None)
+        if creator_huid is not None:
+            asyncio.create_task(
+                users_service.sync_user_from_cts(bot, creator_huid)
+            )
+        await bot.send_message(
+            bot_id=event.bot.id,
+            chat_id=chat_id,
+            body=WELCOME_TEXT,
+            bubbles=main_menu_bubbles(),
+            wait_callback=False,
+        )
+        return
+
+    moderation_chat = access.get_moderation_chat_id()
+    if moderation_chat is not None and chat_id == moderation_chat:
+        logger.info(
+            "Бот добавлен в текущий чат модерации, welcome не шлём",
+            chat_id=str(chat_id),
+        )
+        return
+
+    creator_huid = getattr(event, "creator_id", None)
+    chat_name = getattr(event, "chat_name", "") or ""
+    await discovery.notify_admin_moderation_chat_candidate(
+        bot,
+        chat_id=chat_id,
+        chat_name=chat_name,
+        creator_huid=creator_huid,
     )
 
 
 @collector.command("/start", description="Главное меню бота")
 async def cmd_start(message: IncomingMessage, bot: Bot) -> None:
-    """Точка входа: показывает приветствие + главное меню."""
+    """Точка входа: показывает приветствие + главное меню.
+
+    Параллельно (fire-and-forget) прогревает CTS-кэш профиля юзера —
+    к моменту нажатия «Подать работу» в `cmd_apply` мы получим ФИО
+    и подразделение из БД без задержки.
+    """
+    asyncio.create_task(
+        users_service.sync_user_from_cts(bot, message.sender.huid)
+    )
     await reply_to_user(message, bot, WELCOME_TEXT, bubbles=main_menu_bubbles())
 
 
@@ -148,6 +195,23 @@ DEFAULT_FALLBACK_TEXT = (
     "Я понимаю только команды. Используй /start или /help."
 )
 
+# Legacy-состояния, удалённые из enum UserIntake (см. план
+# «Fix materialize and contact flow» → C0). У юзеров, застрявших
+# в середине старой анкеты, в Redis может оставаться такое значение —
+# при первом же входящем сбрасываем FSM и предлагаем начать заново.
+_LEGACY_FSM_STATES: frozenset[str] = frozenset(
+    {
+        "user:intake:parent_full_name",
+        "user:intake:parent_division",
+    }
+)
+
+_LEGACY_RESET_TEXT = (
+    "Анкета обновилась — теперь ФИО и подразделение подтягиваются "
+    "автоматически из вашего профиля eXpress. Начните подачу заявки "
+    "заново через /apply."
+)
+
 
 @collector.default_message_handler(middlewares=[fsm_middleware, cleanup_middleware])
 async def default_handler(message: IncomingMessage, bot: Bot) -> None:
@@ -159,6 +223,21 @@ async def default_handler(message: IncomingMessage, bot: Bot) -> None:
     fsm = message.state.fsm
     current_state = await fsm.get_state()
     message.state.current_state = current_state
+
+    if current_state in _LEGACY_FSM_STATES:
+        logger.info(
+            "default_handler: сброс legacy FSM-состояния анкеты",
+            state=current_state,
+            user_huid=str(message.sender.huid),
+        )
+        await fsm.clear()
+        await reply_to_user(
+            message,
+            bot,
+            _LEGACY_RESET_TEXT,
+            bubbles=main_menu_bubbles(),
+        )
+        return
 
     if current_state and current_state in STATE_HANDLERS:
         handler = STATE_HANDLERS[current_state]

@@ -33,7 +33,7 @@ app/
 │   ├── __init__.py      # get_all_collectors() — common первым, далее остальные коллекторы
 │   ├── common.py        # /start, /help, on_chat_created, default_message_handler (диспетчер)
 │   ├── user.py          # ветка участника — главное меню «О конкурсе/Подать заявку/...»
-│   ├── user_intake.py   # поэтапная анкета (parent_full_name → child_age → ...)
+│   ├── user_intake.py   # поэтапная анкета (parent_contact → child_name → ... ; ФИО/подразделение из CTS)
 │   ├── user_files.py    # приём файлов работы по треку
 │   ├── user_confirm.py  # согласия + финальное резюме + submit
 │   ├── moderator.py     # главное меню модератора
@@ -44,10 +44,16 @@ app/
 │   ├── jury.py          # /jury_menu, /jury_tasks (точка входа в роль)
 │   ├── jury_tasks.py    # карусель задач, голосование «Да/Нет», кнопка «Отправить оценки»
 │   ├── jury_status.py   # /jury_status — прогресс судьи
-│   └── admin.py         # /disk, /intake_mode, /admin_state
+│   ├── admin.py         # /disk, /intake_mode, /admin_state
+│   └── admin_roles.py   # discovery-кнопки: /admin_role_approve|reject,
+│                        # /admin_chat_approve|reject, /admin_roles, /admin_role_revoke
 ├── services/            # Бизнес-логика и работа с БД (CRUD)
 │   ├── access.py        # is_moderator/is_jury/is_admin + декораторы +
-│   │                    # sync_role_directories_from_config() (lifespan)
+│   │                    # in-memory кэш + reload_access_cache +
+│   │                    # seed_access_from_config_if_empty (bootstrap)
+│   ├── discovery.py     # карточки админу для обнаружения новых модераторов /
+│   │                    # жюри / чата модерации; add_moderator_to_chat,
+│   │                    # send_welcome_dm_to_moderator / _jury
 │   ├── applications.py  # жизненный цикл заявки (нормализация имени, BR-ID, дубль)
 │   ├── storage.py       # файлы заявок, превью жюри, мониторинг диска,
 │   │                    # start_disk_monitor_task()
@@ -65,10 +71,12 @@ app/
 │   ├── storage.py       # фабрика get_fsm_storage()/init/close
 │   ├── redis_storage.py # RedisFSMStorage — единственное хранилище
 │   ├── middleware.py    # fsm_middleware, personal_chat_only, FSMContext
+│   ├── chat_gate.py     # GLOBAL middleware: пропускает только PERSONAL_CHAT
 │   └── cleanup_middleware.py  # Удаление transient-сообщений при навигации
 └── utils/
     ├── bot_utils.py     # reply_to_user, safe_answer_transient, send_photo_transient
     ├── contracts.py     # DTO + Protocol-классы под services/* (общий контракт для веток бота)
+    ├── deeplink.py      # build_bot_deeplink — рендер EXPRESS_DEEPLINK_TEMPLATE
     └── message_tracking.py  # Трекинг transient sync_id в Redis (fallback на FSM data)
 ```
 
@@ -95,10 +103,19 @@ app/
 2. `Base.metadata.create_all` — создаёт новые таблицы.
 3. `run_auto_migrations()` — добавляет недостающие колонки / индексы /
    enum-значения (`database/migrations.py`).
-4. `sync_role_directories_from_config(session)` (`services.access`) —
-   идемпотентный upsert `MODERATOR_HUIDS` / `JURY_HUIDS` в таблицы
-   `moderators` / `jury_members`. HUID, выпавшие из конфига, помечаются
-   `is_active=False` (мягкое удаление; голоса и комментарии не теряем).
+4. `seed_access_from_config_if_empty(session)` (`services.access`) —
+   ПЕРВИЧНЫЙ bootstrap из env: только если таблицы `moderators` /
+   `jury_members` пусты и/или нет настройки `app_settings.moderation_chat_id`,
+   подгружает соответствующие значения из `MODERATOR_HUIDS` /
+   `JURY_HUIDS` / `MODERATION_CHAT_ID`. Дальше env игнорируется —
+   управление списками идёт через discovery-кнопки админа в боте
+   (`handlers/admin_roles.py`).
+4а. `reload_access_cache(session)` — перечитывает таблицы и атомарно
+    подменяет in-memory кэш ролей (`_moderator_huids`, `_jury_huids`,
+    `_moderation_chat_id`). После этого `is_moderator()` / `is_jury()` /
+    `get_moderation_chat_id()` отвечают O(1) без обращения в БД —
+    критично для hot path (chat-gate middleware, `/moderator`,
+    `/jury_menu`).
 5. `sync_pool_assignments_from_config(JURY_POOLS_CONFIG, session)`
    (`services.pools`) — полностью переписывает таблицу
    `jury_pool_assignments` под актуальный JSON. Пустая строка в
@@ -162,13 +179,45 @@ UI и реестра.
 |---|---|---|
 | huid | UUID, PK | Идентификатор пользователя из eXpress |
 | chat_id | UUID, nullable, indexed | ID чата для проактивных сообщений |
-| full_name | VARCHAR(255) | ФИО |
-| username | VARCHAR(255), nullable | Имя пользователя |
+| full_name | VARCHAR(255) | ФИО (заполняется из CTS, `public_name or username`) |
+| username | VARCHAR(255), nullable | Имя пользователя из CTS |
 | is_deleted | BOOLEAN, indexed | Soft-delete |
 | deleted_at | TIMESTAMP, nullable | Дата удаления |
 | last_activity | TIMESTAMP, nullable, indexed | Последняя активность |
+| ad_login | VARCHAR(255), nullable, indexed | CTS-кэш: AD-логин |
+| ad_domain | VARCHAR(255), nullable | CTS-кэш: AD-домен |
+| email | VARCHAR(255), nullable, indexed | CTS-кэш: первый email из `emails[]` (lower-case) |
+| ip_phone | VARCHAR(32), nullable | CTS-кэш: внутренний/IP-телефон |
+| other_phone | VARCHAR(32), nullable | CTS-кэш: внешний/мобильный телефон |
+| department | VARCHAR(255), nullable | CTS-кэш: подразделение |
+| company | VARCHAR(255), nullable | CTS-кэш: компания |
+| company_position | VARCHAR(255), nullable | CTS-кэш: должность |
+| public_name | VARCHAR(255), nullable | CTS-кэш: публичное имя (часто полное ФИО) |
+| cts_synced_at | TIMESTAMP, nullable | Момент последней синхронизации с CTS |
 | created_at | TIMESTAMP | Дата создания |
 | updated_at | TIMESTAMP | Дата обновления |
+
+**Upsert:** `chat_id`, `ad_login`, `ad_domain`, `username` и `last_activity`
+пишутся на каждом входящем из личного чата через
+`handlers._user_sync_middleware.user_sync_middleware`
+(`services.users.upsert_user_from_message`). Без этого таблица
+оставалась бы пустой и проактивные DM (`notifications._send_to_user`,
+`discovery._resolve_user_chat_id`) тихо падали в WARNING.
+
+**CTS-кэш** (`ad_login`..`cts_synced_at`) заполняется отдельной
+тяжёлой функцией `services.users.sync_user_from_cts`
+(`bot.search_user_by_huid`):
+- fire-and-forget на `on_chat_created` (PERSONAL_CHAT) и `cmd_start` —
+  прогрев кэша к моменту первого `/apply`;
+- blocking через `ensure_user_profile_loaded(max_age_sec=86400, timeout=5)`
+  в `cmd_apply` — отдаёт горячий кэш либо синхронно тянет CTS с
+  5-секундным таймаутом.
+
+CTS-данные используются в анкете для автоподстановки ФИО
+(`parent_full_name`) и подразделения (`parent_division`) — ручные шаги
+из `UserIntake` удалены. Поля `email`, `ip_phone`, `other_phone` идут
+как **подсказка** на шаге «Контакт» (но не подменяют ввод пользователя)
+и параллельно сохраняются для аудита и проактивных DM.
 
 ### applications
 
@@ -180,9 +229,11 @@ UI и реестра.
 | id | UUID, PK | Внутренний UUID |
 | br_id | VARCHAR(20), UNIQUE, indexed | `BR-{YEAR}-NNNN`, монотонный счётчик, выдаётся через `assign_br_id` под advisory-lock |
 | parent_huid | UUID, indexed | HUID родителя из eXpress |
-| parent_full_name | VARCHAR(255) | Полное ФИО (с отчеством) |
-| parent_division | VARCHAR(255) | Подразделение |
-| parent_ad_login | VARCHAR(255), nullable | AD-логин для записи `@login` в meta/Excel |
+| parent_full_name | VARCHAR(255) | Снимок ФИО на момент submit (из CTS-кэша `users.full_name`, либо ручной fallback-ввод) |
+| parent_division | VARCHAR(255) | Снимок подразделения на момент submit (из CTS-кэша `users.department`, либо ручной fallback-ввод) |
+| parent_ad_login | VARCHAR(255), nullable | AD-логин для записи `@login` в meta/Excel (fallback контакта) |
+| parent_contact | VARCHAR(255), nullable | Контакт для связи, явно введённый родителем на шаге «Контакт» (email или телефон) |
+| parent_contact_type | VARCHAR(16), nullable | `'email'` или `'phone'` — автоматически по наличию `@` в `parent_contact` |
 | child_name | VARCHAR(255) | Имя ребёнка |
 | child_age | INTEGER | Полных лет (0–18) |
 | age_category | Enum `AgeCategory` | Вычисляется автоматически (`AgeCategory.from_age`) |
@@ -222,10 +273,23 @@ UI и реестра.
 
 ### moderators / jury_members
 
-Простые справочники с PK по `huid`, полями `full_name`, `is_active`,
-`added_at`. Заполняются при старте бота из `MODERATOR_HUIDS` /
-`JURY_HUIDS` (см. `app/services/access.py` — проверка доступа всегда
-идёт по конфигу, а не по этим таблицам, чтобы не плодить SELECT'ы).
+Простые справочники с PK по `huid` и полями `full_name`, `username`,
+`added_by_huid`, `is_active`, `added_at`. **Источник правды для ролей
+в рантайме** — таблицы БД (через in-memory кэш в `services/access.py`).
+`MODERATOR_HUIDS` / `JURY_HUIDS` из env — только bootstrap при первом
+запуске (`seed_access_from_config_if_empty`), дальше состав меняется
+кнопками админа (discovery-карточки + `/admin_roles`,
+`/admin_role_revoke`). Проверка ролей (`is_moderator` / `is_jury`) идёт
+по in-memory кэшу — O(1), без походов в БД.
+
+### app_settings
+
+Универсальный KV-стор настроек, переживающих рестарт. Ключи:
+
+| Ключ | Назначение |
+|---|---|
+| `moderation_chat_id` | UUID группового чата «Безопасные рисунки — модерация». Меняется через `/admin_chat_approve`. Bootstrap из `MODERATION_CHAT_ID`. |
+| `intake_mode` | Текущий режим приёма заявок (FILES / LINKS). |
 
 ### jury_pool_assignments
 
@@ -320,13 +384,96 @@ async def handler(message: IncomingMessage, bot: Bot) -> None:
 
 | Класс | Состояния | Назначение |
 |---|---|---|
-| `UserIntake` | parent_full_name → parent_division → child_name → child_age → track → title → description → files_collect → consents → review | Поэтапная анкета участника |
+| `UserIntake` | parent_contact → child_name → child_age → track → title → description → files_collect → consents → review (горячий путь). Fallback: parent_full_name_fb / parent_division_fb — включаются, только если CTS не дал соответствующее поле | Поэтапная анкета участника. ФИО и подразделение тянутся из CTS-кэша в `cmd_apply` (`services.users.ensure_user_profile_loaded`), в анкете остаётся один шаг — «Контакт» (email/телефон с автоопределением) |
 | `ModeratorAction` | status_change, comment_input, reject_reason, fix_note | Диалоговые подсказки модератора |
 | `JuryTaskFlow` | jury_task_voting, jury_task_confirm_submit | Прохождение задачи жюри |
 
 Каждый класс — `class XYZ(str, Enum)` со значениями вида
 `{раздел}:{подраздел}:{состояние}`; значения регистрируются в
 диспетчере `default_message_handler` (см. раздел 11 «Диспетчер»).
+
+---
+
+## 5а. Discovery ролей, in-memory кэш доступа и chat-gate
+
+### Источник правды по ролям
+
+Список модераторов и жюри хранится в БД (`moderators` / `jury_members`),
+UUID чата модерации — в `app_settings.moderation_chat_id`. Env-переменные
+`MODERATOR_HUIDS` / `JURY_HUIDS` / `MODERATION_CHAT_ID` используются
+**только** как одноразовый bootstrap при первом запуске
+(`services.access.seed_access_from_config_if_empty`). После этого
+управление списками — через discovery-кнопки админа и команды
+`/admin_roles`, `/admin_role_revoke`.
+
+### In-memory кэш (`services/access.py`)
+
+Чтобы hot path (chat-gate middleware и проверки ролей в каждом хендлере)
+не дёргал PostgreSQL, состав ролей хранится в module-level set'ах:
+
+- `_moderator_huids: set[str]`,
+- `_jury_huids: set[str]`,
+- `_moderation_chat_id: UUID | None`.
+
+`reload_access_cache(session)` вызывается:
+
+1. На старте бота (lifespan, после seed).
+2. После каждой операции `add_moderator` / `add_jury_member` /
+   `revoke_*` / `set_moderation_chat`. Подмена set'ов атомарна под
+   `asyncio.Lock`.
+
+Проверки `is_moderator(huid)` / `is_jury(huid)` / `get_moderation_chat_id()`
+— чистый sync lookup, без `async`, без БД.
+
+### Discovery (`services/discovery.py`)
+
+Когда юзер без роли дёргает `/moderator` или `/jury_menu`, а также
+когда бота добавляют в новый групповой чат, админу шлётся карточка
+с профилем (из `bot.search_user_by_huid`) и двумя кнопками
+(«Назначить / Отклонить» либо «Сделать чатом модерации / Отклонить»).
+Кнопки несут payload в `data={"role": ..., "huid": ...}` или
+`data={"chat_id": ...}`. Обработка — в `handlers/admin_roles.py`.
+
+Дедуп: in-memory словарь `_notified_at[(kind, ...)]` с TTL 1 час —
+повторные попытки не флудят админа.
+
+После одобрения модератора:
+
+- `discovery.add_moderator_to_chat(bot, huid)` пытается добавить юзера
+  в текущий `moderation_chat_id` через `bot.add_users_to_chat`
+  (предварительно проверив `bot.chat_info` на «уже состоит»);
+- `discovery.send_welcome_dm_to_moderator(bot, huid)` шлёт короткое
+  приветственное DM (если у модератора есть `users.chat_id` после
+  предыдущего `/start`).
+
+Оба шага не критичны — результат подмешивается в admin reply
+(«добавлен в чат модерации» / «не удалось — добавьте вручную»;
+«welcome-DM отправлен» / «не отправлен — пусть напишет боту /start»).
+
+### Chat-gate middleware (`fsm/chat_gate.py`)
+
+Глобальный middleware, подключённый через `Bot(middlewares=[…])`
+в `main.create_bot()`. Пропускает входящие **только** в личных чатах
+(`ChatTypes.PERSONAL_CHAT`); всё остальное (включая чат модерации)
+молча игнорируется. Outbound (`bot.send_message(chat_id=…)`) не gated —
+бот по-прежнему свободно пушит уведомления в чат модерации.
+
+Это сознательное решение: модерация ведётся в DM модератора с ботом,
+чат модерации — только outbound (с возможностью открыть DM по
+deeplink-кнопке, см. ниже).
+
+`ChatCreatedEvent` идёт отдельно (system event, не проходит через
+middlewares) — обрабатывается в `handlers/common.py::on_chat_created`,
+который сам разветвляет PERSONAL_CHAT vs группа.
+
+### Deeplink в чате модерации (`utils/deeplink.py`)
+
+Шаблон `EXPRESS_DEEPLINK_TEMPLATE` (env, optional) рендерится в URL
+для кнопки «🔎 Открыть в боте». Плейсхолдеры: `{bot_id}`, `{cts_url}`.
+Если переменная пуста — кнопка не добавляется (graceful degradation),
+текст команды в теле сообщения (`/find BR-XXXX` / `/files BR-XXXX`)
+остаётся. У eXpress нет аналога Telegram `?start=payload` —
+deeplink только открывает DM, команду модератор вводит вручную.
 
 ---
 
@@ -495,10 +642,12 @@ pydantic локально, не меняя контракт.
 from states import UserIntake
 from handlers.common import register_state_handler
 
-async def on_parent_full_name(message, bot):
+async def on_parent_contact(message, bot):
     ...
 
-register_state_handler(UserIntake.user_intake_parent_full_name.value, on_parent_full_name)
+register_state_handler(
+    UserIntake.user_intake_parent_contact.value, on_parent_contact
+)
 ```
 
 При повторной регистрации одного и того же `state` диспетчер пишет

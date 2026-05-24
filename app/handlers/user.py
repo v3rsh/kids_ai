@@ -27,6 +27,7 @@ from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
 from config import CONTACTS_TEXT
 from fsm import cleanup_middleware, fsm_middleware
 from keyboards import main_menu_bubbles
+from services import users as users_service
 from states import UserIntake
 from utils.bot_utils import reply_to_user
 
@@ -181,31 +182,72 @@ async def cmd_menu_contacts(message: IncomingMessage, bot: Bot) -> None:
 async def cmd_apply(message: IncomingMessage, bot: Bot) -> None:
     """Старт анкеты «Подать работу».
 
-    Сбрасывает FSM (на случай прерванной предыдущей сессии) и
-    переключает на первое поле — ФИО родителя. Кнопки удаляются
-    (передаём пустой ``BubbleMarkup()``), чтобы пользователь видел
-    текстовое приглашение без отвлекающего меню — см.
-    ``.cursor/rules/pybotx-bubbles.mdc``.
+    ФИО и подразделение подтягиваются из CTS-кэша
+    (``services.users.ensure_user_profile_loaded`` с 24-часовым TTL).
+    Если CTS вернул не всё — включаются fallback-шаги для пропущенных
+    полей. На горячем пути сразу переходим к шагу «Контакт».
+
+    Кнопки удаляются (передаём пустой ``BubbleMarkup()``), чтобы
+    пользователь видел текстовое приглашение без отвлекающего меню —
+    см. ``.cursor/rules/pybotx-bubbles.mdc``.
     """
     fsm = message.state.fsm
     await fsm.clear()
-    await fsm.set_state(UserIntake.user_intake_parent_full_name)
-    await fsm.set_data({})
+
+    # Подтянем профиль из CTS (или из горячего кэша). Таймаут 5 сек —
+    # если CTS лёг, пользователь идёт по fallback-веткам ручного ввода
+    # ФИО/подразделения, заявка не блокируется.
+    user = await users_service.ensure_user_profile_loaded(
+        bot, message.sender.huid, max_age_sec=86400, timeout=5.0
+    )
+    full_name = ((user.full_name if user else "") or "").strip()
+    department = ((user.department if user else "") or "").strip()
+    email_hint = ((user.email if user else "") or "").strip()
+    ip_phone_hint = ((user.ip_phone if user else "") or "").strip()
+    other_phone_hint = ((user.other_phone if user else "") or "").strip()
+
+    await fsm.set_data(
+        {
+            "parent_full_name": full_name,
+            "parent_division": department,
+            "cts_email_hint": email_hint,
+            "cts_ip_phone_hint": ip_phone_hint,
+            "cts_other_phone_hint": other_phone_hint,
+        }
+    )
 
     logger.info(
         "Старт анкеты UserIntake",
         parent_huid=str(message.sender.huid),
+        cts_full_name_present=bool(full_name),
+        cts_department_present=bool(department),
     )
 
+    # Импорт здесь, чтобы избежать циклической зависимости user → user_intake.
+    from handlers.user_intake import (
+        _PROMPT_PARENT_DIVISION_FB,
+        _PROMPT_PARENT_FULL_NAME_FB,
+        _build_contact_prompt,
+    )
+
+    if not full_name:
+        await fsm.set_state(UserIntake.user_intake_parent_full_name_fb)
+        await reply_to_user(
+            message, bot, _PROMPT_PARENT_FULL_NAME_FB, bubbles=BubbleMarkup()
+        )
+        return
+
+    if not department:
+        await fsm.set_state(UserIntake.user_intake_parent_division_fb)
+        await reply_to_user(
+            message, bot, _PROMPT_PARENT_DIVISION_FB, bubbles=BubbleMarkup()
+        )
+        return
+
+    data = await fsm.get_data()
+    await fsm.set_state(UserIntake.user_intake_parent_contact)
     await reply_to_user(
-        message,
-        bot,
-        (
-            "Подаём работу.\n\n"
-            "Шаг 1 из 7. Как вас зовут? Укажите ФИО полностью "
-            "(например, «Иванова Анна Сергеевна»)."
-        ),
-        bubbles=BubbleMarkup(),
+        message, bot, _build_contact_prompt(data), bubbles=BubbleMarkup()
     )
 
 
