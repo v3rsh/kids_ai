@@ -1,24 +1,23 @@
 """
-Контракты между ветками Wave 2 (kids_ai / Безопасные рисунки).
+Контракты между модулями (kids_ai / Безопасные рисунки).
 
-Этот модуль — **единственная точка**, из которой ветки Wave 2 могут
+Этот модуль — **единственная точка**, из которой соседние модули могут
 импортировать друг у друга DTO и сигнатуры. Прямой импорт реализаций
-из соседних ``app/services/*`` или ``app/handlers/*`` ветками
-запрещён — это разламывает параллельную разработку и приводит к
-циклическим зависимостям.
+из соседних ``app/services/*`` или ``app/handlers/*`` запрещён —
+это создаёт циклические зависимости и мешает изоляции в тестах.
 
 Содержимое:
 - DTO предметной области (frozen dataclasses, без зависимостей на ORM
   и pybotx — можно безопасно собирать из любых слоёв);
 - Protocol-классы под публичные функции из ``services/*``,
-  чтобы Wave 2 могла подменять реализации в тестах и проверять
-  совместимость через ``mypy`` / IDE.
+  чтобы вызывающая сторона могла подменять реализации в тестах
+  и проверять совместимость через ``mypy`` / IDE.
 
 Stylistic note: используем ``@dataclass(frozen=True)`` вместо pydantic
 v1 (pybotx завязан на pydantic<1.11), чтобы DTO были предельно лёгкими
-и хорошо хешировались (``PoolKey`` нужен ключом в словарях). Если в
-Wave 2 ветке понадобится валидация — DTO можно обернуть в pydantic
-модель локально, не меняя контракт.
+и хорошо хешировались (``PoolKey`` нужен ключом в словарях). Если
+понадобится валидация — DTO можно обернуть в pydantic-модель локально,
+не меняя контракт.
 """
 from __future__ import annotations
 
@@ -60,11 +59,11 @@ if TYPE_CHECKING:  # pragma: no cover — только для type-checker'а
 
 @dataclass(frozen=True)
 class PoolKey:
-    """Идентификатор пула жюри (§35.1).
+    """Идентификатор пула жюри.
 
     Пул = пара ``(track, age_category)``. Используется как ключ в
-    словарях (например, при агрегации уведомлений по моменту времени,
-    §19) — поэтому frozen + автохэш.
+    словарях (например, при агрегации уведомлений по моменту времени) —
+    поэтому frozen + автохэш.
     """
 
     track: "Track"
@@ -77,7 +76,7 @@ class PoolKey:
 
 @dataclass(frozen=True)
 class ApplicationFileDTO:
-    """DTO одного файла заявки (§22, §23)."""
+    """DTO одного файла заявки."""
 
     id: UUID
     kind: "FileKind"
@@ -92,11 +91,11 @@ class ApplicationFileDTO:
 
 @dataclass(frozen=True)
 class ApplicationDTO:
-    """DTO заявки для передачи между ветками Wave 2 (§11, §25).
+    """DTO заявки для передачи между модулями.
 
     Не дублирует все агрегаты жюри — только то, что нужно листинговым
-    хендлерам (``/queue``, ``/find``, ``/files``). Полную модель ветки
-    могут запросить через ``services.applications`` по ``br_id``.
+    хендлерам (``/queue``, ``/find``, ``/files``). Полную модель можно
+    запросить через ``services.applications`` по ``br_id``.
     """
 
     id: UUID
@@ -130,18 +129,18 @@ class ApplicationDTO:
 
 @dataclass(frozen=True)
 class JuryTaskDTO:
-    """DTO одной задачи жюри (§35.3, §27.4 /jury_tasks).
+    """DTO одной задачи жюри для команды ``/jury_tasks``.
 
     ``local_no`` — локальный номер работы в карусели пула (1..N),
-    единый для всех судей (Wave 0, §35.3); ID заявки судье **не
-    показывается** ради анонимности (см. §35.4).
+    единый для всех судей; ID заявки судье **не показывается**
+    ради анонимности.
 
     ``preview_path`` — путь к превью 1280 px (в режиме ``files``);
-    ``cloud_link`` — публичная ссылка на папку (в режиме ``links``,
-    §33.6.4). Заполнено ровно одно из двух полей.
+    ``cloud_link`` — публичная ссылка на папку (в режиме ``links``).
+    Заполнено ровно одно из двух полей.
 
     ``draft_vote`` — текущее значение черновика (``YES``/``NO``/``None``),
-    нужно для отрисовки эмодзи на кнопке (§35.3).
+    нужно для отрисовки эмодзи на кнопке.
     """
 
     round_id: UUID
@@ -158,14 +157,14 @@ class JuryTaskDTO:
 
 @dataclass(frozen=True)
 class RoundResult:
-    """Итог раунда жюри (§35.2, §35.4).
+    """Итог раунда жюри.
 
     ``top_ids`` — попавшие в топ-N на этом раунде (по строгому
     неравенству или по жребию).
     ``tie_ids`` — заявки в зоне ничьи на границе топ-N; если непуст
     и ``needs_next_round=True`` — для них открывается следующий раунд.
     ``decided_by_lot`` — список ID работ, попавших в топ-N жребием
-    (для проставления флага в БД и реестре, §25.3.1 поле №28).
+    (для проставления флага в БД и реестре).
     """
 
     pool: PoolKey
@@ -181,9 +180,9 @@ class RoundResult:
 # Protocol-классы для публичного API сервисов
 # =====================================================================
 #
-# Используются для type-чекинга в Wave 2: каждая ветка может объявить
-# зависимость на ``ApplicationsService`` (Protocol) и подменять её в
-# тестах фейком. Не имеют связи с конкретными модулями: импортируется
+# Используются для type-чекинга: вызывающая сторона может объявить
+# зависимость на ``ApplicationsService`` (Protocol) и подменять её
+# в тестах фейком. Не имеют связи с конкретными модулями: импортируется
 # по ``isinstance(svc, ApplicationsService)`` за счёт runtime_checkable.
 
 
@@ -232,10 +231,10 @@ class StorageService(Protocol):
 
 @runtime_checkable
 class RegistryService(Protocol):
-    """Контракт ``services.registry`` (Wave 0 §25.4: bytes, не файл).
+    """Контракт ``services.registry`` (bytes, не файл).
 
     ``registry_export_filename`` — единый источник правды по формату
-    имени файла (см. ``docs/registry-spec.md`` §4); используется
+    имени файла (см. ``docs/registry-spec.md``); используется
     хендлерами `/export_registry` и `/export_shortlist`.
     """
 
@@ -250,7 +249,7 @@ class RegistryService(Protocol):
 
 @runtime_checkable
 class NotificationsService(Protocol):
-    """Контракт ``services.notifications`` (§18, §19, §28.1)."""
+    """Контракт ``services.notifications`` (участники + чат модерации)."""
 
     async def notify_participant_accepted(
         self, bot, app: "Application"
@@ -292,7 +291,7 @@ class NotificationsService(Protocol):
 
 @runtime_checkable
 class JuryService(Protocol):
-    """Контракт ``services.jury`` (§35.2, §35.5).
+    """Контракт ``services.jury``.
 
     Все async-методы поддерживают опциональный ``session: AsyncSession``
     (если не передан — сервис открывает свою short-living-сессию).
@@ -376,7 +375,7 @@ class JuryService(Protocol):
 
 @runtime_checkable
 class PoolsService(Protocol):
-    """Контракт ``services.pools`` (§35.1).
+    """Контракт ``services.pools``.
 
     ``sync_pool_assignments_from_config`` вызывается один раз на старте
     приложения (см. ``app/main.py``); распределение членов жюри по пулам
@@ -405,7 +404,7 @@ class PoolsService(Protocol):
 
 @runtime_checkable
 class IntakeModeService(Protocol):
-    """Контракт ``services.intake_mode`` (§33.6)."""
+    """Контракт ``services.intake_mode``."""
 
     async def get_intake_mode(self) -> "IntakeMode": ...
     async def set_intake_mode(
@@ -420,7 +419,7 @@ class IntakeModeService(Protocol):
 
 @runtime_checkable
 class AccessService(Protocol):
-    """Контракт ``services.access`` (§5.2, §5.4, §27.2, §27.4)."""
+    """Контракт ``services.access`` (проверка ролей и доступа к командам)."""
 
     def is_moderator(self, huid: UUID | str | None) -> bool: ...
     def is_jury(self, huid: UUID | str | None) -> bool: ...
