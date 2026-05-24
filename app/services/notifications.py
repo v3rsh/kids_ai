@@ -30,6 +30,7 @@ from uuid import UUID
 from loguru import logger
 
 from services.access import get_moderation_chat_id
+from utils.bot_utils import resolve_bot_id
 
 if TYPE_CHECKING:
     from pybotx import Bot
@@ -282,9 +283,7 @@ async def _send_to_moderation_chat(
         )
         return
 
-    bot_id = getattr(bot, "id", None) or getattr(
-        getattr(bot, "bot_accounts", [None])[0], "id", None
-    )
+    bot_id = getattr(bot, "id", None) or resolve_bot_id(bot)
 
     kwargs = {
         "chat_id": chat_uuid,
@@ -456,9 +455,7 @@ def _moderation_chat_open_in_bot_bubbles(bot: "Bot"):
 
     from utils.deeplink import build_bot_deeplink
 
-    bot_id = getattr(bot, "id", None) or getattr(
-        getattr(bot, "bot_accounts", [None])[0], "id", None
-    )
+    bot_id = getattr(bot, "id", None) or resolve_bot_id(bot)
     link = build_bot_deeplink(bot_id)
     if not link:
         return None

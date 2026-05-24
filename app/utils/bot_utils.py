@@ -21,6 +21,25 @@ from pybotx.models.attachments import OutgoingAttachment
 from utils.message_tracking import track_transient_message
 
 
+def resolve_bot_id(bot: Bot) -> UUID | None:
+    """UUID первого bot account из ``Bot.bot_accounts``.
+
+    В свежем pybotx ``Bot.bot_accounts`` — генератор (а не список),
+    поэтому ``accounts[0]`` падает с ``TypeError``. Используем
+    ``next(iter(...), None)``: работает и со списком, и с генератором,
+    и с любым ``Iterable``.
+
+    Возвращает ``None``, если bot accounts не настроены.
+    """
+    accounts = getattr(bot, "bot_accounts", None)
+    if accounts is None:
+        return None
+    first = next(iter(accounts), None)
+    if first is None:
+        return None
+    return getattr(first, "id", None)
+
+
 async def load_user_photo(photo_path: str) -> OutgoingAttachment | None:
     """
     Загружает фото пользователя из файла.

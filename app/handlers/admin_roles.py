@@ -35,7 +35,7 @@ from database.models import JuryMember, Moderator
 from fsm import cleanup_middleware, fsm_middleware
 from services import access, discovery
 from services.access import admin_only
-from utils.bot_utils import reply_to_user
+from utils.bot_utils import reply_to_user, resolve_bot_id
 
 
 collector = HandlerCollector()
@@ -191,11 +191,7 @@ async def cmd_admin_chat_approve(message: IncomingMessage, bot: Bot) -> None:
     await access.set_moderation_chat(chat_id, by_huid=message.sender.huid)
 
     welcome_ok = True
-    bot_id = (
-        getattr(bot, "bot_accounts", [None])[0].id
-        if getattr(bot, "bot_accounts", None)
-        else None
-    )
+    bot_id = resolve_bot_id(bot)
     try:
         send_kwargs = {
             "chat_id": chat_id,

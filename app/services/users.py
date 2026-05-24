@@ -37,6 +37,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from database.db import get_session
 from database.models import User
+from utils.bot_utils import resolve_bot_id
 
 if TYPE_CHECKING:  # pragma: no cover
     from pybotx import Bot, IncomingMessage
@@ -45,19 +46,6 @@ if TYPE_CHECKING:  # pragma: no cover
 # ============================================================
 # Вспомогательные функции
 # ============================================================
-
-
-def _resolve_bot_id(bot: "Bot") -> UUID | None:
-    """Извлечь UUID бота из ``Bot`` (нужно для CTS API-вызовов pybotx).
-
-    Дублируется из ``services.discovery._resolve_bot_id``, потому что
-    тащить туда зависимость от users-сервиса (или наоборот) ради одной
-    тривиальной функции дороже, чем держать копию.
-    """
-    accounts = getattr(bot, "bot_accounts", None) or []
-    if accounts:
-        return getattr(accounts[0], "id", None)
-    return None
 
 
 def _first_email(emails: Any) -> str | None:
@@ -182,7 +170,7 @@ async def sync_user_from_cts(bot: "Bot", huid: UUID) -> User | None:
     WARNING/EXCEPTION и возвращает существующего ``User`` из БД
     (или ``None``, если в БД его тоже нет).
     """
-    bot_id = _resolve_bot_id(bot)
+    bot_id = resolve_bot_id(bot)
     if bot_id is None:
         logger.warning(
             "sync_user_from_cts: не удалось определить bot_id",

@@ -4,7 +4,7 @@
 
 Контракт:
 - ``notify_admin_role_candidate(bot, huid, role)`` — когда юзер,
-  не имеющий роли, дёрнул точку входа (``/moderator`` / ``/jury_menu``),
+  не имеющий роли, дёрнул точку входа (``/moderator`` / ``/jury``),
   бот шлёт админу карточку с профилем + двумя кнопками («Назначить» /
   «Отклонить»). Дедуп по ``(huid, role)`` с TTL 1 час, чтобы повторные
   попытки не флудили.
@@ -31,6 +31,7 @@ from loguru import logger
 from pybotx import BubbleMarkup
 
 from services import access
+from utils.bot_utils import resolve_bot_id
 
 if TYPE_CHECKING:
     from pybotx import Bot
@@ -60,14 +61,6 @@ def _dedup_should_skip(key: tuple) -> bool:
         return True
     _notified_at[key] = now
     return False
-
-
-def _resolve_bot_id(bot: "Bot") -> UUID | None:
-    """Извлечь UUID бота из ``Bot`` (нужен для API-вызовов pybotx)."""
-    accounts = getattr(bot, "bot_accounts", None) or []
-    if accounts:
-        return getattr(accounts[0], "id", None)
-    return None
 
 
 async def _get_admin_huids() -> list[UUID]:
@@ -109,7 +102,7 @@ async def fetch_user_profile(bot: "Bot", huid: UUID) -> dict:
     Возвращает dict с человекочитаемыми полями. Ошибки CTS (юзер не
     найден / нет прав) → пустой профиль с одним huid, без исключения.
     """
-    bot_id = _resolve_bot_id(bot)
+    bot_id = resolve_bot_id(bot)
     profile = {
         "huid": str(huid),
         "username": None,
@@ -199,7 +192,7 @@ async def _send_to_admin(
         )
         return 0
 
-    bot_id = _resolve_bot_id(bot)
+    bot_id = resolve_bot_id(bot)
     delivered = 0
 
     for admin_huid in admins:
@@ -364,7 +357,7 @@ async def add_moderator_to_chat(bot: "Bot", huid: UUID) -> tuple[bool, str]:
     if moderation_chat is None:
         return False, "чат модерации не настроен"
 
-    bot_id = _resolve_bot_id(bot)
+    bot_id = resolve_bot_id(bot)
     if bot_id is None:
         return False, "не удалось определить bot_id"
 
@@ -410,7 +403,7 @@ _WELCOME_MODERATOR_TEXT = (
 
 _WELCOME_JURY_TEXT = (
     "👋 Тебя назначили членом жюри конкурса «Безопасные рисунки».\n\n"
-    "Открой меню жюри командой /jury_menu — там список твоих задач и "
+    "Открой меню жюри командой /jury — там список твоих задач и "
     "прогресс по голосованию."
 )
 
@@ -438,7 +431,7 @@ async def _send_welcome_dm(
             huid=str(huid),
         )
         return False
-    bot_id = _resolve_bot_id(bot)
+    bot_id = resolve_bot_id(bot)
     kwargs = {
         "chat_id": chat_id,
         "body": body,
