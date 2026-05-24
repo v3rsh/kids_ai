@@ -29,7 +29,7 @@ alwaysApply: true
     ├── handlers/            # Bot command handlers
     ├── services/            # Business logic (CRUD, domain operations)
     ├── database/            # Models, DB init, auto-migrations (migrations.py)
-    ├── fsm/                 # FSM middleware & storage (Redis primary, SQLite fallback)
+    ├── fsm/                 # FSM middleware & storage (Redis only, AOF на named volume)
     └── utils/               # Helper functions
 ```
 

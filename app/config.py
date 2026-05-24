@@ -46,10 +46,15 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
 DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 # ===== FSM Storage =====
-# SQLite (fallback, если REDIS_URL не задан)
-STATES_DB_PATH = os.path.join(DATA_DIR, "states.sqlite3")
-# Redis (приоритетное хранилище FSM)
+# Единственное хранилище FSM — Redis (контейнер из docker-compose.yml,
+# AOF на named volume `redisdata`). Переменная обязательна.
 REDIS_URL = os.getenv("REDIS_URL")  # например redis://172.20.0.4:6379/0
+if not REDIS_URL:
+    raise RuntimeError(
+        "REDIS_URL не задан. FSM работает только с Redis "
+        "(см. docker-compose.yml: контейнер redis на 172.20.0.4). "
+        "Заполни REDIS_URL в .env."
+    )
 FSM_TTL_DAYS = int(os.getenv("FSM_TTL_DAYS", "30"))
 
 # ===== Настройки веб-сервера =====

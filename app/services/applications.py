@@ -15,18 +15,22 @@
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Sequence
 from uuid import UUID
 
 from loguru import logger
 from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
 
 from config import COMPETITION_YEAR
 from database.db import get_session
 from database.models import (
     AgeCategory,
     Application,
+    ApplicationFile,
+    FileKind,
     IntakeMode,
     ModerationStatus,
     Track,
@@ -34,6 +38,25 @@ from database.models import (
 
 if TYPE_CHECKING:  # pragma: no cover
     pass
+
+
+@dataclass(frozen=True)
+class ApplicationFileSpec:
+    """Спецификация одного файла заявки для регистрации в БД.
+
+    Используется в ``register_application_files`` — содержит ровно те
+    поля, которые требуются для INSERT в ``application_files`` после
+    того, как файл уже физически положен в папку заявки сервисом
+    ``storage.rename_and_save_file``.
+    """
+
+    kind: FileKind
+    angle_no: int | None
+    original_filename: str
+    stored_filename: str
+    relative_path: str
+    size_bytes: int
+    mime_type: str
 
 
 # Advisory-lock key для сериализации генерации br_id внутри года.
@@ -267,6 +290,72 @@ async def create_application(
     return app
 
 
+async def register_application_files(
+    *,
+    br_id: str,
+    files: Sequence[ApplicationFileSpec],
+) -> "Application":
+    """Зарегистрировать файлы заявки в таблице ``application_files``.
+
+    Вызывается из ``handlers.user_confirm._materialize_files`` после
+    того, как все файлы успешно перенесены в папку заявки сервисом
+    ``storage.rename_and_save_file``. Запись делается одним batch INSERT
+    в общей с reload транзакции, после ``commit()`` объект ``Application``
+    перезагружается с ``selectinload(Application.files)`` — это даёт
+    bound-объект с заполненной коллекцией ``files`` для последующих
+    шагов (``write_meta_txt`` лезет в ``app.files`` через lazy load,
+    но после reload коллекция уже в памяти).
+
+    Args:
+        br_id: ID заявки (``BR-2026-XXXX``).
+        files: список спецификаций файлов; пустой допустим
+            (например, в режиме ``LINKS``) — тогда возвращается
+            заявка без вставок, но всё равно с подгруженной ``files``.
+
+    Returns:
+        ``Application`` с подгруженной коллекцией ``files``.
+
+    Raises:
+        ValueError: если заявка с указанным ``br_id`` не найдена.
+    """
+    async with get_session()() as session:
+        stmt = select(Application).where(Application.br_id == br_id)
+        app = (await session.execute(stmt)).scalar_one_or_none()
+        if app is None:
+            raise ValueError(f"Заявка не найдена: {br_id}")
+
+        if files:
+            session.add_all(
+                ApplicationFile(
+                    application_id=app.id,
+                    kind=spec.kind,
+                    angle_no=spec.angle_no,
+                    original_filename=spec.original_filename,
+                    stored_filename=spec.stored_filename,
+                    relative_path=spec.relative_path,
+                    size_bytes=spec.size_bytes,
+                    mime_type=spec.mime_type,
+                )
+                for spec in files
+            )
+            await session.commit()
+
+        reload_stmt = (
+            select(Application)
+            .where(Application.br_id == br_id)
+            .options(selectinload(Application.files))
+        )
+        reloaded = (await session.execute(reload_stmt)).scalar_one()
+        session.expunge(reloaded)
+
+    logger.info(
+        "Файлы заявки зарегистрированы в БД",
+        br_id=br_id,
+        files_count=len(files),
+    )
+    return reloaded
+
+
 async def mark_as_actual_version(
     *,
     br_id: str,
@@ -334,9 +423,11 @@ async def mark_as_actual_version(
 
 
 __all__ = [
+    "ApplicationFileSpec",
     "create_application",
     "assign_br_id",
     "find_possible_duplicate",
     "mark_as_actual_version",
     "normalize_child_name",
+    "register_application_files",
 ]

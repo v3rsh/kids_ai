@@ -12,7 +12,7 @@
 **Фреймворк бота:** [pybotx](https://github.com/ExpressApp/pybotx)
 **Веб-фреймворк:** Starlette + uvicorn
 **База данных:** PostgreSQL 15 (через SQLAlchemy 2.0 async + asyncpg)
-**FSM Storage:** Redis 7 (primary), SQLite (fallback)
+**FSM Storage:** Redis 7 (контейнер из docker-compose, AOF на named volume `redisdata`)
 **Логирование:** loguru (см. `app/logging_config.py`)
 **Оркестрация:** Docker Compose
 **Целевая среда:** Linux amd64 без интернета (см. `docs/deployment.md`)
@@ -61,9 +61,9 @@ app/
 │   ├── db.py            # engine, session_maker, get_session()
 │   ├── models.py        # Base, User + конкурсные модели и enum'ы (см. раздел 4 «Модель данных»)
 │   └── migrations.py    # run_auto_migrations() — add columns/indexes/enums
-├── fsm/                 # FSM (Redis + SQLite fallback)
-│   ├── storage.py       # FSMStorage (SQLite), get_fsm_storage()
-│   ├── redis_storage.py # RedisFSMStorage
+├── fsm/                 # FSM (Redis only, AOF на named volume)
+│   ├── storage.py       # фабрика get_fsm_storage()/init/close
+│   ├── redis_storage.py # RedisFSMStorage — единственное хранилище
 │   ├── middleware.py    # fsm_middleware, personal_chat_only, FSMContext
 │   └── cleanup_middleware.py  # Удаление transient-сообщений при навигации
 └── utils/
@@ -104,8 +104,8 @@ app/
    `jury_pool_assignments` под актуальный JSON. Пустая строка в
    `JURY_POOLS_CONFIG` трактуется как «все активные судьи во всех
    пулах» (3 трека × 3 возрастные категории = 9 пулов).
-6. `init_fsm_storage()` — проверяет доступность Redis, при ошибке
-   fallback на SQLite.
+6. `init_fsm_storage()` — проверяет доступность Redis; при ошибке
+   бот падает на старте (без `REDIS_URL`/Redis работа невозможна).
 7. `create_bot()` — собирает `Bot(collectors=get_all_collectors(), ...)`.
 8. Внутри `lifespan_wrapper(bot)`:
    - если `ENABLE_SCHEDULER=true` — стартует
@@ -292,11 +292,10 @@ Key-value runtime-настройки. Минимум — `intake_mode` (`files`/
 
 ### Хранилище
 
-Двухслойное:
-- **Redis** — primary, если задан `REDIS_URL`. Ключ: `fsm:{user_huid}` (Redis hash, поля `state`, `data`), TTL = `FSM_TTL_DAYS`.
-- **SQLite** — fallback. Файл `data/states.sqlite3`, таблица `fsm_storage`.
-
-Интерфейс одинаков (`FSMStorage` / `RedisFSMStorage`). Выбор реализации — в `get_fsm_storage()`.
+Только **Redis** (`RedisFSMStorage`):
+- Ключ: `fsm:{user_huid}` (Redis hash, поля `state`, `data`), TTL = `FSM_TTL_DAYS`.
+- Контейнер `redis:7-alpine` из `docker-compose.yml`, AOF (`--appendonly yes --appendfsync everysec`) на named volume `redisdata` — состояния анкет переживают рестарт бота, Redis и хоста.
+- Переменная `REDIS_URL` обязательна; при пустой `app/config.py` бросает `RuntimeError` на старте.
 
 ### Middleware
 
@@ -347,7 +346,7 @@ async def handler(message: IncomingMessage, bot: Bot) -> None:
 
 `utils/message_tracking.py`:
 - Redis: ключ `bot_transient:{user_huid}`, тип LIST sync_id, TTL 24 часа
-- Fallback на FSM data (поле `_transient_messages`) если Redis недоступен
+- Без Redis модуль не работает — `REDIS_URL` валидируется на старте.
 
 При следующем `source_sync_id` `cleanup_middleware` удаляет все трекаемые сообщения и очищает список.
 

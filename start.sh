@@ -1,13 +1,12 @@
 #!/bin/bash
 
 # Скрипт запуска бота kids_ai
-# Использование: ./start.sh [dev|prod|test]
+# Использование: ./start.sh [dev|prod]
 #   dev  — локальный запуск без Docker (требуется venv и ИНТЕРНЕТ для pip)
-#   prod — запуск через Docker Compose (без PostgreSQL-контейнера)
-#   test — запуск через Docker Compose с PostgreSQL-контейнером
+#   prod — запуск через Docker Compose (PostgreSQL + Redis + bot)
 #
 # ВНИМАНИЕ: Режим dev требует интернет для установки зависимостей (pip install).
-# На сервере без интернета используйте только test или prod режимы.
+# На сервере без интернета используйте только prod режим.
 
 set -e
 
@@ -15,7 +14,6 @@ MODE=${1:-prod}
 
 echo "=== Запуск бота kids_ai в режиме: $MODE ==="
 
-# Проверяем наличие .env файла
 if [ ! -f .env ]; then
     echo "ОШИБКА: Файл .env не найден!"
     echo "Скопируйте .env-example в .env и заполните переменные:"
@@ -23,7 +21,6 @@ if [ ! -f .env ]; then
     exit 1
 fi
 
-# Проверяем обязательные переменные
 source .env
 
 if [ -z "$BOT_ID" ] || [ -z "$CTS_URL" ] || [ -z "$BOT_SECRET_KEY" ]; then
@@ -40,7 +37,7 @@ case "$MODE" in
         echo "Режим разработки (локальный запуск)"
         echo ""
         echo "ВНИМАНИЕ: Этот режим требует интернет для pip install."
-        echo "На сервере без интернета используйте: ./start.sh test или ./start.sh prod"
+        echo "На сервере без интернета используйте: ./start.sh prod"
         echo ""
         echo "Установка зависимостей..."
         pip install -r requirements.txt
@@ -49,28 +46,18 @@ case "$MODE" in
         cd app
         uvicorn main:app --host 0.0.0.0 --port ${SERVER_PORT:-8000} --reload
         ;;
-    test)
-        echo "Режим тестирования (Docker + PostgreSQL)"
-
-        docker compose --profile test down 2>/dev/null || true
-        docker compose --profile test up -d --build
-
-        echo "Бот и PostgreSQL запущены!"
-        echo "Логи: docker compose --profile test logs -f"
-        echo "Остановка: docker compose --profile test down"
-        ;;
     prod)
-        echo "Режим production (Docker, внешний PostgreSQL)"
+        echo "Режим production (Docker: PostgreSQL + Redis + bot)"
 
         docker compose down 2>/dev/null || true
         docker compose up -d --build
 
-        echo "Бот запущен!"
+        echo "Стек запущен (postgres, redis, bot)."
         echo "Логи: docker compose logs -f bot"
         echo "Остановка: docker compose down"
         ;;
     *)
-        echo "Использование: $0 [dev|prod|test]"
+        echo "Использование: $0 [dev|prod]"
         exit 1
         ;;
 esac

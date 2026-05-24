@@ -27,10 +27,10 @@ docker compose build bot
 
 ```bash
 # ✅ GOOD
-docker compose --profile test up -d --build
+docker compose up -d --build
 
 # ❌ BAD — использует закешированный образ
-docker compose --profile test up -d
+docker compose up -d
 ```
 
 ## Базовый образ Debian Trixie

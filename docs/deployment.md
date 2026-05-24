@@ -16,14 +16,23 @@
 | Сервис | Образ | IP | Описание |
 |--------|-------|----|----------|
 | `bot` | `kids_ai_bot:latest` | 172.20.0.2 | Основной бот (Starlette + pybotx + uvicorn) |
-| `redis` | `redis:7-alpine` | 172.20.0.4 | FSM storage + message tracking |
-| `postgres` | `postgres:15-alpine` | 172.20.0.3 | БД (только с профилем `test`) |
+| `redis` | `redis:7-alpine` | 172.20.0.4 | FSM storage + message tracking; AOF на named volume |
+| `postgres` | `postgres:15-alpine` | 172.20.0.3 | БД конкурса; данные на named volume `pgdata` |
 | `scheduler` | `kids_ai_bot:latest` | 172.20.0.5 | Отдельный scheduler (закомментирован, активируется при появлении periodic jobs) |
 
-### Профили
+### Запуск
 
-- **Без профиля** — `docker compose up -d` — только bot + redis (БД внешняя)
-- **test** — `docker compose --profile test up -d` — bot + redis + postgres в контейнере
+`docker compose up -d` поднимает три контейнера (`postgres`, `redis`, `bot`); `bot` стартует только когда `postgres` и `redis` отдают `service_healthy`.
+
+### Persistent volumes
+
+| Volume | Что хранит | Поведение |
+|---|---|---|
+| `pgdata` | Данные PostgreSQL | переживает `docker compose down/up`, перезагрузку хоста |
+| `redisdata` | AOF Redis (FSM-анкеты, трекинг transient-сообщений) | то же; `--appendfsync everysec` гарантирует потерю не более 1 сек данных при kill -9 |
+| `attachments_volume` | Файлы заявок (`/app/data/attachments`) | то же |
+
+Тома стираются только при `docker compose down -v` или явном `docker volume rm`.
 
 ### Сеть
 
@@ -72,7 +81,7 @@
 
 | Переменная | Описание | По умолчанию |
 |-----------|----------|-------------|
-| `DB_HOST` | Хост БД (`172.20.0.3` для контейнера, IP сервера для внешней) | `172.20.0.3` |
+| `DB_HOST` | Хост БД (контейнер `postgres` в docker-сети) | `172.20.0.3` |
 | `DB_PORT` | Порт | `5432` |
 | `DB_NAME` | Имя БД | `kids_ai` |
 | `DB_USER` | Пользователь | `postgres` |
@@ -84,7 +93,7 @@
 
 | Переменная | Описание | По умолчанию |
 |-----------|----------|-------------|
-| `REDIS_URL` | URL Redis (если не задан — fallback на SQLite) | `redis://172.20.0.4:6379/0` |
+| `REDIS_URL` | URL Redis (контейнер `redis`); **обязателен**, без неё бот падает на старте | `redis://172.20.0.4:6379/0` |
 | `FSM_TTL_DAYS` | Время жизни FSM-записей (дни) | `30` |
 
 ### Scheduler / Workers
@@ -104,8 +113,8 @@ worker'ов — выноси scheduler в отдельный сервис из `
 | Переменная | Описание | По умолчанию |
 |-----------|----------|-------------|
 | `BOT_MEM_LIMIT` | Лимит памяти для bot | `2G` |
-| `REDIS_MEM_LIMIT` | Лимит памяти для redis-контейнера | `512M` |
-| `REDIS_MAXMEMORY` | maxmemory для Redis | `256mb` |
+| `REDIS_MEM_LIMIT` | Лимит памяти для redis-контейнера | `1G` |
+| `REDIS_MAXMEMORY` | maxmemory для Redis (политика `noeviction`) | `512mb` |
 | `PG_MEM_LIMIT` | Лимит памяти для postgres | `1G` |
 
 ### Logging
@@ -137,16 +146,12 @@ worker'ов — выноси scheduler в отдельный сервис из `
 
 ```bash
 ./build.sh
-# или без образа PostgreSQL:
-./build.sh --no-postgres
-# или без образа Redis:
-./build.sh --no-redis
 ```
 
 Создаёт `dist/kids_ai-deploy.tar.gz`:
 - `kids_ai_bot.tar` — Docker-образ бота
-- `postgres.tar` — образ PostgreSQL (опционально)
-- `redis.tar` — образ Redis (опционально)
+- `postgres.tar` — образ PostgreSQL
+- `redis.tar` — образ Redis
 - `docker-compose.yml`
 - `.env-example`
 - `DEPLOY.md`
@@ -159,15 +164,11 @@ tar xzf kids_ai-deploy.tar.gz
 
 docker load -i dist/kids_ai_bot.tar
 docker load -i dist/redis.tar
-docker load -i dist/postgres.tar  # если есть
+docker load -i dist/postgres.tar
 
 cp .env-example .env
 nano .env  # заполнить
 
-# Тестовый режим (PostgreSQL в контейнере)
-docker compose --profile test up -d
-
-# Продакшн (внешний PostgreSQL)
 docker compose up -d
 ```
 
@@ -361,8 +362,8 @@ sysctl vm.overcommit_memory=1
 ### FSM-состояния не сохраняются
 
 1. Проверить Redis: `docker exec kids_ai_redis redis-cli ping` → `PONG`
-2. Если Redis недоступен и `REDIS_URL` задан — FSM не работает
-3. Без `REDIS_URL` — проверить файл `./data/states.sqlite3` и права доступа
+2. Проверить, что `REDIS_URL` задан в `.env`; без него бот не стартует.
+3. Проверить, что `redisdata` volume не пересоздаётся при `docker compose up -d` (`docker volume ls | grep redisdata`); содержимое внутри: `docker run --rm -v kids_ai_redisdata:/data alpine ls -la /data`.
 
 ---
 

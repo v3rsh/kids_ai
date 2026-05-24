@@ -42,15 +42,11 @@ async def cleanup_middleware(
     - После удаления очищается трекинг
     """
     user_huid = message.sender.huid
-    
-    # Получаем FSM context для fallback (если Redis недоступен)
-    fsm_context = getattr(message.state, 'fsm', None)
-    
+
     # Очистка срабатывает только при клике по кнопке
     if message.source_sync_id:
-        await _cleanup_transient_messages(message, bot, user_huid, fsm_context)
-    
-    # Вызываем следующий обработчик
+        await _cleanup_transient_messages(message, bot, user_huid)
+
     await call_next(message, bot)
 
 
@@ -58,7 +54,6 @@ async def _cleanup_transient_messages(
     message: IncomingMessage,
     bot: Bot,
     user_huid,
-    fsm_context,
 ) -> None:
     """
     Удаляет все transient-сообщения пользователя.
@@ -72,8 +67,7 @@ async def _cleanup_transient_messages(
     пропустил edit и сразу отправил новое сообщение через answer_message.
     """
     try:
-        # Получаем список transient-сообщений
-        transient_sync_ids = await get_transient_messages(user_huid, fsm_context)
+        transient_sync_ids = await get_transient_messages(user_huid)
         
         if not transient_sync_ids:
             logger.debug(
@@ -140,8 +134,7 @@ async def _cleanup_transient_messages(
                         sync_id=str(sync_id),
                     )
         
-        # Очищаем трекинг
-        await clear_transient_messages(user_huid, fsm_context)
+        await clear_transient_messages(user_huid)
         
         if deleted_count > 0:
             logger.info(

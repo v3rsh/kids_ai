@@ -40,19 +40,12 @@ async def healthz(request: Request) -> JSONResponse:
         checks["status"] = "unhealthy"
 
     try:
-        from config import REDIS_URL
-        if REDIS_URL:
-            from fsm.storage import get_fsm_storage
-            from fsm.redis_storage import RedisFSMStorage
-            storage = get_fsm_storage()
-            if isinstance(storage, RedisFSMStorage):
-                checks["redis"] = "ok" if await storage.ping() else "error: ping failed"
-                if checks["redis"] != "ok":
-                    checks["status"] = "unhealthy"
-            else:
-                checks["redis"] = "not configured"
-        else:
-            checks["redis"] = "not configured"
+        from fsm.storage import get_fsm_storage
+
+        storage = get_fsm_storage()
+        checks["redis"] = "ok" if await storage.ping() else "error: ping failed"
+        if checks["redis"] != "ok":
+            checks["status"] = "unhealthy"
     except Exception as e:
         checks["redis"] = f"error: {e}"
         checks["status"] = "unhealthy"

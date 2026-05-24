@@ -9,16 +9,18 @@ volumes:
   pgdata:
   redisdata:
   # Файлы заявок конкурса «Безопасные рисунки» (§21, §33.1).
-  # Именованный том вместо bind-mount: переживает docker compose down -v
-  # только при явном удалении, не мешает push образа без данных, и
-  # изолирован от bind-mountа ./data (он отдан под FSM SQLite и пр.).
+  # Именованный том вместо bind-mount: переживает docker compose down/up,
+  # удаляется только при явном `docker compose down -v` или
+  # `docker volume rm`. Не мешает push образа без данных и изолирован
+  # от bind-mountа ./data (логи и пр.).
   attachments_volume:
 
 services:
-  # ===== PostgreSQL (только для тестирования, профиль test) =====
+  # ===== PostgreSQL =====
+  # Продакшн-БД конкурса; данные на named volume `pgdata` переживают
+  # docker compose down/up и перезагрузку хоста.
   postgres:
     image: postgres:15-alpine
-    profiles: ["test"]
     container_name: kids_ai_db
     restart: always
     networks:
@@ -52,11 +54,20 @@ services:
         ipv4_address: 172.20.0.4
     volumes:
       - redisdata:/data
-    command: redis-server --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-256mb} --maxmemory-policy volatile-lru
+    # AOF + fsync каждую секунду — данные FSM не теряются при рестарте.
+    # noeviction — никогда не вытеснять FSM-ключи под давлением памяти.
+    # --save "" — RDB-снимки отключены, остаётся только AOF.
+    command: >-
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory ${REDIS_MAXMEMORY:-512mb}
+      --maxmemory-policy noeviction
+      --save ""
     deploy:
       resources:
         limits:
-          memory: ${REDIS_MEM_LIMIT:-512M}
+          memory: ${REDIS_MEM_LIMIT:-1G}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -131,7 +142,6 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-        required: false
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
       interval: 30s
@@ -184,4 +194,3 @@ services:
   #       condition: service_healthy
   #     postgres:
   #       condition: service_healthy
-  #       required: false

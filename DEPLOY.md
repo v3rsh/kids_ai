@@ -22,7 +22,7 @@ tar xzf /путь/к/kids_ai-deploy.tar.gz
 └── dist/
     ├── kids_ai_bot.tar
     ├── redis.tar          (FSM storage)
-    └── postgres.tar       (если включен)
+    └── postgres.tar       (база данных)
 ```
 
 ## Шаг 2. Загрузка Docker-образов
@@ -30,7 +30,7 @@ tar xzf /путь/к/kids_ai-deploy.tar.gz
 ```bash
 docker load -i dist/kids_ai_bot.tar
 docker load -i dist/redis.tar
-docker load -i dist/postgres.tar    # если включен
+docker load -i dist/postgres.tar
 ```
 
 Проверка:
@@ -54,9 +54,9 @@ nano .env   # или vi .env
 | `CTS_URL` | URL CTS сервера |
 | `BOT_SECRET_KEY` | Секретный ключ бота |
 | `ADMIN_HUID` | UUID администратора (несколько — через запятую; первый получает алёрты) |
-| `DB_HOST` | Адрес PostgreSQL (см. ниже) |
+| `DB_HOST` | Адрес PostgreSQL внутри docker-сети — `172.20.0.3` |
 | `DB_PASSWORD` | Пароль PostgreSQL |
-| `REDIS_URL` | URL Redis для FSM (по умолчанию `redis://172.20.0.4:6379/0`) |
+| `REDIS_URL` | URL Redis для FSM (по умолчанию `redis://172.20.0.4:6379/0`); **обязателен** |
 
 ### 3.2. Переменные конкурса «Безопасные рисунки»
 
@@ -86,56 +86,57 @@ nano .env   # или vi .env
 
 ## Шаг 4. Запуск
 
-### Вариант А: Тестовый режим (со встроенным PostgreSQL)
-
-Используется встроенный контейнер PostgreSQL. Установите в `.env`:
+Стек поднимается одной командой — три контейнера: `postgres`, `redis`, `bot`.
+Параметры подключения по умолчанию совпадают с docker-сетью compose:
 
 ```env
 DB_HOST=172.20.0.3
 DB_PORT=5432
+REDIS_URL=redis://172.20.0.4:6379/0
 ```
-
-Запуск:
-
-```bash
-docker compose --profile test up -d
-```
-
-### Вариант Б: Продакшн (внешний PostgreSQL)
-
-Укажите в `.env` адрес корпоративного PostgreSQL:
-
-```env
-DB_HOST=10.x.x.x
-DB_PORT=5432
-```
-
-Запуск (без контейнера PostgreSQL):
 
 ```bash
 docker compose up -d
 ```
 
+## Persistence (что и где хранится)
+
+| Volume | Что хранит | Как переживает рестарт |
+|---|---|---|
+| `pgdata` | Данные PostgreSQL: заявки, статусы, голоса жюри | named volume; переживает `docker compose down/up` и перезагрузку хоста |
+| `redisdata` | AOF-файл Redis: FSM-состояния анкет, трекинг transient-сообщений | named volume + `--appendonly yes --appendfsync everysec`; данные сохраняются раз в секунду на диск |
+| `attachments_volume` | Файлы заявок в `/app/data/attachments` (§21, §33.1) | named volume; не пересоздаётся при обновлении бота |
+
+Безопасные команды (данные сохраняются):
+
+```bash
+docker compose down
+docker compose up -d
+docker compose restart
+```
+
+Опасные команды (стирают данные):
+
+```bash
+docker compose down -v          # удаляет ВСЕ named volumes этого compose-проекта
+docker volume rm kids_ai_pgdata # точечное удаление конкретного тома
+docker system prune --volumes   # удаляет все неиспользуемые volumes
+```
+
 ## Redis (FSM storage)
 
-Redis используется для хранения состояний диалогов (FSM). Контейнер Redis запускается автоматически вместе с ботом.
-
-Данные Redis сохраняются на диск (AOF-персистентность) и переживают рестарт контейнера.
+Redis хранит состояния диалогов (FSM). Контейнер Redis запускается автоматически вместе с ботом, AOF на named volume `redisdata` обеспечивает сохранность данных при рестарте.
 
 **Настройки в `.env`:**
 
 | Переменная | По умолчанию | Описание |
 |---|---|---|
-| `REDIS_URL` | `redis://172.20.0.4:6379/0` | URL подключения к Redis |
+| `REDIS_URL` | `redis://172.20.0.4:6379/0` | URL подключения к Redis (обязателен) |
 | `FSM_TTL_DAYS` | `30` | Время жизни FSM-записей (дни) |
+| `REDIS_MAXMEMORY` | `512mb` | maxmemory Redis (политика `noeviction`) |
+| `REDIS_MEM_LIMIT` | `1G` | Docker mem limit Redis-контейнера |
 
-Если используется внешний Redis (продакшн), измените `REDIS_URL`:
-
-```env
-REDIS_URL=redis://10.x.x.x:6379/0
-```
-
-Если `REDIS_URL` не задан, бот автоматически использует SQLite (файл `data/states.sqlite3`).
+Если `REDIS_URL` не задан, бот **падает на старте** с понятным сообщением — fallback на SQLite убран.
 
 ## Проверка работы
 
@@ -153,8 +154,8 @@ curl http://localhost:8000/healthz
 ## Остановка
 
 ```bash
-docker compose down               # бот + Redis
-docker compose --profile test down # бот + Redis + PostgreSQL
+docker compose down              # остановит bot + redis + postgres (данные на volumes сохранятся)
+docker compose down -v           # ОПАСНО: удалит pgdata/redisdata/attachments_volume
 ```
 
 ## Обновление
@@ -254,7 +255,7 @@ docker compose logs --tail=400 bot | grep -E "scheduler|disk monitor|роли|co
 | Контейнер не запускается | `docker compose logs bot` |
 | Ошибка подключения к БД | Проверить `DB_HOST`, `DB_PASSWORD` в `.env` |
 | Бот не отвечает | Проверить `BOT_ID`, `CTS_URL`, `BOT_SECRET_KEY` |
-| PostgreSQL не стартует | `docker compose --profile test logs postgres` |
+| PostgreSQL не стартует | `docker compose logs postgres` |
 | Redis не стартует | `docker compose logs redis` |
 | Ошибка подключения к Redis | Проверить `REDIS_URL` в `.env` |
 | Нет доступа к порту | Проверить `SERVER_PORT` и firewall |

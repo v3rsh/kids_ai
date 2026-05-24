@@ -19,7 +19,6 @@ pip install -r requirements.txt
 ```
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
-aiosqlite>=0.19.0  # уже идёт как fallback FSM
 ```
 
 > ⚠️ Если ставите в системный Python (без venv) и видите конфликт

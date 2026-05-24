@@ -9,7 +9,8 @@ from uuid import UUID
 from loguru import logger
 from pybotx import Bot, ChatTypes, IncomingMessage
 
-from .storage import FSMStorage, get_fsm_storage
+from .redis_storage import RedisFSMStorage
+from .storage import get_fsm_storage
 
 
 class FSMContext:
@@ -20,7 +21,7 @@ class FSMContext:
     пользователя.
     """
     
-    def __init__(self, user_huid: UUID, storage: FSMStorage):
+    def __init__(self, user_huid: UUID, storage: RedisFSMStorage):
         self.user_huid = user_huid
         self._storage = storage
         self._state: Optional[str] = None
@@ -149,7 +150,7 @@ async def fsm_middleware(
     fsm_context = FSMContext(message.sender.huid, storage)
     
     # Lazy-load: состояние загружается при первом обращении к get_state()/get_data()
-    # Это экономит round-trip к Redis/SQLite для обработчиков, не использующих FSM.
+    # Это экономит round-trip к Redis для обработчиков, не использующих FSM.
     
     # Инъектируем FSM контекст в message.state
     message.state.fsm = fsm_context
@@ -167,7 +168,7 @@ class FSMMiddleware:
     позволяющий настроить дополнительные параметры.
     """
     
-    def __init__(self, storage: Optional[FSMStorage] = None):
+    def __init__(self, storage: Optional[RedisFSMStorage] = None):
         self._storage = storage or get_fsm_storage()
     
     async def __call__(

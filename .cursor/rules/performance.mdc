@@ -89,7 +89,7 @@ async def handler(message, bot):
 
 ### Не открывать DB-сессии в middleware
 
-Middleware (`fsm/middleware.py`) работает с FSM storage (Redis/SQLite), но **НЕ** должен обращаться к PostgreSQL. Работа с пользовательскими данными — внутри хендлеров.
+Middleware (`fsm/middleware.py`) работает с Redis FSM storage, но **НЕ** должен обращаться к PostgreSQL. Работа с пользовательскими данными — внутри хендлеров.
 
 ## Batch Commit в periodic jobs
 

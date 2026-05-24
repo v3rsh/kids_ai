@@ -205,11 +205,9 @@ async def safe_answer_transient(
         send_kwargs["bubbles"] = bubbles
     
     sync_id = await bot.answer_message(body, **send_kwargs)
-    
-    # Трекаем сообщение для последующего удаления
-    fsm_context = getattr(message.state, 'fsm', None)
-    await track_transient_message(message.sender.huid, sync_id, fsm_context)
-    
+
+    await track_transient_message(message.sender.huid, sync_id)
+
     return sync_id
 
 
@@ -243,11 +241,9 @@ async def send_photo_transient(
         send_kwargs["bubbles"] = bubbles
     
     sync_id = await bot.answer_message(body, **send_kwargs)
-    
-    # Трекаем сообщение для последующего удаления
-    fsm_context = getattr(message.state, 'fsm', None)
-    await track_transient_message(message.sender.huid, sync_id, fsm_context)
-    
+
+    await track_transient_message(message.sender.huid, sync_id)
+
     return sync_id
 
 

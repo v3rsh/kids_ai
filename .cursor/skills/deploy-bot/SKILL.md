@@ -34,18 +34,12 @@ git commit -m "feat: description of changes"
 ```bash
 # Build images and create deploy archive
 ./build.sh
-
-# Or without PostgreSQL image (если уже на сервере):
-./build.sh --no-postgres
-
-# Без Redis (если внешний Redis):
-./build.sh --no-redis
 ```
 
 This creates `dist/kids_ai-deploy.tar.gz` containing:
 - `kids_ai_bot.tar` — bot Docker image
-- `postgres.tar` — PostgreSQL image (optional)
-- `redis.tar` — Redis image (optional)
+- `postgres.tar` — PostgreSQL image
+- `redis.tar` — Redis image
 - `docker-compose.yml` — compose configuration
 - `.env-example` — environment template
 - `DEPLOY.md` — installation guide for engineer
@@ -65,16 +59,13 @@ tar xzf kids_ai-deploy.tar.gz
 # Load images
 docker load -i dist/kids_ai_bot.tar
 docker load -i dist/redis.tar
-docker load -i dist/postgres.tar    # if included
+docker load -i dist/postgres.tar
 
 # Configure
 cp .env-example .env
 nano .env
 
-# Start (test mode with PostgreSQL container)
-docker compose --profile test up -d
-
-# Start (prod mode with external PostgreSQL)
+# Start the stack: postgres + redis + bot
 docker compose up -d
 ```
 
@@ -89,14 +80,15 @@ CTS_URL=https://your-cts.example.com
 BOT_SECRET_KEY=your-secret-key
 ADMIN_HUID=admin-uuid
 
-# Database
-# Test (container): DB_HOST=172.20.0.3
-# Prod (external):  DB_HOST=10.x.x.x
+# Database (постгрес из docker-compose, named volume pgdata)
 DB_HOST=172.20.0.3
 DB_PORT=5432
 DB_NAME=kids_ai
 DB_USER=postgres
 DB_PASSWORD=secure_password
+
+# Redis FSM (контейнер из docker-compose, AOF на named volume redisdata)
+REDIS_URL=redis://172.20.0.4:6379/0
 
 # Server
 SERVER_PORT=8000
@@ -153,6 +145,6 @@ docker compose logs --tail=50 bot
 | Database connection error | Check `DB_HOST`, `DB_PASSWORD` in `.env` |
 | Bot not responding | Check `CTS_URL`, `BOT_ID`, `BOT_SECRET_KEY` |
 | Image not found | Verify `docker load` completed successfully |
-| PostgreSQL not starting | `docker compose --profile test logs postgres` |
+| PostgreSQL not starting | `docker compose logs postgres` |
 | Redis not starting | `docker compose logs redis` |
 | Port conflict | Change `SERVER_PORT` in `.env` |

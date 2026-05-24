@@ -13,9 +13,7 @@ uvicorn>=0.27.0
 SQLAlchemy>=2.0.0
 # Драйвер для PostgreSQL
 asyncpg>=0.29.0
-# Драйвер для SQLite (fallback для хранения состояний FSM)
-aiosqlite>=0.19.0
-# Redis (приоритетное хранилище FSM, с C-парсером hiredis)
+# Redis — единственное хранилище FSM (с C-парсером hiredis)
 redis[hiredis]>=5.0.0
 
 # ===== Utilities =====
