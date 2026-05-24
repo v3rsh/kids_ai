@@ -91,7 +91,7 @@ async def lifespan(app: Starlette):
 
     # Синхронизация справочников ролей и распределения судей по пулам.
     # Делается в одной короткой сессии до старта FSM/бота, чтобы первый
-    # клик модератора/жюри сразу попадал в готовую БД (§5.2/§5.4/§35.6).
+    # клик модератора/жюри сразу попадал в готовую БД.
     from services.access import sync_role_directories_from_config
     from services.pools import sync_pool_assignments_from_config
 
@@ -106,7 +106,7 @@ async def lifespan(app: Starlette):
 
     disk_monitor_task: asyncio.Task | None = None
     async with lifespan_wrapper(bot) as bot_wrapper:
-        # Фоновый мониторинг диска (§28.1). Запускается только в
+        # Фоновый мониторинг диска. Запускается только в
         # одном web-процессе: при UVICORN_WORKERS>1 + ENABLE_SCHEDULER=true
         # выше уже бросается RuntimeError.
         if ENABLE_SCHEDULER:
@@ -129,7 +129,7 @@ async def lifespan(app: Starlette):
         yield
 
     # Shutdown: остановить фоновые задачи и flush'нуть aggregator
-    # уведомлений жюри (§19 — иначе теряем pending-event'ы агрегации).
+    # уведомлений жюри (иначе теряем pending-event'ы агрегации).
     if disk_monitor_task is not None:
         disk_monitor_task.cancel()
         try:

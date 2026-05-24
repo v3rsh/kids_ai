@@ -15,7 +15,7 @@ from enum import Enum
 
 
 class UserIntake(str, Enum):
-    """Поэтапная подача заявки родителем (§8, §11–§14)."""
+    """Поэтапная подача заявки родителем."""
 
     user_intake_parent_full_name = "user:intake:parent_full_name"
     user_intake_parent_division = "user:intake:parent_division"
@@ -30,7 +30,7 @@ class UserIntake(str, Enum):
 
 
 class ModeratorAction(str, Enum):
-    """Диалоговые подсказки в действиях модератора (§27.1)."""
+    """Диалоговые подсказки в действиях модератора."""
 
     moderator_action_status_change = "moderator:action:status_change"
     moderator_action_comment_input = "moderator:action:comment_input"
@@ -39,7 +39,7 @@ class ModeratorAction(str, Enum):
 
 
 class JuryTaskFlow(str, Enum):
-    """Прохождение задачи жюри (§35.3, §35.4).
+    """Прохождение задачи жюри.
 
     Карусель с черновиками голосов идёт под одним состоянием
     ``jury_task_voting`` — судья навигирует кнопками внутри пула;

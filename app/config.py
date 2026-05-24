@@ -70,7 +70,7 @@ UVICORN_WORKERS = max(1, int(os.getenv("UVICORN_WORKERS", "1")))
 # Конвенция env-переменных проекта — UPPER_SNAKE_CASE без общего префикса
 # (см. ADMIN_HUID, REDIS_URL и т.п.). Все имена ниже подчиняются ей.
 
-# Списки HUID модераторов и членов жюри (через запятую), §5.2, §5.4, §27.2.
+# Списки HUID модераторов и членов жюри (через запятую).
 _moderator_huids_env = os.getenv("MODERATOR_HUIDS", "")
 MODERATOR_HUIDS: list[str] = [
     h.strip() for h in _moderator_huids_env.split(",") if h.strip()
@@ -78,48 +78,48 @@ MODERATOR_HUIDS: list[str] = [
 _jury_huids_env = os.getenv("JURY_HUIDS", "")
 JURY_HUIDS: list[str] = [h.strip() for h in _jury_huids_env.split(",") if h.strip()]
 
-# UUID группового чата «Безопасные рисунки — модерация» (§19).
+# UUID группового чата «Безопасные рисунки — модерация».
 MODERATION_CHAT_ID: str | None = os.getenv("MODERATION_CHAT_ID") or None
 
-# Локальное хранилище файлов конкурса (§21, §33.1).
+# Локальное хранилище файлов конкурса.
 # В контейнере — именованный том attachments_volume (см. docker-compose.yml).
 ATTACHMENTS_DIR = Path(
     os.getenv("ATTACHMENTS_DIR", str(DATA_DIR / "attachments"))
 )
 ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Лимит размера одного файла (§11.4, §16) и пороги мониторинга диска (§28.1).
+# Лимит размера одного файла и пороги мониторинга диска.
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
 DISK_WARN_PCT = int(os.getenv("DISK_WARN_PCT", "80"))
 DISK_BLOCK_PCT = int(os.getenv("DISK_BLOCK_PCT", "95"))
-# Интервал фонового мониторинга диска (§28.1). 1800 c = 30 мин.
+# Интервал фонового мониторинга диска. 1800 c = 30 мин.
 # Сам алёрт дедуплицируется внутри services.storage.check_and_alert_disk
 # (раз в 24 часа на каждый порог), так что 30 мин — безопасный дефолт.
 DISK_CHECK_INTERVAL_SEC = int(os.getenv("DISK_CHECK_INTERVAL_SEC", "1800"))
 
-# Режим приёма заявок по умолчанию (§33.6): "files" | "links".
+# Режим приёма заявок по умолчанию: "files" | "links".
 INTAKE_MODE_DEFAULT = os.getenv("INTAKE_MODE_DEFAULT", "files")
 
-# Параметры жюри (§35).
-# TOP_N — размер шорт-листа на пул (по умолчанию 10, §35.1).
-# JURY_ROUNDS — максимальное число раундов до автоматического жребия (§35.2).
-# JURY_ROUND_DEADLINE_HOURS — дедлайн одного раунда (§35.6, по умолчанию 48 ч).
+# Параметры жюри.
+# TOP_N — размер шорт-листа на пул (по умолчанию 10).
+# JURY_ROUNDS — максимальное число раундов до автоматического жребия.
+# JURY_ROUND_DEADLINE_HOURS — дедлайн одного раунда (по умолчанию 48 ч).
 # JURY_POOLS_CONFIG — JSON-конфиг распределения судей по пулам;
-#   пустая строка = все судьи во всех 12 пулах (поведение по умолчанию).
+#   пустая строка = все судьи во всех 9 пулах (поведение по умолчанию).
 TOP_N = int(os.getenv("TOP_N", "10"))
 JURY_ROUNDS = int(os.getenv("JURY_ROUNDS", "3"))
 JURY_ROUND_DEADLINE_HOURS = int(os.getenv("JURY_ROUND_DEADLINE_HOURS", "48"))
 JURY_POOLS_CONFIG = os.getenv("JURY_POOLS_CONFIG", "")
 
-# Год проведения конкурса — используется в формировании BR-ID (§20).
+# Год проведения конкурса — используется в формировании BR-ID.
 COMPETITION_YEAR = int(os.getenv("COMPETITION_YEAR", "2026"))
 
-# Текст экрана «Контакты организаторов» (§7). Вынесен из хардкода
+# Текст экрана «Контакты организаторов». Вынесен из хардкода
 # `app/handlers/user.py` в env-переменную, чтобы заказчик мог поправить
 # формулировку без диффа в коде. Многострочный текст в .env передаётся
 # через `\n` (dotenv разворачивает их в реальные переводы строк).
 # Пустая строка / отсутствие переменной → используется дефолтный текст
-# Wave 2 (см. CONTACTS_TEXT_DEFAULT ниже).
+# из ``CONTACTS_TEXT_DEFAULT`` ниже.
 CONTACTS_TEXT_DEFAULT = (
     "Контакты организаторов:\n\n"
     "• Организатор конкурса — команда ИБ.\n"
