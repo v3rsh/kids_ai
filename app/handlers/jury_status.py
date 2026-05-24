@@ -23,7 +23,7 @@ collector = HandlerCollector()
 def _back_bubbles() -> BubbleMarkup:
     bubbles = BubbleMarkup()
     bubbles.add_button(command="/jury_tasks", label="📋 К списку задач", new_row=True)
-    bubbles.add_button(command="/jury_menu", label="↩ В меню жюри", new_row=True)
+    bubbles.add_button(command="/jury", label="↩ В меню жюри", new_row=True)
     return bubbles
 
 

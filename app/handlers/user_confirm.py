@@ -346,7 +346,7 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
         message,
         bot,
         _ACCEPTED_MESSAGE + f"\n\nНомер заявки: {br_id}",
-        bubbles=main_menu_bubbles(),
+        bubbles=main_menu_bubbles(huid=parent_huid),
     )
 
 

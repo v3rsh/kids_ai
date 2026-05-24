@@ -94,6 +94,9 @@ def _moderator_menu_bubbles() -> BubbleMarkup:
     bubbles.add_button(command="/export_shortlist", label="🏆 Шорт-лист (XLSX)", new_row=True)
     bubbles.add_button(command="/jury_state", label="⚖️ Состояние жюри", new_row=True)
     bubbles.add_button(command="/m_help", label="❔ Справка по командам", new_row=True)
+    bubbles.add_button(
+        command="/start", label="◀ Назад в главное меню", new_row=True
+    )
     return bubbles
 
 

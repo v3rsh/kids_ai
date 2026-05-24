@@ -9,6 +9,8 @@
 - Значения в `data` — только строки (str(int_value), enum.value)
 - Для удаления кнопок передавать пустой `BubbleMarkup()`
 """
+from uuid import UUID
+
 from pybotx import BubbleMarkup
 
 from database.models import Track
@@ -24,16 +26,24 @@ from database.models import Track
 # в соответствующих модулях ``app/handlers/user*.py``.
 
 
-def main_menu_bubbles() -> BubbleMarkup:
-    """Главное меню бота — 6 кнопок.
+def main_menu_bubbles(*, huid: UUID | str | None = None) -> BubbleMarkup:
+    """Главное меню бота — 6 базовых кнопок + ролевые при наличии.
 
-    Соответствие команд экранам бота:
+    Базовые кнопки (для всех):
     - /menu_about    → «О конкурсе»;
     - /menu_rules    → «Правила участия»;
     - /menu_examples → «Примеры работ и промптов»;
     - /apply         → «Подать работу» (точка входа в UserIntake);
     - /menu_dates    → «Сроки конкурса»;
     - /menu_contacts → контакты организаторов (текст из конфига).
+
+    Дополнительно, если передан ``huid`` и пользователь в роли:
+    - модератор → «🛡 Модерация» (/moderator);
+    - жюри      → «⚖️ Жюри»      (/jury).
+
+    Чтобы избежать кругового импорта (services.access → database.models →
+    keyboards в некоторых сценариях прогрева кэша) импорт проверок ролей
+    делается lazy внутри функции.
     """
     bubbles = BubbleMarkup()
     bubbles.add_button(command="/menu_about", label="О конкурсе")
@@ -45,6 +55,32 @@ def main_menu_bubbles() -> BubbleMarkup:
     bubbles.add_button(command="/menu_dates", label="Сроки конкурса", new_row=True)
     bubbles.add_button(
         command="/menu_contacts", label="Контакты организаторов", new_row=True
+    )
+
+    if huid is not None:
+        from services.access import is_jury, is_moderator
+
+        if is_moderator(huid):
+            bubbles.add_button(
+                command="/moderator", label="🛡 Модерация", new_row=True
+            )
+        if is_jury(huid):
+            bubbles.add_button(command="/jury", label="⚖️ Жюри", new_row=True)
+
+    return bubbles
+
+
+def back_to_main_menu_bubbles() -> BubbleMarkup:
+    """Одна кнопка «◀ Назад в главное меню» — возврат на /start.
+
+    Используется на инфо-экранах главного меню (О конкурсе, Правила,
+    Примеры, Сроки, Контакты), чтобы не дублировать всё главное меню
+    под текстом раздела — навигация явно показывает, что пользователь
+    провалился в подраздел и может вернуться.
+    """
+    bubbles = BubbleMarkup()
+    bubbles.add_button(
+        command="/start", label="◀ Назад в главное меню", new_row=True
     )
     return bubbles
 
@@ -141,6 +177,7 @@ def final_confirm_bubbles() -> BubbleMarkup:
 
 __all__ = [
     "main_menu_bubbles",
+    "back_to_main_menu_bubbles",
     "track_selection_bubbles",
     "consents_bubbles",
     "file_upload_bubbles",

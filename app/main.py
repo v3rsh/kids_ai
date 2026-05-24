@@ -101,7 +101,7 @@ async def lifespan(app: Starlette):
     # Bootstrap ролей и кэша доступа:
     # 1) seed из env, если таблицы пусты (одноразовая инициализация);
     # 2) reload in-memory кэша (services.access._moderator_huids и др.) —
-    #    hot path (chat-gate, /moderator, /jury_menu) после этого
+    #    hot path (chat-gate, /moderator, /jury) после этого
     #    отвечает без походов в БД.
     # 3) sync пулов жюри.
     from services.access import (

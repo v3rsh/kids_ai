@@ -3,7 +3,7 @@ Handlers ветки жюри.
 
 Точка входа в роль судьи:
 - ``/jury_tasks`` — список открытых задач (пул × раунд × прогресс × дедлайн).
-- ``/jury_menu`` — небольшое «главное меню жюри» (открыть задачи,
+- ``/jury`` — небольшое «главное меню жюри» (открыть задачи,
   посмотреть статус). Отдельных команд для самой оценки нет — всё
   взаимодействие внутри задачи происходит через кнопки карусели,
   реализованной в ``app/handlers/jury_tasks.py``.
@@ -40,6 +40,9 @@ def _jury_menu_bubbles() -> BubbleMarkup:
     bubbles = BubbleMarkup()
     bubbles.add_button(command="/jury_tasks", label="📋 Мои задачи", new_row=True)
     bubbles.add_button(command="/jury_status", label="📊 Прогресс", new_row=True)
+    bubbles.add_button(
+        command="/start", label="◀ Назад в главное меню", new_row=True
+    )
     return bubbles
 
 
@@ -50,7 +53,7 @@ _JURY_MENU_TEXT = (
 
 
 @collector.command(
-    "/jury_menu",
+    "/jury",
     description="Меню жюри",
     visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
@@ -70,7 +73,7 @@ async def cmd_jury_menu(message: IncomingMessage, bot: Bot) -> None:
         return
 
     logger.info(
-        "Запрос доступа к /jury_menu от не-жюри",
+        "Запрос доступа к /jury от не-жюри",
         huid=str(huid),
     )
     await discovery.notify_admin_role_candidate(
@@ -188,7 +191,7 @@ def _task_list_bubbles(
         label="📊 Общий прогресс",
         new_row=True,
     )
-    bubbles.add_button(command="/jury_menu", label="↩ В меню жюри", new_row=True)
+    bubbles.add_button(command="/jury", label="↩ В меню жюри", new_row=True)
     return bubbles
 
 

@@ -11,8 +11,9 @@
 Соглашения:
 - все экраны редактируются на месте через ``reply_to_user`` —
   см. ``.cursor/rules/message-navigation.mdc``;
-- информационные экраны сразу возвращают главное меню под текстом,
-  чтобы пользователь мог перейти куда угодно одним кликом;
+- информационные экраны показывают одну кнопку «◀ Назад в главное меню»
+  под текстом — чтобы пользователь явно понимал, что провалился в
+  подраздел и может вернуться. Главное меню одно — на ``/start``;
 - команды ``/menu_*`` и ``/apply`` помечены ``visible=False`` — они
   вызываются только кнопками главного меню, в CTS-меню их не показываем.
 
@@ -26,7 +27,7 @@ from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
 
 from config import CONTACTS_TEXT
 from fsm import cleanup_middleware, fsm_middleware
-from keyboards import main_menu_bubbles
+from keyboards import back_to_main_menu_bubbles
 from services import users as users_service
 from states import UserIntake
 from utils.bot_utils import reply_to_user
@@ -108,9 +109,10 @@ EXAMPLES_TEXT = (
 # Информационные экраны
 # =====================================================================
 #
-# Каждый экран сразу показывает главное меню под текстом — пользователь
-# может одним кликом перейти куда угодно. «Назад в меню» не нужно, т.к.
-# меню уже на месте (см. message-navigation.mdc).
+# Каждый экран показывает текст раздела + одну кнопку «◀ Назад в главное
+# меню» (на ``/start``). Главное меню одно и живёт на ``/start`` —
+# дублировать его под каждым разделом не нужно: смена клавиатуры явно
+# показывает, что пользователь провалился в подраздел.
 
 
 @collector.command(
@@ -121,7 +123,9 @@ EXAMPLES_TEXT = (
 )
 async def cmd_menu_about(message: IncomingMessage, bot: Bot) -> None:
     """Экран «О конкурсе»."""
-    await reply_to_user(message, bot, ABOUT_TEXT, bubbles=main_menu_bubbles())
+    await reply_to_user(
+        message, bot, ABOUT_TEXT, bubbles=back_to_main_menu_bubbles()
+    )
 
 
 @collector.command(
@@ -132,7 +136,9 @@ async def cmd_menu_about(message: IncomingMessage, bot: Bot) -> None:
 )
 async def cmd_menu_rules(message: IncomingMessage, bot: Bot) -> None:
     """Экран «Правила участия»."""
-    await reply_to_user(message, bot, RULES_TEXT, bubbles=main_menu_bubbles())
+    await reply_to_user(
+        message, bot, RULES_TEXT, bubbles=back_to_main_menu_bubbles()
+    )
 
 
 @collector.command(
@@ -143,7 +149,9 @@ async def cmd_menu_rules(message: IncomingMessage, bot: Bot) -> None:
 )
 async def cmd_menu_examples(message: IncomingMessage, bot: Bot) -> None:
     """Экран «Примеры работ и промптов»."""
-    await reply_to_user(message, bot, EXAMPLES_TEXT, bubbles=main_menu_bubbles())
+    await reply_to_user(
+        message, bot, EXAMPLES_TEXT, bubbles=back_to_main_menu_bubbles()
+    )
 
 
 @collector.command(
@@ -154,7 +162,9 @@ async def cmd_menu_examples(message: IncomingMessage, bot: Bot) -> None:
 )
 async def cmd_menu_dates(message: IncomingMessage, bot: Bot) -> None:
     """Экран «Сроки конкурса»."""
-    await reply_to_user(message, bot, DATES_TEXT, bubbles=main_menu_bubbles())
+    await reply_to_user(
+        message, bot, DATES_TEXT, bubbles=back_to_main_menu_bubbles()
+    )
 
 
 @collector.command(
@@ -165,7 +175,9 @@ async def cmd_menu_dates(message: IncomingMessage, bot: Bot) -> None:
 )
 async def cmd_menu_contacts(message: IncomingMessage, bot: Bot) -> None:
     """Экран «Контакты организаторов»."""
-    await reply_to_user(message, bot, CONTACTS_TEXT, bubbles=main_menu_bubbles())
+    await reply_to_user(
+        message, bot, CONTACTS_TEXT, bubbles=back_to_main_menu_bubbles()
+    )
 
 
 # =====================================================================

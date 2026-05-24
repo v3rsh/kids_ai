@@ -134,7 +134,7 @@ async def on_chat_created(event: ChatCreatedEvent, bot: Bot) -> None:
             bot_id=event.bot.id,
             chat_id=chat_id,
             body=WELCOME_TEXT,
-            bubbles=main_menu_bubbles(),
+            bubbles=main_menu_bubbles(huid=creator_huid),
             wait_callback=False,
         )
         return
@@ -168,7 +168,12 @@ async def cmd_start(message: IncomingMessage, bot: Bot) -> None:
     asyncio.create_task(
         users_service.sync_user_from_cts(bot, message.sender.huid)
     )
-    await reply_to_user(message, bot, WELCOME_TEXT, bubbles=main_menu_bubbles())
+    await reply_to_user(
+        message,
+        bot,
+        WELCOME_TEXT,
+        bubbles=main_menu_bubbles(huid=message.sender.huid),
+    )
 
 
 @collector.command("/help", description="Справка")
@@ -183,7 +188,7 @@ async def cmd_help(message: IncomingMessage, bot: Bot) -> None:
             "/help — эта справка\n\n"
             "Чтобы подать работу — нажмите «Подать работу» в главном меню."
         ),
-        bubbles=main_menu_bubbles(),
+        bubbles=main_menu_bubbles(huid=message.sender.huid),
     )
 
 
@@ -235,7 +240,7 @@ async def default_handler(message: IncomingMessage, bot: Bot) -> None:
             message,
             bot,
             _LEGACY_RESET_TEXT,
-            bubbles=main_menu_bubbles(),
+            bubbles=main_menu_bubbles(huid=message.sender.huid),
         )
         return
 
@@ -255,4 +260,9 @@ async def default_handler(message: IncomingMessage, bot: Bot) -> None:
             state=current_state,
         )
 
-    await reply_to_user(message, bot, DEFAULT_FALLBACK_TEXT, bubbles=main_menu_bubbles())
+    await reply_to_user(
+        message,
+        bot,
+        DEFAULT_FALLBACK_TEXT,
+        bubbles=main_menu_bubbles(huid=message.sender.huid),
+    )
