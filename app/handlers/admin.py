@@ -159,6 +159,7 @@ async def _recent_alerts(*, limit: int = 5) -> list[tuple[int, datetime]]:
 @collector.command(
     "/disk",
     description="Состояние дискового пространства хранилища (admin/moderator)",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
@@ -197,6 +198,7 @@ async def cmd_disk(message: IncomingMessage, bot: Bot) -> None:
 @collector.command(
     "/intake_mode",
     description="Переключить режим приёма заявок: files | links (admin/moderator)",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only

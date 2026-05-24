@@ -106,6 +106,7 @@ def _format_stats(stats: StatsCounters) -> str:
 @collector.command(
     "/export",
     description="Прислать актуальный реестр заявок (XLSX)",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
@@ -151,6 +152,7 @@ async def cmd_export(message: IncomingMessage, bot: Bot) -> None:
 @collector.command(
     "/export_shortlist",
     description="Прислать XLSX шорт-листа",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
@@ -196,6 +198,7 @@ async def cmd_export_shortlist(message: IncomingMessage, bot: Bot) -> None:
 @collector.command(
     "/stats",
     description="Статистика по заявкам: /stats today | /stats all",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only

@@ -29,7 +29,8 @@ from pybotx import (
 )
 
 from fsm import cleanup_middleware, fsm_middleware
-from services.access import moderator_only
+from services import discovery
+from services.access import is_moderator, moderator_only
 from utils.bot_utils import reply_to_user
 
 
@@ -103,25 +104,47 @@ def _moderator_menu_bubbles() -> BubbleMarkup:
 
 @collector.command(
     "/moderator",
-    description="Меню модератора (только для модераторов)",
+    description="Меню модератора",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
-@moderator_only
 async def cmd_moderator_menu(message: IncomingMessage, bot: Bot) -> None:
     """Главное меню модератора.
 
-    Защищено ``moderator_only`` (см. services.access). Не-модератор
-    получит ответ «Команда доступна только модераторам».
+    Точка входа в ветку. В отличие от внутренних команд ветки (`/queue`,
+    `/find`, …) — здесь НЕ используется молчаливый ``moderator_only``.
+    Поведение:
+
+    - Если sender — модератор → показываем меню.
+    - Иначе → шлём админу discovery-карточку с профилем + кнопками
+      «Назначить модератором / Отклонить» (через ``services.discovery``),
+      а пользователю отвечаем «Запрос отправлен администратору».
     """
+    huid = message.sender.huid
+    if is_moderator(huid):
+        logger.info("Модератор открыл меню", huid=str(huid))
+        await reply_to_user(
+            message,
+            bot,
+            MODERATOR_MENU_TEXT,
+            bubbles=_moderator_menu_bubbles(),
+        )
+        return
+
     logger.info(
-        "Модератор открыл меню",
-        huid=str(message.sender.huid),
+        "Запрос доступа к /moderator от не-модератора",
+        huid=str(huid),
+    )
+    await discovery.notify_admin_role_candidate(
+        bot, huid=huid, role="moderator"
     )
     await reply_to_user(
         message,
         bot,
-        MODERATOR_MENU_TEXT,
-        bubbles=_moderator_menu_bubbles(),
+        (
+            "Доступ к меню модератора ограничен.\n"
+            "Запрос отправлен администратору на одобрение."
+        ),
     )
 
 

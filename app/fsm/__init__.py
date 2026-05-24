@@ -7,6 +7,7 @@ from .storage import get_fsm_storage, init_fsm_storage, close_fsm_storage
 from .redis_storage import RedisFSMStorage
 from .middleware import FSMMiddleware, FSMContext, fsm_middleware, personal_chat_only
 from .cleanup_middleware import cleanup_middleware
+from .chat_gate import chat_gate_middleware
 
 __all__ = [
     "RedisFSMStorage",
@@ -18,4 +19,5 @@ __all__ = [
     "fsm_middleware",
     "personal_chat_only",
     "cleanup_middleware",
+    "chat_gate_middleware",
 ]

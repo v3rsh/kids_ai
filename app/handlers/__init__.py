@@ -48,6 +48,9 @@ from .jury_status import collector as jury_status_collector
 # Технические админ-команды: /disk, /intake_mode, /admin_state.
 from .admin import collector as admin_collector
 
+# Админ-роли: discovery-кнопки, выдача/отзыв ролей, чат модерации.
+from .admin_roles import collector as admin_roles_collector
+
 
 def get_all_collectors() -> list:
     """Возвращает список коллекторов в порядке регистрации.
@@ -75,6 +78,7 @@ def get_all_collectors() -> list:
         jury_status_collector,
         # Ветка D — админ-команды
         admin_collector,
+        admin_roles_collector,
     ]
 
 

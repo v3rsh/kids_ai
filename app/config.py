@@ -84,7 +84,19 @@ _jury_huids_env = os.getenv("JURY_HUIDS", "")
 JURY_HUIDS: list[str] = [h.strip() for h in _jury_huids_env.split(",") if h.strip()]
 
 # UUID группового чата «Безопасные рисунки — модерация».
+# В рантайме НЕ используется — служит только bootstrap'ом при первом
+# запуске (см. services/access.py::seed_access_from_config_if_empty).
+# Источник истины — таблица ``app_settings``, изменяется через
+# discovery-кнопки админа (``/admin_chat_approve``).
 MODERATION_CHAT_ID: str | None = os.getenv("MODERATION_CHAT_ID") or None
+
+# Шаблон URL-deeplink на DM с ботом для кнопок в чате модерации.
+# Точный синтаксис зависит от версии eXpress CTS — обычно вида
+# ``express://chat?bot_id={bot_id}`` или ``https://{cts_host}/chats/personal/{bot_id}``.
+# Доступные плейсхолдеры: {bot_id}, {cts_url}. Если переменная пуста,
+# кнопка-ссылка не добавляется — в outbound-уведомлениях остаётся
+# только текстовая команда (``/files BR-XXXX``).
+EXPRESS_DEEPLINK_TEMPLATE: str = os.getenv("EXPRESS_DEEPLINK_TEMPLATE", "")
 
 # Локальное хранилище файлов конкурса.
 # В контейнере — именованный том attachments_volume (см. docker-compose.yml).

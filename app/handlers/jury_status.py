@@ -50,6 +50,7 @@ def _format_progress(progress: dict[str, int]) -> str:
 @collector.command(
     "/jury_status",
     description="Общий прогресс по моим задачам жюри",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @jury_only

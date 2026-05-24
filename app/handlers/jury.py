@@ -22,8 +22,8 @@ from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
 
 from database.db import get_session
 from fsm import cleanup_middleware, fsm_middleware
-from services import jury as jury_service
-from services.access import jury_only
+from services import discovery, jury as jury_service
+from services.access import is_jury, jury_only
 from utils.bot_utils import reply_to_user
 from utils.contracts import JuryTaskDTO, PoolKey
 
@@ -52,12 +52,38 @@ _JURY_MENU_TEXT = (
 @collector.command(
     "/jury_menu",
     description="Меню жюри",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
-@jury_only
 async def cmd_jury_menu(message: IncomingMessage, bot: Bot) -> None:
-    """Главное меню жюри. Доступно только членам жюри."""
-    await reply_to_user(message, bot, _JURY_MENU_TEXT, bubbles=_jury_menu_bubbles())
+    """Главное меню жюри.
+
+    Точка входа в ветку. Если sender — судья → показываем меню; иначе
+    шлём админу discovery-карточку с профилем + кнопками одобрения,
+    пользователю отвечаем «Запрос отправлен администратору».
+    """
+    huid = message.sender.huid
+    if is_jury(huid):
+        await reply_to_user(
+            message, bot, _JURY_MENU_TEXT, bubbles=_jury_menu_bubbles()
+        )
+        return
+
+    logger.info(
+        "Запрос доступа к /jury_menu от не-жюри",
+        huid=str(huid),
+    )
+    await discovery.notify_admin_role_candidate(
+        bot, huid=huid, role="jury"
+    )
+    await reply_to_user(
+        message,
+        bot,
+        (
+            "Доступ к меню жюри ограничен.\n"
+            "Запрос отправлен администратору на одобрение."
+        ),
+    )
 
 
 # =====================================================================
@@ -201,6 +227,7 @@ def _task_list_text(
 @collector.command(
     "/jury_tasks",
     description="Мой список открытых задач (жюри)",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @jury_only

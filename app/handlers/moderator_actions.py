@@ -178,6 +178,7 @@ def _card_action_buttons(app: Application) -> BubbleMarkup:
 @collector.command(
     "/find",
     description="Карточка заявки по BR-ID",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
@@ -222,6 +223,7 @@ async def cmd_find(message: IncomingMessage, bot: Bot) -> None:
 @collector.command(
     "/status",
     description="Сменить статус заявки (модерация/голосование/мерч)",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
@@ -296,6 +298,7 @@ async def cmd_status(message: IncomingMessage, bot: Bot) -> None:
 @collector.command(
     "/comment",
     description="Комментарий модератора к заявке",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
@@ -391,6 +394,7 @@ async def _state_handle_comment(message: IncomingMessage, bot: Bot) -> None:
 @collector.command(
     "/notify_fix",
     description="Сообщение участнику: требуется исправление",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
@@ -503,6 +507,7 @@ async def _send_notify_fix(
 @collector.command(
     "/notify_reject",
     description="Отклонить заявку и перенести в 99_Отклонено/",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
@@ -691,6 +696,7 @@ async def _state_handle_fix_note(
 @collector.command(
     "/notify_shortlist",
     description="Сообщение участнику: попадание в шорт-лист",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
@@ -752,6 +758,7 @@ async def cmd_notify_shortlist(message: IncomingMessage, bot: Bot) -> None:
 @collector.command(
     "/files",
     description="Получить файлы заявки в чат",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only

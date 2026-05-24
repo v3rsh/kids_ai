@@ -170,6 +170,7 @@ def _split_command_argument(message: IncomingMessage) -> str:
 @collector.command(
     "/jury_state",
     description="Состояние процесса жюри по всем пулам",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
@@ -264,6 +265,7 @@ def _format_deadline(deadline_at: datetime, delta) -> str:
 @collector.command(
     "/jury_close_round",
     description="Досрочное закрытие текущего раунда жюри",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only
@@ -392,6 +394,7 @@ async def _close_open_rounds(
 @collector.command(
     "/jury_finalize",
     description="Аварийная финализация процесса жюри",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @moderator_only

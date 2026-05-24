@@ -29,7 +29,7 @@ from uuid import UUID
 
 from loguru import logger
 
-from config import MODERATION_CHAT_ID
+from services.access import get_moderation_chat_id
 
 if TYPE_CHECKING:
     from pybotx import Bot
@@ -261,26 +261,24 @@ async def _resolve_user_chat_id(huid: UUID) -> UUID | None:
 
 
 async def _send_to_moderation_chat(
-    bot: "Bot", body: str, *, purpose: str
+    bot: "Bot",
+    body: str,
+    *,
+    purpose: str,
+    bubbles=None,
 ) -> None:
     """Отправить сообщение в чат «Безопасные рисунки — модерация».
 
-    Если ``MODERATION_CHAT_ID`` пуст — пишем WARNING и выходим (бот
-    остаётся работоспособным без чата модерации, нужно для dev/test).
+    Источник ``chat_id`` — кэш ``services.access`` (актуальное значение
+    из БД, обновляется при ``/admin_chat_approve``). Если чат ещё не
+    настроен — пишем WARNING и no-op (бот остаётся работоспособным
+    без чата модерации).
     """
-    if not MODERATION_CHAT_ID:
+    chat_uuid = get_moderation_chat_id()
+    if chat_uuid is None:
         logger.warning(
-            "Не отправили нотификацию в чат модерации: MODERATION_CHAT_ID пуст",
+            "Не отправили нотификацию в чат модерации: moderation_chat_id не настроен",
             purpose=purpose,
-        )
-        return
-
-    try:
-        chat_uuid = UUID(MODERATION_CHAT_ID)
-    except (TypeError, ValueError):
-        logger.error(
-            "MODERATION_CHAT_ID не является валидным UUID",
-            value=MODERATION_CHAT_ID,
         )
         return
 
@@ -295,6 +293,8 @@ async def _send_to_moderation_chat(
     }
     if bot_id is not None:
         kwargs["bot_id"] = bot_id
+    if bubbles is not None:
+        kwargs["bubbles"] = bubbles
 
     try:
         await bot.send_message(**kwargs)
@@ -418,7 +418,14 @@ def _format_files_pointer(app: "Application") -> str:
 async def notify_moderation_chat_new_application(
     bot: "Bot", app: "Application"
 ) -> None:
-    """Служебное сообщение о новой заявке в чат модерации."""
+    """Служебное сообщение о новой заявке в чат модерации.
+
+    Если настроен ``EXPRESS_DEEPLINK_TEMPLATE``, добавляем кнопку
+    «🔎 Открыть в боте» с URL-ссылкой на DM с ботом. Команды
+    (``/find BR-XXXX``, ``/files BR-XXXX``) остаются в теле сообщения —
+    deeplink только открывает чат, ввод команды по-прежнему за модератором
+    (у eXpress нет аналога ``?start=payload``).
+    """
     body = NEW_APPLICATION_MODERATION_TEMPLATE.format(
         br_id=app.br_id,
         parent_full_name=app.parent_full_name,
@@ -429,9 +436,40 @@ async def notify_moderation_chat_new_application(
         title=app.title,
         files_pointer=_format_files_pointer(app),
     )
+    bubbles = _moderation_chat_open_in_bot_bubbles(bot)
     await _send_to_moderation_chat(
-        bot, body, purpose="moderation_new_application"
+        bot,
+        body,
+        purpose="moderation_new_application",
+        bubbles=bubbles,
     )
+
+
+def _moderation_chat_open_in_bot_bubbles(bot: "Bot"):
+    """``BubbleMarkup`` с одной кнопкой-ссылкой «Открыть в боте».
+
+    Возвращает None, если deeplink не настроен — `_send_to_moderation_chat`
+    тогда просто не добавит поле ``bubbles`` в JSON (см. правило
+    `.cursor/rules/pybotx-bubbles.mdc`).
+    """
+    from pybotx import BubbleMarkup
+
+    from utils.deeplink import build_bot_deeplink
+
+    bot_id = getattr(bot, "id", None) or getattr(
+        getattr(bot, "bot_accounts", [None])[0], "id", None
+    )
+    link = build_bot_deeplink(bot_id)
+    if not link:
+        return None
+    bubbles = BubbleMarkup()
+    bubbles.add_button(
+        command="/open_in_bot",
+        label="🔎 Открыть в боте",
+        link=link,
+        new_row=True,
+    )
+    return bubbles
 
 
 async def notify_moderation_chat_disk_alert(
@@ -458,7 +496,10 @@ async def notify_moderation_chat_disk_alert(
             free_mb=free_mb, hours_left=hours_text
         )
     await _send_to_moderation_chat(
-        bot, body, purpose=f"moderation_disk_alert_{threshold_pct}"
+        bot,
+        body,
+        purpose=f"moderation_disk_alert_{threshold_pct}",
+        bubbles=_moderation_chat_open_in_bot_bubbles(bot),
     )
 
 
@@ -575,7 +616,10 @@ async def _flush_aggregator() -> None:
         else:
             continue  # pragma: no cover — типов больше нет
         await _send_to_moderation_chat(
-            bot, body, purpose=f"moderation_jury_{kind}_aggregated"
+            bot,
+            body,
+            purpose=f"moderation_jury_{kind}_aggregated",
+            bubbles=_moderation_chat_open_in_bot_bubbles(bot),
         )
 
 
@@ -587,13 +631,17 @@ async def _send_jury_event_single(bot: "Bot", ev: _JuryEvent) -> None:
             pool=pool_label, round_no=ev.round_no or 1
         )
         await _send_to_moderation_chat(
-            bot, body, purpose="moderation_jury_lot"
+            bot,
+            body,
+            purpose="moderation_jury_lot",
+            bubbles=_moderation_chat_open_in_bot_bubbles(bot),
         )
     elif ev.kind == "shortlist_ready":
         await _send_to_moderation_chat(
             bot,
             JURY_SHORTLIST_READY_TEMPLATE,
             purpose="moderation_jury_shortlist_ready",
+            bubbles=_moderation_chat_open_in_bot_bubbles(bot),
         )
 
 
