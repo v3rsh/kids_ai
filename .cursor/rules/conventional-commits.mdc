@@ -88,12 +88,12 @@ Use these scopes based on the project structure:
 - `states` — FSM state definitions
 - `config` — configuration and environment
 - `docker` — containerization and deployment
-- `foundation` — общий каркас, на котором стоят несколько веток (Wave 1)
-- `moderator` — ветка модератора (Wave 2 / B): `app/handlers/moderator*.py` + `app/services/moderation.py`
-- `admin` — админ-команды и режим приёма заявок (Wave 2 / D): `app/handlers/admin.py`, `app/services/intake_mode.py` (§27, §33.6)
-- `storage` — локальное файловое хранилище (Wave 2 / D): `app/services/storage.py` — структура папок, переименование, мониторинг диска (§21–§24, §28.1)
-- `notifications` — автосообщения участникам и в чат модерации (Wave 2 / D): `app/services/notifications.py`, шаблоны §18 / §19
-- `intake` — пользовательский сценарий подачи заявки (Wave 2 / A): `app/handlers/user*.py`
-- `jury` — жюри-функционал (Wave 2 / C): `app/handlers/jury*.py`, `app/services/jury.py`, `app/services/pools.py`
-- `registry` — Excel-выгрузка реестра / шорт-листа on-demand (Wave 2 / E): `app/services/registry.py`
-- `tz` — изменения в `ТЗ.md` (только Wave 0)
+- `foundation` — общий каркас, на котором стоят несколько веток
+- `moderator` — ветка модератора: `app/handlers/moderator*.py` + `app/services/moderation.py`
+- `admin` — админ-команды и режим приёма заявок: `app/handlers/admin.py`, `app/services/intake_mode.py`
+- `storage` — локальное файловое хранилище: `app/services/storage.py` — структура папок, переименование, мониторинг диска
+- `notifications` — автосообщения участникам и в чат модерации: `app/services/notifications.py`
+- `intake` — пользовательский сценарий подачи заявки: `app/handlers/user*.py`
+- `jury` — жюри-функционал: `app/handlers/jury*.py`, `app/services/jury.py`, `app/services/pools.py`
+- `registry` — Excel-выгрузка реестра / шорт-листа on-demand: `app/services/registry.py`
+- `docs` — изменения в актуальной документации (`docs/`). Архивный `docs/history/ТЗ.md` больше не правится — см. `docs/README.md`
