@@ -1,13 +1,12 @@
 """
-Генератор Excel-выгрузок «Безопасные рисунки» (Wave 2 / ветка E).
+Генератор Excel-выгрузок «Безопасные рисунки».
 
-Принципиальное правило (Wave 0, §25.4): ``registry.xlsx`` **не хранится
-на диске** и не пересобирается на каждое событие. Файл собирается из
-БД по запросу `/export` и `/export_shortlist`, отдаётся в чат
-attachment'ом и забывается. Сервис возвращает ``bytes``.
+Принципиальное правило: ``registry.xlsx`` **не хранится на диске** и
+не пересобирается на каждое событие. Файл собирается из БД по запросу
+`/export` и `/export_shortlist`, отдаётся в чат attachment'ом
+и забывается. Сервис возвращает ``bytes``.
 
-Источник правды по формату Excel — `docs/registry-spec.md` (12
-решений Q1–Q12 в design-фазе Wave 2 / E1).
+Источник правды по формату Excel — `docs/registry-spec.md`.
 """
 from __future__ import annotations
 
@@ -45,7 +44,7 @@ MSK = ZoneInfo("Europe/Moscow")
 
 
 # =====================================================================
-# Транслитерация и заголовки колонок жюри (Q1 / §2.3.1)
+# Транслитерация и заголовки колонок жюри
 # =====================================================================
 #
 # Используется паспортный стандарт ICAO Doc 9303 (актуальная редакция
@@ -64,7 +63,7 @@ _ICAO_9303_MAP: dict[str, str] = {
 
 
 def transliterate_icao_9303(text: str) -> str:
-    """Транслитерация кириллицы по ICAO Doc 9303 (§2.3.1).
+    """Транслитерация кириллицы по ICAO Doc 9303.
 
     Прозрачно проходит через символы, не входящие в таблицу
     (латиница, цифры, дефисы и т. п.) — это нужно для fallback'а на
@@ -83,7 +82,7 @@ def transliterate_icao_9303(text: str) -> str:
 
 
 def jury_column_header(full_name: str, round_no: int) -> str:
-    """Шапка динамической колонки листа `Голосование жюри` (§2.3.1).
+    """Шапка динамической колонки листа `Голосование жюри`.
 
     Шаблон: ``<Фамилия>.<И>_r<N>`` (например, ``Vinokurova.E_r1``).
 
@@ -99,8 +98,8 @@ def jury_column_header(full_name: str, round_no: int) -> str:
         # Инициал ограничиваем РОВНО одной буквой латиницы: если первая
         # буква имени даёт многосимвольную транслитерацию (Ю→IU, Я→IA,
         # Ж→ZH, Х→KH, Ц→TS, Ч→CH, Ш→SH, Щ→SHCH, Ъ→IE) — берём только
-        # первый символ результата. Иначе ширина колонки 14 (§5.3.2)
-        # рассыпается на длинных инициалах.
+        # первый символ результата, иначе фиксированная ширина колонки
+        # 14 (см. docs/registry-spec.md) рассыпается на длинных инициалах.
         initial_t = transliterate_icao_9303(tokens[1][0])[:1]
         if surname_t and initial_t:
             return f"{surname_t.title()}.{initial_t.upper()}_r{round_no}"
@@ -108,7 +107,7 @@ def jury_column_header(full_name: str, round_no: int) -> str:
 
 
 # =====================================================================
-# Публичные helpers (Q4 / §4)
+# Публичные helpers (имена файлов выгрузок)
 # =====================================================================
 
 
@@ -116,7 +115,7 @@ def registry_export_filename(
     kind: Literal["registry", "shortlist"],
     now_msk: datetime | None = None,
 ) -> str:
-    """Имя файла on-demand выгрузки (§4 ``docs/registry-spec.md``).
+    """Имя файла on-demand выгрузки (см. ``docs/registry-spec.md``).
 
     Шаблон: ``{kind}_BR-{COMPETITION_YEAR}_{YYYY-MM-DD}_{HH-MM}.xlsx``.
 
@@ -151,19 +150,19 @@ def registry_export_filename(
 
 
 # =====================================================================
-# Helpers значений строк (Q9 / §2.2.2, §11.1, §25.3.3)
+# Helpers значений строк
 # =====================================================================
 
 
 def view_command_or_link(app: Application) -> str:
-    """Значение поля №13 «Команда/ссылка просмотра файлов» (Q9 / §2.2.2).
+    """Значение поля «Команда/ссылка просмотра файлов».
 
     - ``IntakeMode.LINKS`` → ``app.cloud_link`` (URL папки участника)
       или пустая строка, если ссылка ещё не получена;
     - ``IntakeMode.FILES`` → ``/files <br_id>`` (текстовая команда
       модератора в чате).
 
-    Та же функция переиспользуется в шорт-листе (§3.1, поле №10).
+    Та же функция переиспользуется в шорт-листе.
     """
     if app.intake_mode is IntakeMode.LINKS:
         return app.cloud_link or ""
@@ -171,7 +170,7 @@ def view_command_or_link(app: Application) -> str:
 
 
 def contact_field(app: Application) -> str:
-    """Значение поля №5 «Контакт» (§11.1).
+    """Значение поля «Контакт».
 
     - Если у заявителя есть ``parent_ad_login`` — пишем ``@<login>``;
     - иначе — ``HUID: <uuid>`` (HUID всегда доступен).
@@ -182,7 +181,7 @@ def contact_field(app: Application) -> str:
 
 
 def jury_outcome(app: Application) -> str:
-    """Значение поля №27 «Итог по жюри» (§2.2 / §25.3.1, §25.3.3).
+    """Значение поля «Итог по жюри».
 
     Производное от ``Application.jury_status``:
     - ``не_передано_жюри`` → ``не оценивалась``;
@@ -200,13 +199,13 @@ def jury_outcome(app: Application) -> str:
 
 
 # =====================================================================
-# Стили и колонки (§5.3, Q7=без protection, Q8=freeze+autofilter+ширины)
+# Стили и колонки
 # =====================================================================
 
-# Soft-порог производительности (§7.3). При превышении — WARNING.
+# Soft-порог производительности — при превышении пишем WARNING в лог.
 _DURATION_WARN_MS = 5000
 
-# Стили шапки и разделителей (§5.3.4).
+# Стили шапки и разделителей.
 _HEADER_FONT = Font(bold=True)
 _HEADER_FILL = PatternFill(fill_type="solid", fgColor="D9D9D9")
 _GROUP_FONT = Font(bold=True)
@@ -216,8 +215,8 @@ _EMPTY_GROUP_FILL = PatternFill(fill_type="solid", fgColor="D9D9D9")
 _WRAP_ALIGN = Alignment(wrap_text=True, vertical="top")
 _GROUP_ALIGN = Alignment(horizontal="left", vertical="center")
 
-# Колонки основного листа `Реестр` (§5.3.1): (заголовок, ширина, wrap_text).
-# Порядок жёсткий, соответствует §2.2 (поля 1–29 ТЗ §25.1 + §25.3.1).
+# Колонки основного листа `Реестр`: (заголовок, ширина, wrap_text).
+# Порядок жёсткий, соответствует разделу 2.2 `docs/registry-spec.md`.
 _MAIN_COLUMNS: list[tuple[str, int, bool]] = [
     ("ID заявки", 14, False),                                # 1
     ("Дата и время подачи (Europe/Moscow)", 22, False),      # 2
@@ -250,7 +249,7 @@ _MAIN_COLUMNS: list[tuple[str, int, bool]] = [
     ("Позиция в пуле", 10, False),                           # 29
 ]
 
-# Фиксированные колонки листа `Голосование жюри` (§2.3).
+# Фиксированные колонки листа `Голосование жюри`.
 # Динамические колонки приклеиваются справа в _build_jury_detail_sheet.
 _JURY_FIXED_COLUMNS: list[tuple[str, int, bool]] = [
     ("ID заявки", 14, False),
@@ -259,8 +258,8 @@ _JURY_FIXED_COLUMNS: list[tuple[str, int, bool]] = [
 ]
 _JURY_DYNAMIC_WIDTH = 14
 
-# Колонки листа `Шорт-лист` (§3.1, Q6.1): (заголовок, ширина, wrap_text).
-# 13 колонок в зафиксированном порядке.
+# Колонки листа `Шорт-лист`: (заголовок, ширина, wrap_text).
+# 13 колонок в зафиксированном порядке (см. `docs/registry-spec.md`).
 _SHORTLIST_COLUMNS: list[tuple[str, int, bool]] = [
     ("ID заявки", 14, False),                                # 1
     ("ФИО родителя", 28, False),                             # 2
@@ -277,7 +276,7 @@ _SHORTLIST_COLUMNS: list[tuple[str, int, bool]] = [
     ("Потенциал для мерча", 18, False),                      # 13
 ]
 
-# Текст пустого пула на листе `Шорт-лист` (§3.2).
+# Текст пустого пула на листе `Шорт-лист`.
 # В шаблон подставляется TOP_N из конфига при первом вызове рендера.
 _EMPTY_POOL_TEXT_TEMPLATE = "Нет работ в топ-{top_n} для этого пула"
 
@@ -293,11 +292,11 @@ def _yesno_or_blank(value: bool) -> str:
 
 
 def _to_msk_iso(dt: datetime) -> str:
-    """Дата подачи → ISO-строка `YYYY-MM-DD HH:MM` в Europe/Moscow (§2.2.1).
+    """Дата подачи → ISO-строка `YYYY-MM-DD HH:MM` в Europe/Moscow.
 
-    ``Application.created_at`` хранится в БД как naive UTC (соглашение
-    моделей Wave 1 — ``default=datetime.utcnow``). Здесь явно
-    присваиваем UTC-tz, переводим в Europe/Moscow и форматируем.
+    ``Application.created_at`` хранится в БД как naive UTC
+    (``default=datetime.utcnow``). Здесь явно присваиваем UTC-tz,
+    переводим в Europe/Moscow и форматируем.
     """
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -307,7 +306,7 @@ def _to_msk_iso(dt: datetime) -> str:
 def _apply_columns_header(
     ws: Worksheet, columns: Sequence[tuple[str, int, bool]]
 ) -> None:
-    """Заполнить шапку (строка 1) и установить ширины колонок (§5.3)."""
+    """Заполнить шапку (строка 1) и установить ширины колонок."""
     for idx, (title, width, _wrap) in enumerate(columns, start=1):
         ws.column_dimensions[get_column_letter(idx)].width = width
         cell = ws.cell(row=1, column=idx, value=title)
@@ -318,7 +317,7 @@ def _apply_columns_header(
 def _apply_wrap_text(
     ws: Worksheet, row: int, columns: Sequence[tuple[str, int, bool]]
 ) -> None:
-    """Включить wrap_text для нужных колонок строки `row` (§5.3.1)."""
+    """Включить wrap_text для нужных колонок строки `row`."""
     for idx, (_title, _w, wrap) in enumerate(columns, start=1):
         if wrap:
             ws.cell(row=row, column=idx).alignment = _WRAP_ALIGN
@@ -327,7 +326,7 @@ def _apply_wrap_text(
 def _set_freeze_and_filter(
     ws: Worksheet, freeze_at: str, n_cols: int, n_rows: int
 ) -> None:
-    """Заморозка шапки и autofilter на весь диапазон (§5.3, Q8)."""
+    """Заморозка шапки и autofilter на весь диапазон."""
     ws.freeze_panes = freeze_at
     if n_cols >= 1 and n_rows >= 1:
         last_letter = get_column_letter(n_cols)
@@ -335,12 +334,12 @@ def _set_freeze_and_filter(
 
 
 # =====================================================================
-# Лист `Реестр` (§2.2)
+# Лист `Реестр`
 # =====================================================================
 
 
 def _row_for_main_sheet(app: Application) -> list:
-    """29 значений одной строки основного листа (§2.2)."""
+    """29 значений одной строки основного листа."""
     n_files = len(app.files) if app.files else 0
     return [
         app.br_id,                                                 # 1
@@ -380,7 +379,7 @@ def _build_main_sheet(
 ) -> tuple[int, int]:
     """Заполнить лист `Реестр`. Возвращает (n_rows, n_cols).
 
-    Сортировка применяется на этапе SQL (`ORDER BY br_id ASC`, §5.1).
+    Сортировка применяется на этапе SQL (`ORDER BY br_id ASC`).
     """
     _apply_columns_header(ws, _MAIN_COLUMNS)
     for row_offset, app in enumerate(applications, start=2):
@@ -394,7 +393,7 @@ def _build_main_sheet(
 
 
 # =====================================================================
-# Лист `Голосование жюри` (§2.3, §2.3.0, §2.3.1, §2.3.2)
+# Лист `Голосование жюри`
 # =====================================================================
 
 
@@ -408,16 +407,14 @@ def _build_jury_detail_sheet(
     """Заполнить лист `Голосование жюри`. Возвращает (n_rows, n_cols).
 
     Фильтр строк — только заявки, у которых есть хотя бы одна запись
-    `JuryVote` любого состояния (§2.3.0, Q10). Сортировка строк —
-    `br_id ASC` (§5.1).
+    `JuryVote` любого состояния. Сортировка строк — `br_id ASC`.
 
     Динамические колонки — каждая (`JuryMember`, `round_no`) по
     фактически проведённым раундам, сортированы по полному имени судьи
-    и номеру раунда (§2.3, §2.3.1).
+    и номеру раунда.
 
-    Формат значения — числовой 1/0/пусто (§2.3.2, Q2). Учитываются
-    только голоса в состоянии ``SUBMITTED``; ``DRAFT`` отображается как
-    пустая ячейка.
+    Формат значения — числовой 1/0/пусто. Учитываются только голоса
+    в состоянии ``SUBMITTED``; ``DRAFT`` отображается как пустая ячейка.
     """
     # Оси: какие заявки и какие судьи × раунды имеют хотя бы один голос.
     app_ids_with_votes = {v.application_id for v in votes}
@@ -469,7 +466,7 @@ def _build_jury_detail_sheet(
         for (huid, r_no), col_idx in dyn_col.items():
             v = vote_lookup.get((app.id, huid, r_no))
             if v is None or v.state is not JuryVoteState.SUBMITTED:
-                continue  # пусто (§2.3.2)
+                continue  # пусто
             ws.cell(
                 row=row_offset, column=col_idx,
                 value=1 if v.vote is JuryVoteValue.YES else 0,
@@ -477,13 +474,13 @@ def _build_jury_detail_sheet(
 
     n_cols = len(columns)
     n_rows = 1 + len(apps_with_votes)
-    # Freeze: шапка + 3 фикс. колонки → D2 (§5.3.2).
+    # Freeze: шапка + 3 фикс. колонки → D2.
     _set_freeze_and_filter(ws, "D2", n_cols, n_rows)
     return n_rows, n_cols
 
 
 # =====================================================================
-# Производительность и лог (§7.2, §7.3)
+# Производительность и лог
 # =====================================================================
 
 
@@ -504,7 +501,7 @@ def _log_duration(
             duration_ms=round(duration_ms, 1),
             threshold_ms=_DURATION_WARN_MS,
             hint=(
-                "см. Q12 в docs/registry-spec.md — рассмотреть кэш TTL=60s"
+                "см. docs/registry-spec.md — рассмотреть кэш TTL=60s"
             ),
         )
 
@@ -545,7 +542,7 @@ def _render_registry_workbook(
 
 
 async def _fetch_all_applications(session) -> list[Application]:
-    """Все заявки + связанные файлы одним запросом (§5.1)."""
+    """Все заявки + связанные файлы одним запросом."""
     stmt = (
         select(Application)
         .options(selectinload(Application.files))
@@ -576,23 +573,23 @@ async def _fetch_jury_axes(
 
 
 # =====================================================================
-# Публичный API (§25.4, §27.1, контракт RegistryService)
+# Публичный API (контракт RegistryService)
 # =====================================================================
 
 
 async def build_registry_xlsx() -> bytes:
-    """Собрать полный реестр заявок (§25.1, §25.3) в XLSX-bytes.
+    """Собрать полный реестр заявок в XLSX-bytes.
 
     Структура:
-        - лист ``Реестр`` — 29 колонок (поля 1–22 ТЗ §25.1 +
-          агрегированные поля жюри 23–29 ТЗ §25.3.1);
+        - лист ``Реестр`` — 29 колонок (поля заявки + агрегированные
+          поля жюри);
         - лист ``Голосование жюри`` — детализация по голосам с
-          динамическими колонками `Фамилия.И_rN` (§2.3, §2.3.1).
+          динамическими колонками `Фамилия.И_rN`.
 
     Все данные собираются из БД одной транзакцией (`selectinload`
     для `Application.files`, отдельные запросы для голосов/раундов/
-    судей). На диск ничего не пишется (§25.4) — возвращаются
-    непосредственно ``bytes``.
+    судей). На диск ничего не пишется — возвращаются непосредственно
+    ``bytes``.
     """
     t0 = time.perf_counter()
     logger.info("registry build start", kind="registry")
@@ -614,12 +611,12 @@ async def build_registry_xlsx() -> bytes:
 
 
 # =====================================================================
-# Лист `Шорт-лист` (§3, §3.1, §3.2)
+# Лист `Шорт-лист`
 # =====================================================================
 
 
 def _row_for_shortlist(app: Application) -> list:
-    """13 значений одной строки шорт-листа (§3.1, Q6.1)."""
+    """13 значений одной строки шорт-листа."""
     return [
         app.br_id,                                                 # 1
         app.parent_full_name,                                      # 2
@@ -662,11 +659,11 @@ def _build_shortlist_sheet(
     apps_by_pool: dict[tuple, list[Application]],
     top_n: int,
 ) -> tuple[int, int]:
-    """Заполнить лист `Шорт-лист` (§3.2, Q6.2). Возвращает (n_rows, n_cols).
+    """Заполнить лист `Шорт-лист`. Возвращает (n_rows, n_cols).
 
     Группировка строк — по `pool_list` в порядке, который отдал
-    `services.pools.all_pools()` (§1.6). Сортировка внутри пула —
-    `pool_position ASC, br_id ASC` (§3.2). Пустой пул выводится со
+    `services.pools.all_pools()`. Сортировка внутри пула —
+    `pool_position ASC, br_id ASC`. Пустой пул выводится со
     строкой-разделителем + строкой-подписью «Нет работ в топ-N».
     """
     _apply_columns_header(ws, _SHORTLIST_COLUMNS)
@@ -674,7 +671,7 @@ def _build_shortlist_sheet(
     current_row = 2
 
     for pool in pool_list:
-        # Строка-разделитель пула (§3.2).
+        # Строка-разделитель пула.
         header_text = f"{pool.track.value} / {pool.age_category.value}"
         _merge_row_with_fill(
             ws, current_row, n_cols, header_text, _GROUP_FONT, _GROUP_FILL,
@@ -691,7 +688,7 @@ def _build_shortlist_sheet(
             current_row += 1
             continue
 
-        # Стабильная сортировка по позиции в пуле (§3.2).
+        # Стабильная сортировка по позиции в пуле.
         apps_sorted = sorted(
             apps,
             key=lambda a: (
@@ -726,7 +723,7 @@ def _render_shortlist_workbook(
 
 
 async def _fetch_top10_applications(session) -> list[Application]:
-    """Только заявки со статусом жюри `в топ-10` (§3, §35.5)."""
+    """Только заявки со статусом жюри `в топ-10`."""
     stmt = (
         select(Application)
         .where(Application.jury_status == JuryStatus.V_TOP_10)
@@ -736,18 +733,17 @@ async def _fetch_top10_applications(session) -> list[Application]:
 
 
 async def build_shortlist_xlsx() -> bytes:
-    """Собрать XLSX шорт-листа (§35.5, §3) — топ-N по каждому пулу.
+    """Собрать XLSX шорт-листа — топ-N по каждому пулу.
 
     Структура:
-        - один лист ``Шорт-лист`` (§3.2);
-        - 13 колонок (§3.1, Q6.1);
+        - один лист ``Шорт-лист``;
+        - 13 колонок (см. ``docs/registry-spec.md``);
         - строки сгруппированы по пулам в порядке
-          ``services.pools.all_pools()`` (Q6.2); число пулов не
-          зашивается (§1.6);
+          ``services.pools.all_pools()``; число пулов не зашивается;
         - внутри пула — сортировка `pool_position ASC, br_id ASC`;
         - пустые пулы выводятся со строкой-подписью «Нет работ в топ-N».
 
-    Не пишет на диск (§25.4), возвращает ``bytes``.
+    Не пишет на диск, возвращает ``bytes``.
     """
     from config import TOP_N  # локально, чтобы тестировалось без TOP_N
 

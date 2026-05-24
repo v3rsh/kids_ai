@@ -2,14 +2,15 @@
 Сервис проверки ролей и доступа к командам.
 
 Источники истины:
-- ``config.MODERATOR_HUIDS`` (§5.2, §27.2);
-- ``config.JURY_HUIDS`` (§5.4, §35.4);
+- ``config.MODERATOR_HUIDS`` — список модераторов;
+- ``config.JURY_HUIDS`` — список членов жюри;
 - ``config.ADMIN_HUIDS`` — техническая роль (разработчик/тех. админ).
 
 Списки HUID прошиваются на старте бота из переменных окружения
 (``MODERATOR_HUIDS``, ``JURY_HUIDS``, ``ADMIN_HUID``). Справочники в
-БД (``moderators``, ``jury_members``) заполняются Wave 2 / D из этих
-же списков — но проверка доступа всегда идёт по конфигу, чтобы:
+БД (``moderators``, ``jury_members``) заполняются из этих же списков
+на старте через ``sync_role_directories_from_config()``, но проверка
+доступа всегда идёт по конфигу, чтобы:
 - не делать запрос в PostgreSQL на каждый клик кнопки модератора;
 - избежать рекурсивных DB-зависимостей в FSM-middleware.
 
@@ -56,12 +57,12 @@ def _huid_in(huid: UUID | str | None, allowlist: list[str]) -> bool:
 
 
 def is_moderator(huid: UUID | str | None) -> bool:
-    """True, если HUID есть в ``MODERATOR_HUIDS`` (§5.2, §27.2)."""
+    """True, если HUID есть в ``MODERATOR_HUIDS``."""
     return _huid_in(huid, MODERATOR_HUIDS)
 
 
 def is_jury(huid: UUID | str | None) -> bool:
-    """True, если HUID есть в ``JURY_HUIDS`` (§5.4, §35.4)."""
+    """True, если HUID есть в ``JURY_HUIDS``."""
     return _huid_in(huid, JURY_HUIDS)
 
 
@@ -111,14 +112,14 @@ moderator_only = _make_role_decorator(
     "Команда доступна только модераторам.",
     "moderator",
 )
-"""Защита хендлера от не-модераторов (§27.2)."""
+"""Защита хендлера от не-модераторов."""
 
 jury_only = _make_role_decorator(
     is_jury,
     "Команда доступна только членам жюри.",
     "jury",
 )
-"""Защита хендлера от не-жюри (§27.4)."""
+"""Защита хендлера от не-жюри."""
 
 admin_only = _make_role_decorator(
     is_admin,
@@ -129,7 +130,7 @@ admin_only = _make_role_decorator(
 
 
 # =====================================================================
-# Синхронизация справочников Moderator/JuryMember (Wave 3, lifespan)
+# Синхронизация справочников Moderator/JuryMember (lifespan)
 # =====================================================================
 
 

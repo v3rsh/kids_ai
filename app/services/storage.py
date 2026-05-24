@@ -2,19 +2,20 @@
 Сервис локального файлового хранилища конкурса «Безопасные рисунки».
 
 Отвечает за:
-- создание структуры папок (§21);
-- переименование файлов по шаблону §22;
-- генерацию текстовых метаданных (description.txt, meta.txt, reason.txt — §23, §24);
-- физическое удаление файлов работы при отклонении (§24);
-- генерацию превью для жюри (§35.3);
-- мониторинг занятого места и автопредупреждения 80/95 % (§28.1, §33.5);
-- сбор файлов заявки для модератора (`/files`, §27.1).
+- создание структуры папок;
+- переименование файлов по шаблону
+  ``BR_ID-ParentName-ChildName-Track-AgeCategory[-Nx].ext``;
+- генерацию текстовых метаданных (description.txt, meta.txt, reason.txt);
+- физическое удаление файлов работы при отклонении;
+- генерацию превью для жюри;
+- мониторинг занятого места и автопредупреждения по порогам WARN/BLOCK;
+- сбор файлов заявки для модератора (`/files`).
 
 Все пути относительны ``config.ATTACHMENTS_DIR``. В контейнере — именованный
 том ``attachments_volume`` (см. ``docker-compose.yml``). Файлы внутри тома
-хранятся под русскими именами треков (§21.1 «Рекомендуемая структура»);
-запасной вариант латинских имён (§21.1) не используется — на ext4
-кириллица в путях работает корректно.
+хранятся под русскими именами треков (рекомендуемая структура);
+запасной вариант латинских имён имеется на случай ФС, где кириллица
+в путях нестабильна — на ext4 он не нужен.
 
 Async-стратегия:
 - I/O-операции (`open`, `read`, `write`) выполняются через ``aiofiles``;
@@ -57,37 +58,37 @@ if TYPE_CHECKING:
 
 
 # =====================================================================
-# Константы структуры хранилища (§21)
+# Константы структуры хранилища
 # =====================================================================
 
-#: Корень всех заявок (название визуально соответствует §21.1).
+#: Корень всех заявок (название папки видно администраторам через NextCloud).
 ROOT_FOLDER_NAME = "Безопасные рисунки"
 
-#: Папка для отклонённых заявок (§21.1, §24).
+#: Папка для отклонённых заявок.
 REJECTED_FOLDER_NAME = "99_Отклонено"
 
-#: Имя файла превью для жюри (§35.3).
+#: Имя файла превью для жюри.
 PREVIEW_FILENAME = "preview.webp"
 PREVIEW_MAX_SIDE_PX = 1280
 
-#: Имена служебных txt-файлов внутри папки заявки (§23, §24).
+#: Имена служебных txt-файлов внутри папки заявки.
 DESCRIPTION_TXT = "description.txt"
 META_TXT = "meta.txt"
 REASON_TXT = "reason.txt"
 
-#: Перечисление "служебных" txt — то, что НЕ удаляется при move_to_rejected (§24).
+#: "Служебные" txt — те, что НЕ удаляются при move_to_rejected.
 META_FILENAMES: frozenset[str] = frozenset(
     {DESCRIPTION_TXT, META_TXT, REASON_TXT}
 )
 
-#: Префиксы треков для имён папок (§21.1).
+#: Префиксы треков для имён папок.
 _TRACK_FOLDER_PREFIX: dict[Track, str] = {
     Track.TRADITIONAL: "01_Традиционное_рисование",
     Track.AI: "02_ИИ_рисунок",
     Track.HANDMADE_TO_AI: "03_От_руки_к_ИИ",
 }
 
-#: Латинский fallback для запасного варианта имён треков (§21.1).
+#: Латинский fallback для запасного варианта имён треков.
 #: Используется только если ``ATTACHMENTS_USE_LATIN_TRACKS`` (env)
 #: переключён в ``true`` — на ext4 не нужен, но оставлен для NextCloud-сценария.
 _TRACK_FOLDER_PREFIX_LATIN: dict[Track, str] = {
@@ -110,7 +111,7 @@ _WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _sanitize_segment(value: str) -> str:
-    """Очистить кусок пути от запрещённых ФС-символов и пробелов (§21.2).
+    """Очистить кусок пути от запрещённых ФС-символов и пробелов.
 
     Пробелы заменяются на ``_`` (чтобы команды/пути в логах были без
     кавычек), запрещённые символы (``\\ / : * ? " < > |``) — удаляются.
@@ -123,29 +124,28 @@ def _sanitize_segment(value: str) -> str:
 
 
 def _format_track_folder(track: Track, *, use_latin: bool = False) -> str:
-    """Имя папки трека (§21.1)."""
+    """Имя папки трека (русский по умолчанию или латинский fallback)."""
     mapping = _TRACK_FOLDER_PREFIX_LATIN if use_latin else _TRACK_FOLDER_PREFIX
     return mapping[track]
 
 
 def _format_age_folder(age_category: AgeCategory) -> str:
-    """Имя папки возрастной группы (§9, §21.1).
+    """Имя папки возрастной группы.
 
     Использует обычный дефис ``-`` вместо ``–`` (en-dash), чтобы пути
     не зависели от Unicode-нормализации файловой системы. В Excel-реестре
     и в `meta.txt` остаётся значение enum (например, «0–6»/«7–12»/«13–18»
-    с en-dash) — соответствие ТЗ §9.
+    с en-dash).
 
     Хардкода списка категорий нет — функция работает через
-    ``AgeCategory.value``, и переход на любой состав категорий
-    (например, Wave 0 replay 2026-05-21: 4 → 3 категории) не требует
-    правок в storage.
+    ``AgeCategory.value``, поэтому любые изменения состава возрастных
+    категорий не требуют правок в storage.
     """
     return age_category.value.replace("–", "-")
 
 
 def _split_parent_name(parent_full_name: str) -> tuple[str, str]:
-    """Разбить ФИО родителя на (Фамилия, Имя) — отчество отбрасывается (§21.2).
+    """Разбить ФИО родителя на (Фамилия, Имя) — отчество отбрасывается.
 
     Логика: первые два токена.
     Если токен один — возвращаем (этот токен, пустую строку).
@@ -164,7 +164,7 @@ def _split_parent_name(parent_full_name: str) -> tuple[str, str]:
 
 
 def _format_application_folder_name(app: Application) -> str:
-    """Имя папки конкретной заявки (§21.2).
+    """Имя папки конкретной заявки.
 
     Шаблон: ``BR-2026-XXXX_Фамилия_Имя_Имя-ребёнка``. ``-`` внутри
     имени ребёнка заменяется на ``_``, чтобы внешне «двойной разделитель»
@@ -183,7 +183,7 @@ def _format_application_folder_name(app: Application) -> str:
 
 
 def _application_date_folder(app: Application) -> str:
-    """``YYYY-MM-DD`` от даты подачи (Europe/Moscow), §21.1."""
+    """``YYYY-MM-DD`` от даты подачи (Europe/Moscow)."""
     dt = app.created_at or datetime.utcnow()
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -202,7 +202,7 @@ def get_rejected_root() -> Path:
 
 
 def get_application_folder(app: Application) -> Path:
-    """Полный путь к папке заявки в активном дереве (§21.1).
+    """Полный путь к папке заявки в активном дереве.
 
     Не создаёт её на диске — только формирует путь. Создание — в
     ``create_application_folder``.
@@ -221,9 +221,9 @@ def get_rejected_application_folder(
     *,
     moderation_date: datetime | None = None,
 ) -> Path:
-    """Путь, в который ``move_to_rejected`` переносит метаданные заявки (§24).
+    """Путь, в который ``move_to_rejected`` переносит метаданные заявки.
 
-    ``moderation_date`` — дата **модерации**, а не дата подачи (§21.1).
+    ``moderation_date`` — дата **модерации**, а не дата подачи.
     По умолчанию — текущее московское время.
     """
     md = moderation_date or datetime.now(_MOSCOW_TZ)
@@ -236,12 +236,12 @@ def get_rejected_application_folder(
 
 
 # =====================================================================
-# Создание папки заявки (§21)
+# Создание папки заявки
 # =====================================================================
 
 
 async def create_application_folder(app: Application) -> Path:
-    """Создать папку заявки по структуре §21.1.
+    """Создать папку заявки по канонической структуре хранилища.
 
     Идемпотентно: ``mkdir(parents=True, exist_ok=True)``. Возвращает
     созданный (или уже существующий) путь.
@@ -261,7 +261,7 @@ async def create_application_folder(app: Application) -> Path:
 
 
 # =====================================================================
-# Переименование и сохранение файла (§22)
+# Переименование и сохранение файла
 # =====================================================================
 
 
@@ -271,7 +271,7 @@ def _build_stored_filename(
     angle_no: int | None,
     src_path: Path,
 ) -> str:
-    """Сформировать ``stored_filename`` по шаблону §22.
+    """Сформировать ``stored_filename`` по детерминированному шаблону.
 
     Расширение берётся из исходного файла, приводится к нижнему регистру.
     Для ``ANGLE`` обязателен ``angle_no`` (1..4).
@@ -287,7 +287,7 @@ def _build_stored_filename(
     if kind is FileKind.ANGLE:
         if angle_no is None or angle_no < 1 or angle_no > 4:
             raise ValueError(
-                "Для FileKind.ANGLE требуется angle_no в диапазоне 1..4 (§12.1)"
+                "Для FileKind.ANGLE требуется angle_no в диапазоне 1..4"
             )
         return f"{app.br_id}_angle-{angle_no}.{ext}"
     if kind is FileKind.AI_IMAGE:
@@ -304,7 +304,7 @@ async def rename_and_save_file(
     src_path: Path,
     original_filename: str | None = None,
 ) -> Path:
-    """Переместить файл в папку заявки под именем по §22.
+    """Переместить файл в папку заявки под детерминированным именем.
 
     Returns:
         Финальный путь файла в папке заявки.
@@ -339,19 +339,19 @@ async def rename_and_save_file(
 
 
 # =====================================================================
-# Метаданные в txt-файлах (§23, §24)
+# Метаданные в txt-файлах
 # =====================================================================
 
 
 def _format_contact(app: Application) -> str:
-    """Контакт в meta.txt: ``@ad_login`` или ``HUID: <uuid>`` (§11.1)."""
+    """Контакт в meta.txt: ``@ad_login`` или ``HUID: <uuid>``."""
     if app.parent_ad_login:
         return f"@{app.parent_ad_login}"
     return f"HUID: {app.parent_huid}"
 
 
 def _format_submission_dt(app: Application) -> str:
-    """Дата подачи в Europe/Moscow для meta.txt (§23.2)."""
+    """Дата подачи в Europe/Moscow для meta.txt."""
     dt = app.created_at or datetime.utcnow()
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -360,7 +360,7 @@ def _format_submission_dt(app: Application) -> str:
 
 
 def _format_files_block(files: list[ApplicationFile]) -> str:
-    """Блок «Исходные имена файлов» в meta.txt (§23.2)."""
+    """Блок «Исходные имена файлов» в meta.txt."""
     if not files:
         return "Исходные имена файлов: (нет)"
     sorted_files = sorted(
@@ -379,7 +379,7 @@ def _format_files_block(files: list[ApplicationFile]) -> str:
 
 
 async def write_description_txt(app: Application) -> Path:
-    """Записать ``description.txt`` (§23.1).
+    """Записать ``description.txt``.
 
     Только пользовательское описание, без шапки. UTF-8.
     """
@@ -395,7 +395,7 @@ async def write_description_txt(app: Application) -> Path:
 
 
 async def write_meta_txt(app: Application) -> Path:
-    """Записать ``meta.txt`` (§23.2)."""
+    """Записать ``meta.txt`` рядом с файлами заявки."""
     folder = await create_application_folder(app)
     path = folder / META_TXT
     files_block = _format_files_block(list(app.files or []))
@@ -434,10 +434,10 @@ async def write_reason_txt(
     moderation_date: datetime | None = None,
     base_folder: Path | None = None,
 ) -> Path:
-    """Записать ``reason.txt`` при отклонении (§24.1).
+    """Записать ``reason.txt`` при отклонении заявки.
 
     Шапка фиксируется ботом, тело ``reason`` пишется дословно
-    (§27.1 / `/notify_reject`).
+    (см. ``handlers.moderator_actions.cmd_notify_reject``).
 
     Args:
         moderator_full_name: ФИО модератора (если None — пишем «модератор»).
@@ -479,12 +479,12 @@ async def write_reason_txt(
 
 
 # =====================================================================
-# Отклонение: физическое удаление + перенос метаданных (§24)
+# Отклонение: физическое удаление + перенос метаданных
 # =====================================================================
 
 
 async def delete_application_files(app: Application) -> int:
-    """Физически удалить все файлы работы заявки (§24).
+    """Физически удалить все файлы работы заявки.
 
     Удаляются файлы вида ``BR-XXXX_original.*``, ``BR-XXXX_angle-N.*``,
     ``BR-XXXX_ai-image.*``, ``BR-XXXX_diptych.*`` **и** превью
@@ -539,9 +539,9 @@ async def move_to_rejected(
     moderator_full_name: str | None = None,
     moderation_date: datetime | None = None,
 ) -> Path:
-    """Переместить метаданные заявки в ``99_Отклонено/`` (§24).
+    """Переместить метаданные заявки в ``99_Отклонено/``.
 
-    Порядок (§24.3, атомарность относительно БД):
+    Порядок (атомарность относительно БД):
     1. Создаём папку назначения в ``99_Отклонено/<дата_модерации>/<имя>/``.
     2. Пишем туда ``reason.txt`` (с дословным текстом ``reason``, если
        передан; иначе шапка без причины — её должен поставить вызывающий).
@@ -627,7 +627,7 @@ async def move_to_rejected(
 
 
 # =====================================================================
-# Мониторинг диска (§28.1, §33.5)
+# Мониторинг диска и автопереход в LINKS
 # =====================================================================
 
 
@@ -657,7 +657,7 @@ def get_disk_usage_pct() -> float:
 
 
 def should_block_intake() -> bool:
-    """True ⇒ заполнение ≥ ``DISK_BLOCK_PCT`` (§28.1)."""
+    """True ⇒ заполнение ≥ ``DISK_BLOCK_PCT`` (триггер авто-перехода в LINKS)."""
     return get_disk_usage_pct() >= DISK_BLOCK_PCT
 
 
@@ -679,7 +679,7 @@ async def _was_alert_sent_recently(threshold_pct: int) -> bool:
     """Дедупликация alert'ов: True, если за последние 24 ч уже слали.
 
     Используется в ``check_and_alert_disk``, чтобы не спамить чат
-    модерации (§28.1). Запись о факте отправки делает вызывающий код
+    модерации. Запись о факте отправки делает вызывающий код
     после успешной нотификации.
     """
     try:
@@ -754,7 +754,7 @@ def start_disk_monitor_task(bot, interval_sec: int):
 
 
 async def check_and_alert_disk(bot=None) -> None:
-    """Точка вызова после каждой загрузки файла (§28.1).
+    """Точка вызова после каждой загрузки файла.
 
     Действия:
     - если занято ≥ ``DISK_BLOCK_PCT`` и режим ещё ``FILES`` — переключает
@@ -819,7 +819,7 @@ async def check_and_alert_disk(bot=None) -> None:
 
 
 # =====================================================================
-# Превью для жюри (§35.3)
+# Превью для жюри
 # =====================================================================
 
 
@@ -890,7 +890,7 @@ def _generate_preview_sync(source: Path, dst: Path) -> Path | None:
 
 
 async def get_preview_path(app: Application) -> Path | None:
-    """Путь к ``preview.webp`` для жюри (§35.3).
+    """Путь к ``preview.webp`` для жюри.
 
     Если файла нет — генерируется лениво из исходника. Возвращает
     None, если исходника для превью нет (например, в режиме ``LINKS``
@@ -910,20 +910,20 @@ async def get_preview_path(app: Application) -> Path | None:
 
 
 # =====================================================================
-# Команда /files модератора (§27.1)
+# Команда /files модератора
 # =====================================================================
 
 
 async def get_application_files_for_chat(
     app: Application,
 ) -> list["OutgoingAttachment"] | None:
-    """Вернуть OutgoingAttachment-список файлов для команды ``/files`` (§27.1).
+    """Вернуть OutgoingAttachment-список файлов для команды ``/files``.
 
     Поведение зависит от режима приёма заявки (``Application.intake_mode``):
     - ``FILES`` — собирает реальные файлы из папки заявки и возвращает
-      список ``OutgoingAttachment`` (Wave 2 / ветка B пересылает их в чат);
-    - ``LINKS`` — возвращает ``None`` (ветка B сама отправит текст
-      «Ссылка на папку: …» по ``app.cloud_link``, §33.6.4).
+      список ``OutgoingAttachment`` (модераторский хендлер пересылает их в чат);
+    - ``LINKS`` — возвращает ``None`` (модераторский хендлер сам отправит
+      текст «Ссылка на папку: …» по ``app.cloud_link``).
 
     Returns:
         list[OutgoingAttachment] | None — ``None`` в режиме ``LINKS``.

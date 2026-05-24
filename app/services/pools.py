@@ -1,12 +1,12 @@
 """
-Сервис пулов жюри (Wave 2 / ветка C).
+Сервис пулов жюри.
 
 Пул = пара «трек × возрастная категория». Число пулов = ``len(Track)
 × len(AgeCategory)`` и **никогда не зашивается константой** в коде —
-после Wave 0 replay 2026-05-21 это 3 × 3 = 9 пулов (раньше было
-3 × 4 = 12), но при любых будущих правках enum-ов сервис
-перестраивается автоматически. По умолчанию все судьи участвуют
-во всех пулах; конфиг ``JURY_POOLS_CONFIG`` сужает участие (§35.6).
+на текущей конфигурации это 3 × 3 = 9 пулов, но при любых будущих
+правках enum-ов сервис перестраивается автоматически. По умолчанию
+все судьи участвуют во всех пулах; конфиг ``JURY_POOLS_CONFIG``
+сужает участие (см. ``docs/deployment.md`` → ``JURY_POOLS_CONFIG``).
 """
 from __future__ import annotations
 
@@ -38,11 +38,11 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 def all_pools() -> list[PoolKey]:
-    """Все пулы конкурса в стабильном порядке (§35.1).
+    """Все пулы конкурса в стабильном порядке.
 
-    Число пулов = ``len(Track) × len(AgeCategory)`` (после Wave 0
-    replay 2026-05-21 это 9: 3 трека × 3 категории; до — 12).
-    Хардкода числа в коде нет.
+    Число пулов = ``len(Track) × len(AgeCategory)`` (на текущей
+    конфигурации это 9: 3 трека × 3 возрастные категории). Хардкода
+    числа в коде нет.
 
     Порядок: внешний цикл — ``Track`` (в порядке определения в enum),
     внутренний — ``AgeCategory`` (в порядке определения). Этот же
@@ -62,7 +62,7 @@ async def get_pool_applications(
     session: AsyncSession,
     status_filter: Optional[ModerationStatus] = ModerationStatus.DOPUSHCHENO,
 ) -> list[Application]:
-    """Заявки пула (§35.1, §35.3).
+    """Заявки пула.
 
     По умолчанию возвращает только заявки со статусом модерации
     ``ДОПУЩЕНО`` (`status_filter=DOPUSHCHENO`) — именно они уходят
@@ -71,7 +71,7 @@ async def get_pool_applications(
     «не оценивалась» работ, выпавших на модерации).
 
     Сортировка ``(created_at ASC, id ASC)`` — единый порядок работ
-    для всех судей (Wave 0, §35.3).
+    для всех судей.
     """
     stmt = select(Application).where(
         Application.track == pool.track,
@@ -90,12 +90,12 @@ async def get_jury_for_pool(
     *,
     session: AsyncSession,
 ) -> list[JuryMember]:
-    """Назначенные на пул судьи (§35.6).
+    """Назначенные на пул судьи.
 
     Если в ``JuryPoolAssignment`` есть хотя бы одна запись для данного
     пула — возвращает только тех ``JuryMember`` (активных), что в этом
     списке. Если назначений нет — fallback на «все активные
-    ``JuryMember``» (поведение по умолчанию из §35.6).
+    ``JuryMember``» (поведение по умолчанию).
 
     Один запрос; N+1 не возникает (см. `performance.mdc`).
     """
@@ -134,7 +134,7 @@ async def get_jury_for_pool(
 def _parse_pools_config(raw: str) -> list[tuple[UUID, Track, AgeCategory]]:
     """Разобрать JSON-конфиг JURY_POOLS_CONFIG.
 
-    Формат (выбран в Wave 2 / C, фиксируется в этом docstring):
+    Формат (зафиксирован в этом docstring):
 
         [
             {
@@ -158,8 +158,7 @@ def _parse_pools_config(raw: str) -> list[tuple[UUID, Track, AgeCategory]]:
       сокращение для всех пулов (``len(Track) × len(AgeCategory)``);
     - судьи, отсутствующие в JSON, **не получают** ни одной записи
       в ``JuryPoolAssignment``, а значит для них работает fallback
-      из §35.6 («все пулы»). Это соответствует поведению по
-      умолчанию.
+      «все пулы» (поведение по умолчанию).
 
     Пустая строка / ``None`` / отсутствие конфига → пустой результат
     (никаких записей, все судьи во всех пулах).
