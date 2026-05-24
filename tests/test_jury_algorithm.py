@@ -1,4 +1,4 @@
-"""Тесты алгоритма голосования жюри §35.2.
+"""Тесты алгоритма голосования жюри.
 
 Проверяем чистую функцию `_compute_outcome_from_data` на тривиальных
 кейсах:
@@ -43,7 +43,7 @@ def _make_apps(n: int) -> list[_FakeApp]:
 
 
 class TestJuryAlgorithm(unittest.TestCase):
-    """Алгоритм §35.2."""
+    """Алгоритм формирования топ-N и жребия."""
 
     def test_no_tie_resolves_in_one_round(self):
         """Если у работы на позиции N строго больше YES, чем на N+1, —

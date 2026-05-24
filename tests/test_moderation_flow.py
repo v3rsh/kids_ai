@@ -1,17 +1,17 @@
-"""Покрытие модераторских команд (§30.1, ветка B / services.moderation).
+"""Покрытие модераторских команд (``services.moderation``).
 
 Pure-function-уровень. Полные интеграционные сценарии change_status
-покрываются ручным smoke-чек-листом (см. docs/testing.md).
+покрываются ручным smoke-чек-листом (см. ``docs/testing.md``).
 
 Что покрывается:
 1. ``parse_status_group`` — алиасы RU/EN и неизвестные значения.
 2. ``_moderation_status_by_value`` / ``_voting_status_by_value`` —
-   распознавание ``.value`` и ``.name`` (§26).
+   распознавание ``.value`` и ``.name``.
 3. ``_build_queue_where_clauses`` — соответствие фильтров /queue
-   набору SQL-условий (§27.1 ``/queue``).
+   набору SQL-условий.
 4. ``QueueFilters.is_empty`` — корректность дефолта.
 5. ``DEFAULT_QUEUE_STATUSES`` — соответствует «на_модерации +
-   нужно_исправить» (§27.1).
+   нужно_исправить».
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ from services.moderation import (
 
 
 class TestParseStatusGroup:
-    """Поддержка алиасов /status (§26)."""
+    """Поддержка алиасов /status."""
 
     @pytest.mark.parametrize(
         "raw,expected",
@@ -62,7 +62,7 @@ class TestParseStatusGroup:
 
 
 class TestEnumLookups:
-    """Поиск enum по .value / .name — алгоритм /status (§26)."""
+    """Поиск enum по .value / .name — алгоритм /status."""
 
     def test_moderation_by_value(self):
         assert _moderation_status_by_value("допущено") is ModerationStatus.DOPUSHCHENO
@@ -88,7 +88,7 @@ class TestEnumLookups:
 
 
 class TestQueueFilters:
-    """Сборка SQL-where для /queue (§27.1)."""
+    """Сборка SQL-where для /queue."""
 
     def test_empty_filters_produce_empty_clauses(self):
         clauses = _build_queue_where_clauses(QueueFilters())
@@ -113,7 +113,7 @@ class TestQueueFilters:
         assert len(clauses) == 5
 
     def test_default_queue_statuses_are_moderation_pending(self):
-        """§27.1: дефолт /queue — заявки на модерации + нужно исправить."""
+        """Дефолт /queue — заявки на модерации + нужно исправить."""
         assert set(DEFAULT_QUEUE_STATUSES) == {
             ModerationStatus.NA_MODERATSII,
             ModerationStatus.NUZHNO_ISPRAVIT,

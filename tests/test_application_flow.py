@@ -1,19 +1,19 @@
-"""Покрытие подачи заявки (§30.1, ветка A / services.applications).
+"""Покрытие подачи заявки (``services.applications``).
 
 Тесты — pure-function/мок-уровень: на уровне юнит-функций без
 PostgreSQL. Полная интеграция с advisory_lock'ом проверяется при
-ручных smoke-сценариях (см. docs/testing.md → «Ручной чек-лист»).
+ручных smoke-сценариях (см. ``docs/testing.md`` → «Ручной чек-лист»).
 
 Что покрывается:
 1. ``normalize_child_name`` — детерминированное сравнение «Ёлка» ↔ «елка»
-   и trim'ы пробелов (§15.3).
+   и trim'ы пробелов.
 2. Формат br_id ``BR-{YEAR}-{NNNN}`` через ``_select_next_br_number``
    на моке SQLAlchemy-сессии.
-3. ``AgeCategory.from_age`` — границы 0–6 / 7–12 / 13–18 (§8, §11.3).
+3. ``AgeCategory.from_age`` — границы 0–6 / 7–12 / 13–18.
 4. ``find_possible_duplicate`` отдаёт ``None`` при пустом
-   нормализованном имени (защита §15.3 от пустого ввода).
+   нормализованном имени.
 5. ``IntakeMode("files")`` / ``IntakeMode("links")`` — happy-path
-   валидации режима подачи (§33.6).
+   валидации режима подачи.
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ class TestNormalizeChildName:
 
 
 class TestAgeCategoryBounds:
-    """`AgeCategory.from_age` — границы 0–6 / 7–12 / 13–18 (§8)."""
+    """`AgeCategory.from_age` — границы 0–6 / 7–12 / 13–18."""
 
     @pytest.mark.parametrize(
         "age,expected",
@@ -74,7 +74,7 @@ class TestAgeCategoryBounds:
 
 
 class TestBrIdGeneration:
-    """`_select_next_br_number`: формат и инкремент BR-ID (§20)."""
+    """`_select_next_br_number`: формат и инкремент BR-ID."""
 
     async def test_first_br_id_is_one_when_table_empty(self):
         """Пустая таблица → следующий номер = 1."""
@@ -104,7 +104,7 @@ class TestBrIdGeneration:
 
 
 class TestFindPossibleDuplicate:
-    """`find_possible_duplicate` — защита от пустого нормализованного имени (§15.3)."""
+    """`find_possible_duplicate` — защита от пустого нормализованного имени."""
 
     async def test_empty_child_name_returns_none(self):
         result = await find_possible_duplicate(
@@ -124,7 +124,7 @@ class TestFindPossibleDuplicate:
 
 
 class TestIntakeModeValidation:
-    """Валидация ``intake_mode_value`` в ``create_application`` (§33.6)."""
+    """Валидация ``intake_mode_value`` в ``create_application``."""
 
     def test_files_mode(self):
         assert IntakeMode("files") is IntakeMode.FILES

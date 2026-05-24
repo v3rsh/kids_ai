@@ -1,4 +1,4 @@
-"""Покрытие алгоритма и инвариантов жюри (§30.1, ветка C / services.jury).
+"""Покрытие алгоритма и инвариантов жюри (``services.jury``).
 
 Базовая «коробка тестов» алгоритма уже в ``test_jury_algorithm.py``
 (3 классических кейса). Здесь — расширение: проверяем инварианты
@@ -44,7 +44,7 @@ class TestTopNInvariants:
         assert outcome.top_ids == [a.id for a in apps[:10]]
 
     def test_above_tie_covers_top_n_no_lottery(self):
-        """Если above_tie уже == TOP_N — жребий не нужен (§35.2)."""
+        """Если above_tie уже == TOP_N — жребий не нужен."""
         apps = _make_apps(15)
         counts = {a.id: 0 for a in apps}
         for i in range(10):
@@ -86,7 +86,7 @@ class TestTopNInvariants:
 
 
 class TestPoolStructure:
-    """Структура пулов §35.1 — после Wave 0 replay: 3 трека × 3 категории = 9 пулов."""
+    """Структура пулов: 3 трека × 3 категории = 9 пулов."""
 
     def test_total_pools_count(self):
         pools = all_pools()

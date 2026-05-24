@@ -1,4 +1,4 @@
-"""Покрытие сервисов реестра (§30.1, ветка E / services.registry).
+"""Покрытие сервисов реестра (``services.registry``).
 
 Юнит-тесты чистых helper'ов + smoke-рендер XLSX-bytes без БД
 (``_render_registry_workbook`` + ``_render_shortlist_workbook``):
@@ -6,14 +6,15 @@
 
 Что покрывается:
 1. ``registry_export_filename`` — формат, MSK-зона, дефис в HH-MM,
-   ValueError на неизвестный ``kind`` (§4 docs/registry-spec.md).
+   ValueError на неизвестный ``kind`` (см. ``docs/registry-spec.md``).
 2. ``transliterate_icao_9303`` — таблица ICAO Doc 9303, case rule
-   из §2.3.1 (``Shcherbak`` / ``Iudin``).
+   (``Shcherbak`` / ``Iudin``).
 3. ``jury_column_header`` — шаблон ``Фамилия.И_rN`` + fallback
    на оригинал при односложном full_name.
-4. ``view_command_or_link`` — поле №13 для FILES и LINKS режима.
+4. ``view_command_or_link`` — поле «команда/ссылка просмотра файлов»
+   для режимов FILES и LINKS.
 5. ``contact_field`` — @login если есть, иначе HUID: <uuid>.
-6. ``jury_outcome`` — синхрон со «Статусом жюри» поля №16.
+6. ``jury_outcome`` — синхрон со «Статусом жюри».
 7. ``_render_registry_workbook`` — собирается валидный XLSX
    (магия PK + минимальный rowcount).
 """
@@ -51,7 +52,7 @@ MSK = ZoneInfo("Europe/Moscow")
 
 
 # =====================================================================
-# Имя файла (§4 docs/registry-spec.md)
+# Имя файла (см. docs/registry-spec.md)
 # =====================================================================
 
 
@@ -83,7 +84,7 @@ class TestRegistryExportFilename:
 
 
 # =====================================================================
-# Транслитерация ICAO Doc 9303 (§2.3.1)
+# Транслитерация ICAO Doc 9303
 # =====================================================================
 
 
@@ -109,7 +110,7 @@ class TestTransliterate:
 
 
 class TestJuryColumnHeader:
-    """§2.3.1: ``Фамилия.И_rN`` через transliterate + .title()."""
+    """Шапка ``Фамилия.И_rN`` через transliterate + .title()."""
 
     @pytest.mark.parametrize(
         "full_name,round_no,expected",
@@ -124,14 +125,14 @@ class TestJuryColumnHeader:
         assert jury_column_header(full_name, round_no) == expected
 
     def test_single_token_falls_back_to_original(self):
-        """§2.3.1: при len(tokens)<2 — fallback на исходное имя."""
+        """При len(tokens)<2 — fallback на исходное имя."""
         out = jury_column_header("Анонимка", 2)
         assert out.endswith("_r2")
         assert "Анонимка" in out
 
 
 # =====================================================================
-# Помощники строк (§2.2.2, §11.1, §25.3)
+# Помощники строк
 # =====================================================================
 
 
@@ -185,7 +186,7 @@ class TestViewCommandOrLink:
         assert view_command_or_link(app) == "https://cloud.example/folder"
 
     def test_links_mode_without_url_is_empty(self):
-        """Защита от полупустого состояния §2.2.2."""
+        """Защита от полупустого состояния (LINKS без cloud_link)."""
         app = _fake_app(intake_mode=IntakeMode.LINKS, cloud_link=None)
         assert view_command_or_link(app) == ""
 
@@ -234,7 +235,7 @@ class TestRenderRegistryWorkbook:
         )
         # XLSX = ZIP-архив, первые 2 байта = "PK".
         assert payload[:2] == b"PK"
-        # 29 колонок основного листа (поля 1–29 §2.2).
+        # 29 колонок основного листа.
         assert n_cols == 29
         # 1 шапка + 1 строка данных.
         assert n_rows == 2

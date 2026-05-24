@@ -3,12 +3,12 @@
 Действия при импорте:
 - проставляем минимальный набор env-переменных, который читает
   ``app/config.py`` при импорте (BOT_ID / CTS_URL / BOT_SECRET_KEY);
-- добавляем ``app/`` в ``sys.path`` — это совместимо с тем, как
-  unit-тесты были устроены в Wave 2 (``tests/test_validation.py``,
+- добавляем ``app/`` в ``sys.path`` — это совместимо со схемой
+  размещения юнит-тестов (``tests/test_validation.py``,
   ``tests/test_jury_algorithm.py``);
 - регистрируем asyncio-backend по умолчанию.
 
-Полный список новых тестовых модулей — см. ``docs/testing.md``.
+Полный список тестовых модулей — см. ``docs/testing.md``.
 """
 from __future__ import annotations
 
