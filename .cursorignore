@@ -1,0 +1,11 @@
+dist/
+venv/
+env/
+logs/
+data/
+backup/
+*.tar.gz
+*.tar
+__pycache__/
+*.pyc
+.git/

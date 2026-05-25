@@ -5,50 +5,21 @@ alwaysApply: true
 # Core Development Standards
 
 ## Architecture
-- Modular handlers in `handlers/`
-- Business logic in `services/`
-- Data access in `database/`
-- Utility functions in `utils/`
-- State definitions in `states.py`
+- `handlers/` — обработчики, `services/` — бизнес-логика, `database/` — модели, `utils/` — утилиты, `states.py` — FSM
+- Именование: префикс ветки (`admin_*.py`, `user_*.py`); точка входа — `admin.py`, `user.py`
+- Каждый файл — свой `collector`, регистрация в `handlers/__init__.py`; `default_message_handler` — в первом коллекторе
 
-### Handler File Naming
-- Префикс = ветка сценария: `admin_*.py`, `user_*.py`
-- Главный модуль ветки (точка входа, главное меню): `admin.py`, `user.py`
-- Подразделы — отдельные файлы (`admin_stat.py`, `user_search.py` и т.п.)
-- Общие хендлеры без префикса: `common.py`
-- Каждый файл создаёт свой `collector`, все регистрируются в `handlers/__init__.py`
-- Порядок коллекторов в `get_all_collectors()` важен: `default_message_handler` должен быть в первом коллекторе
-
-## Async Patterns
-- All I/O operations MUST be async
-- Use `AsyncSession` for database operations
-- Proper exception handling with context logging
-- Avoid blocking calls in async functions
-
-## Database (SQLAlchemy)
-- Define models using `DeclarativeBase`
-- Implement CRUD in `services/` layer
-- Автомиграция при старте: `Base.metadata.create_all` + `run_auto_migrations()` из `database/migrations.py`
-- Скрипт сравнивает модели с БД и добавляет недостающие колонки, индексы, enum-значения
-- Prefer `selectinload` for eager loading
-- **CRITICAL**: No DB queries inside loops — см. `performance.mdc`
-- Одна DB-сессия на запрос; middleware НЕ должен открывать сессии PostgreSQL
+## Async & Database
+- Весь I/O — async; БД через `AsyncSession`, CRUD в `services/`
+- Автомиграция: `Base.metadata.create_all` + `run_auto_migrations()` из `database/migrations.py`
+- `selectinload` для eager loading; **без запросов в циклах** — см. `performance.mdc`
+- Одна DB-сессия на запрос; middleware не открывает PostgreSQL
 
 ## Code Quality
-- PEP 8 compliance
-- Type hints for function signatures
-- Docstrings for public functions
-- Unit tests for services (`pytest`)
+- PEP 8, type hints, docstrings для public API, тесты сервисов (`pytest`)
 
 ## Error Handling
 ```python
-# ❌ BAD
-try:
-    await do_something()
-except Exception:
-    pass
-
-# ✅ GOOD
 try:
     await do_something()
 except SpecificError as e:
@@ -57,5 +28,4 @@ except SpecificError as e:
 ```
 
 ## Documentation
-For up-to-date library documentation, use Context7 MCP if available.
-Otherwise, check official documentation links in skills.
+Context7 MCP для актуальной документации библиотек; иначе — skills и `docs/`.

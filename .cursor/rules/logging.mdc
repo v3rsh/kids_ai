@@ -1,93 +1,23 @@
 ---
 description: Logging standards — loguru only, no stdlib logging
-alwaysApply: true
+globs: "app/**/*.py"
+alwaysApply: false
 ---
-# Logging Standards (loguru)
+# Logging (loguru)
 
-> Конфигурация логирования (переменные окружения, файлы, ротация, JSON): `docs/deployment.md` → «Logging»
-> Архитектура логирования (logging_config.py): `docs/architecture.md` → «Логирование»
+> Конфиг: `docs/deployment.md` → «Logging»; архитектура: `docs/architecture.md`
 
-## CRITICAL: logging vs logger
+## CRITICAL
 
-В основном коде бота (`app/handlers/`, `app/services/`, `app/main.py`, `app/fsm/`, `app/database/`, `app/utils/`, `app/keyboards.py`, `app/states.py`, `app/config.py`) **ВСЕГДА** используй loguru:
+В `app/` (кроме `logging_config.py`): `from loguru import logger`. Запрещены `import logging`, `print()`, секреты в логах.
+
+Исключения: `app/logging_config.py`, автономные скрипты в `scripts/`.
 
 ```python
 from loguru import logger
 
-logger.info("Сообщение")
+logger.info("Действие", entity_id=entity.id)
+logger.exception("Ошибка сохранения")  # в except
 ```
 
-**ЗАПРЕЩЕНО** в основном коде бота:
-```python
-# ❌ НИКОГДА — вызовет NameError в runtime!
-logging.info("...")
-logging.error("...")
-logging.debug("...")
-
-# ❌ НИКОГДА — не импортировать logging для логирования
-import logging
-logging.getLogger(__name__)
-```
-
-### Исключения из правила (допустимо использование `import logging`)
-
-- `app/logging_config.py` — конфигурация перехвата стандартного logging → loguru
-- Автономные утилитарные скрипты в `scripts/`, запускаемые отдельно
-- Миграционные скрипты для SQLite (если будут добавлены)
-
-## Usage Patterns
-
-### Basic Logging
-```python
-from loguru import logger
-
-logger.debug("Отладка")
-logger.info("Информация")
-logger.warning("Предупреждение")
-logger.error("Ошибка")
-```
-
-### Structured Logging
-```python
-logger.info("Пользователь создан", user_id=user.id, name=user.name)
-```
-
-### Exception Logging
-```python
-try:
-    risky_operation()
-except Exception:
-    logger.exception("Ошибка операции")
-```
-
-### Context Binding
-```python
-with logger.contextualize(request_id=request.id, user_id=user.id):
-    logger.info("Начало обработки")
-    process_request()
-    logger.info("Конец обработки")
-```
-
-## Best Practices
-
-### DO
-```python
-logger.info("Действие выполнено", entity_id=entity.id, count=2)
-logger.exception("Ошибка сохранения", user_id=user.id)
-logger.debug("Данные: {}", expensive_serialization())
-```
-
-### DON'T
-```python
-print("Debug message")          # BAD: не использовать print
-import logging                   # BAD: только в исключениях выше
-logging.info("...")
-logger.info("Password: {}", pwd) # NEVER: чувствительные данные
-```
-
-## Чеклист при код-ревью
-
-1. Импорт: `from loguru import logger` (не `import logging`)
-2. Вызовы: `logger.info()` (не `logging.info()`)
-3. Нет `print()` в production-коде
-4. Нет чувствительных данных в логах (пароли, токены, секреты)
+Structured logging: `logger.info("msg", key=value)`. Context: `logger.contextualize(user_id=...)`.

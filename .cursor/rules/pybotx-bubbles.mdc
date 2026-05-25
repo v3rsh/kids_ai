@@ -1,104 +1,33 @@
 ---
-description: Правила работы с BubbleMarkup и bot.answer_message в pybotx
-globs: 
-  - app/handlers/**/*.py
-  - app/utils/bot_utils.py
+description: BubbleMarkup и bot.answer_message в pybotx
+globs:
+  - app/handlers/**
+  - app/utils/**
   - app/keyboards.py
 alwaysApply: false
 ---
+# pybotx Bubbles
 
-# pybotx: BubbleMarkup и отправка сообщений
+## Не передавать `bubbles=None`
 
-## КРИТИЧНО: НЕ передавать bubbles=None
-
-**Проблема**: параметр `bubbles` в `bot.answer_message()` и `bot.edit_message()` имеет тип `Missing[BubbleMarkup]` с дефолтом `Undefined`. Передача `None` сериализуется как `null` в JSON, что вызывает **400 Bad Request** от CTS API.
-
-### ❌ НЕПРАВИЛЬНО
+`None` → JSON `null` → 400 от CTS. Либо omit, либо условно:
 
 ```python
-bubbles = None
-await bot.answer_message(
-    "Текст",
-    bubbles=bubbles,  # BAD! Передаётся null в JSON
-    wait_callback=False
-)
-```
-
-### ✅ ПРАВИЛЬНО
-
-```python
-# Способ 1: Условная передача параметра
-bubbles = get_bubbles_or_none()
 kwargs = {"wait_callback": False}
 if bubbles is not None:
     kwargs["bubbles"] = bubbles
 await bot.answer_message("Текст", **kwargs)
-
-# Способ 2: Просто не передавать параметр
-await bot.answer_message("Текст", wait_callback=False)
 ```
 
-## Клавиатуры: data должен содержать строки
+## Удаление кнопок при текстовом вводе
 
-Все значения в словаре `data` при создании кнопок должны быть строками:
-
-### ❌ Потенциально опасно
+Без `bubbles` pybotx **оставляет** старые кнопки (`Undefined` = skip). Для перехода к вводу текста:
 
 ```python
-bubbles.add_button(
-    command="/select_timezone",
-    label="Москва",
-    data={"timezone": 3}  # int может работать, но небезопасно
-)
-```
-
-### ✅ Правильно
-
-```python
-bubbles.add_button(
-    command="/select_timezone",
-    label="Москва",
-    data={"timezone": str(3)}  # Явно строка
-)
-```
-
-## КРИТИЧНО: Удалять кнопки при переходе к текстовому вводу
-
-При вызове `bot.edit_message()` без параметра `bubbles` (или через `reply_to_user()` без `bubbles`) — **старые кнопки остаются на сообщении**. Это поведение pybotx: `Undefined` означает «оставить как было» (docstring: *"Skip to leave previous bubbles"*).
-
-Когда после нажатия кнопки пользователь должен ввести текст (или кнопки больше не нужны), **обязательно передавай пустой `BubbleMarkup()`** для их явного удаления.
-
-### ❌ НЕПРАВИЛЬНО — кнопки остаются
-
-```python
-# После нажатия кнопки — переход к текстовому вводу
-await reply_to_user(message, bot, "Введи имя:")  # Старые кнопки НЕ удаляются!
-```
-
-### ✅ ПРАВИЛЬНО — кнопки удаляются
-
-```python
-# Пустой BubbleMarkup() сериализуется в [] и удаляет кнопки через CTS API
 await reply_to_user(message, bot, "Введи имя:", bubbles=BubbleMarkup())
 ```
 
-### Когда применять
+## Прочее
 
-- Переход от кнопок к текстовому вводу (регистрация, ввод параметров)
-- Финальное сообщение после действия (удаление профиля, завершение процесса)
-- Любой `reply_to_user()` / `bot.edit_message()` где кнопки больше не нужны
-
-### Почему это работает
-
-- `BubbleMarkup()` без кнопок — truthy (`BaseMarkup` не определяет `__bool__`)
-- `api_markup_from_domain(BubbleMarkup())` → `BotXAPIMarkup(__root__=[])` → JSON: `"bubble": []`
-- CTS API получает пустой массив и удаляет кнопки
-- `Undefined` (когда bubbles не передан) — falsy, поле пропускается, кнопки сохраняются
-
-## wait_callback=False по умолчанию
-
-Для надёжности всегда используй `wait_callback=False`, чтобы не блокировать выполнение в ожидании callback от CTS.
-
-```python
-await bot.answer_message("Текст", wait_callback=False)
-```
+- `data` в кнопках — только строки: `data={"tz": str(3)}`
+- Всегда `wait_callback=False`

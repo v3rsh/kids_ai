@@ -1,79 +1,20 @@
 ---
 description: pybotx mentions and contact links
-globs: "**/*.py"
+globs: "app/**/*.py"
 alwaysApply: false
 ---
-# pybotx Mentions (упоминания и контакты)
+# pybotx Mentions
 
-## Типы mentions в pybotx
-
-| Тип | Метод | Формат | Назначение |
-|-----|-------|--------|------------|
-| Contact | `MentionBuilder.contact()` | `@@{mention:uuid}` | Карточка контакта (любой пользователь) |
-| User | `MentionBuilder.user()` | `@{mention:uuid}` | Упоминание (ping) пользователя в чате |
-| Chat | `MentionBuilder.chat()` | `##{mention:uuid}` | Ссылка на чат |
-| Channel | `MentionBuilder.channel()` | `##{mention:uuid}` | Ссылка на канал |
-| All | `MentionBuilder.all()` | `@{mention:uuid}` | Упоминание всех (@all) |
-
-## CRITICAL: contact vs user
-
-### MentionBuilder.contact() — для карточек контактов
-
-Используй для отображения кликабельного профиля **любого** пользователя:
-
-- Показывает имя пользователя
-- При клике открывает профиль
-- Работает для пользователей **вне текущего чата**
-- Отображается как `@@Имя` (два символа @) — это нормально
+| Метод | Когда |
+|-------|-------|
+| `MentionBuilder.contact()` | Карточка профиля любого пользователя (`@@Имя`) |
+| `MentionBuilder.user()` | Ping участника **текущего** чата |
+| `MentionBuilder.chat/channel/all()` | Ссылки и @all |
 
 ```python
-# ✅ ПРАВИЛЬНО — карточка контакта
-contact = MentionBuilder.contact(
-    entity_id=user.huid,
-    name=user.full_name,
-)
-body = f"👤 {contact}\n📍 Город: {user.city}"
-await bot.answer_message(body, wait_callback=False)
+# Профиль партнёра — contact, не user
+contact = MentionBuilder.contact(entity_id=user.huid, name=user.full_name)
+body = f"👤 {contact}\n📍 {user.city}"
 ```
 
-### MentionBuilder.user() — для упоминаний (ping)
-
-Используй **только** для пинга пользователей **в текущем чате**:
-
-- Отправляет уведомление пользователю
-- Работает **только** если пользователь участник чата
-- Если пользователь не в чате — показывает `@{mention:uuid}` без имени
-
-```python
-# Только для упоминания участника текущего чата
-mention = MentionBuilder.user(
-    entity_id=participant.huid,
-    name=participant.full_name,
-)
-body = f"Привет, {mention}! Ты упомянут в чате."
-```
-
-## Частые ошибки
-
-### Не используй user() для карточек контактов
-
-```python
-# ❌ НЕПРАВИЛЬНО — покажет @{mention:uuid} без имени
-contact = MentionBuilder.user(entity_id=partner.huid, name=partner.full_name)
-
-# ✅ ПРАВИЛЬНО — покажет @@Имя с кликабельным профилем
-contact = MentionBuilder.contact(entity_id=partner.huid, name=partner.full_name)
-```
-
-### Задвоение @@ — это нормально
-
-Платформа eXpress использует `@@` для контактов. Это **ожидаемое поведение**, не баг.
-
-## Чеклист
-
-При добавлении отображения профиля другого пользователя:
-
-1. Импортировать `MentionBuilder` из `pybotx`
-2. Создать `contact_mention = MentionBuilder.contact(entity_id=..., name=...)`
-3. Использовать `contact_mention` в формировании текста профиля
-4. НЕ использовать `MentionBuilder.user()` для карточек контактов
+`user()` вне чата покажет `@{mention:uuid}` без имени. `@@` у contact — норма платформы.
