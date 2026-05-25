@@ -1,13 +1,12 @@
 # ===== Core Framework (pybotx) =====
-# Установка из GitHub (PyPI версия устарела):
-# pip install git+https://github.com/ExpressApp/pybotx.git
-pybotx @ git+https://github.com/ExpressApp/pybotx.git
+# Зафиксировано на версии из production-образа; обновление — отдельный шаг с pytest.
+pybotx==0.76.3
 
 # ===== Web Framework =====
-# Starlette вместо FastAPI (совместимость с pydantic v1)
+# Starlette вместо FastAPI (совместимость с pydantic v2 из pybotx 0.76.x)
 starlette>=0.27.0,<0.28.0
 uvicorn>=0.27.0
-# httpx, pydantic, loguru — версии управляются через pybotx (pydantic<1.11)
+# httpx, pydantic, loguru — версии управляются через pybotx
 
 # ===== Database =====
 SQLAlchemy>=2.0.0

@@ -4,7 +4,6 @@ WORKDIR /app
 
 # Установка системных зависимостей и настройка времени
 RUN apt-get update && apt-get install -y \
-    git \
     ntpsec-ntpdate \
     tzdata \
     postgresql-client \
