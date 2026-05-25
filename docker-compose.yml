@@ -128,7 +128,7 @@ services:
       - REDIS_URL=${REDIS_URL:-redis://172.20.0.4:6379/0}
       - FSM_TTL_DAYS=${FSM_TTL_DAYS:-30}
       # Scheduler / workers
-      - ENABLE_SCHEDULER=${ENABLE_SCHEDULER:-true}
+      - ENABLE_SCHEDULER=${ENABLE_SCHEDULER:-false}
       - UVICORN_WORKERS=${UVICORN_WORKERS:-1}
     deploy:
       resources:

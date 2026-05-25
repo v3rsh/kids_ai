@@ -75,7 +75,7 @@ nano .env   # или vi .env
 | `JURY_ROUND_DEADLINE_HOURS` | нет | Дедлайн одного раунда жюри в часах, по умолчанию `48`. |
 | `JURY_POOLS_CONFIG` | нет | JSON-конфиг распределения судей по пулам. Пустая строка = все судьи во всех 9 пулах (3 трека × 3 возрастные категории). |
 | `COMPETITION_YEAR` | нет | Год конкурса, используется в `BR-{YEAR}-NNNN`. По умолчанию `2026`. |
-| `ENABLE_SCHEDULER` | нет | `true`/`false`, включать periodic jobs в этом процессе. При multi-worker деплое — `false` у бота, scheduler выносится в отдельный контейнер. |
+| `ENABLE_SCHEDULER` | нет | `true`/`false`, включать periodic jobs в этом процессе (сейчас — только мониторинг диска). По умолчанию `false`. При multi-worker деплое — `false` у бота, scheduler выносится в отдельный контейнер. |
 | `CONTACTS_TEXT` | нет | Переопределяет текст экрана «Контакты организаторов»; многострочный — через `\n`. Пусто → дефолт из `app/config.py`. |
 
 > **Роли и чат модерации в env НЕ задаются.** Модераторы, жюри и UUID
@@ -200,8 +200,7 @@ docker compose logs --tail=400 bot | grep -E "scheduler|disk monitor|роли|co
 - [ ] `Логирование настроено` — конфигурация loguru применена.
 - [ ] `Кэш ролей перезагружен` со счётчиками модераторов/жюри (свежая БД — нули, дальше управление через discovery).
 - [ ] `Валидация чата модерации: не настроен, пропускаю` ИЛИ `Чат модерации валиден` (если уже одобрен через `/admin_chat_approve`).
-- [ ] Старт disk-monitor с интервалом `DISK_CHECK_INTERVAL_SEC`.
-- [ ] Старт scheduler (только если `ENABLE_SCHEDULER=true`).
+- [ ] Старт disk-monitor с интервалом `DISK_CHECK_INTERVAL_SEC` **только если `ENABLE_SCHEDULER=true`**; при `false` — в логах «фоновый монитор диска НЕ запущен», используется `/disk`.
 - [ ] Все коллекторы зарегистрированы (admin, moderator, jury, intake, registry, common).
 - [ ] `curl http://localhost:8000/healthz` → `200 OK`.
 
