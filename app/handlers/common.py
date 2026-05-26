@@ -53,8 +53,8 @@ from keyboards import (
 from services import discovery
 from services import users as users_service
 from services.admin import overview_counters
-from states import AdminFlow, JuryFlow, ModeratorFlow
-from utils.bot_utils import reply_to_user
+from states import AdminFlow, JuryFlow, ModeratorFlow, UserIntake
+from utils.bot_utils import reply_to_user, safe_answer_transient
 
 
 collector = HandlerCollector()
@@ -242,6 +242,18 @@ _LEGACY_RESET_TEXT = (
 )
 
 
+_INTAKE_FILE_REJECT_STATES: frozenset[str] = frozenset(
+    {
+        UserIntake.user_intake_consents.value,
+        UserIntake.user_intake_review.value,
+    }
+)
+_INTAKE_FILE_REJECT_TEXT = (
+    "На этом шаге файлы не принимаются. Вернитесь к загрузке через "
+    "«Заполнить заново» или завершите отправку."
+)
+
+
 @collector.default_message_handler(middlewares=[fsm_middleware, cleanup_middleware])
 async def default_handler(message: IncomingMessage, bot: Bot) -> None:
     """Единственный на приложение перехватчик свободного текста.
@@ -266,6 +278,13 @@ async def default_handler(message: IncomingMessage, bot: Bot) -> None:
             _LEGACY_RESET_TEXT,
             bubbles=main_menu_bubbles(huid=message.sender.huid),
         )
+        return
+
+    if (
+        message.file is not None
+        and current_state in _INTAKE_FILE_REJECT_STATES
+    ):
+        await safe_answer_transient(message, bot, _INTAKE_FILE_REJECT_TEXT)
         return
 
     if current_state and current_state in STATE_HANDLERS:

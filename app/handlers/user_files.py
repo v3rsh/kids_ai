@@ -3,6 +3,9 @@
 
 Состояние FSM — ``UserIntake.user_intake_files_collect``. Поведение:
 
+- **За одну загрузку — один файл** на всех треках. Второй файл подряд
+  без нажатия «Добавить ещё файл» отвергается. Следующий файл на
+  многофайловых треках — только после этой кнопки.
 - **Традиционное рисование**:
   - 1 файл — для 2D-работ (рисунок/открытка/коллаж/аппликация/комикс);
   - 2–4 файла — для поделки/3D-модели/фотоинсталляции.
@@ -17,6 +20,7 @@
 Валидация:
 - разрешённые расширения: ``.jpg .jpeg .png .heic .webp .pdf``;
 - максимальный размер одного файла — ``MAX_FILE_SIZE_MB`` (по умолчанию 10 МБ).
+- FSM-флаг ``file_upload_allowed`` — gate «можно ли принять файл сейчас».
 
 Хранение между шагами:
 - Файлы сохраняются во временный каталог
@@ -35,6 +39,7 @@ Backlog: пользовательский UX режима LINKS (бот запр
 ``services.registry.view_command_or_link``, а ``intake_mode_value``
 корректно прокидывается в БД через ``user_confirm.cmd_submit``.
 """
+import asyncio
 import shutil
 import tempfile
 from pathlib import Path
@@ -68,7 +73,73 @@ ALLOWED_EXTENSIONS: frozenset[str] = frozenset(
     {".jpg", ".jpeg", ".png", ".heic", ".webp", ".pdf"}
 )
 _MAX_FILE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
-_TRADITIONAL_MAX_FILES = 4  # лимит ракурсов для 3D-варианта трека «Традиционное рисование»
+TRADITIONAL_MAX_FILES = 4  # лимит ракурсов для 3D-варианта трека «Традиционное рисование»
+_TRADITIONAL_MAX_FILES = TRADITIONAL_MAX_FILES
+_SINGLE_FILE_TRACKS: frozenset[Track] = frozenset({Track.AI, Track.HANDMADE_TO_AI})
+FSM_KEY_FILE_UPLOAD_ALLOWED = "file_upload_allowed"
+
+_ERR_BATCH_UPLOAD = (
+    "За одну загрузку принимается один файл. Если нужно добавить ещё — "
+    "нажмите «Добавить ещё файл». Если нужно заменить уже загруженный — "
+    "начните подачу заново через «Подать работу»."
+)
+_ERR_SINGLE_FILE_TRACK = (
+    "В этом треке принимается ровно один файл. Второй файл "
+    "отвергнут — если нужно заменить первый, нажмите «Подать "
+    "работу» в главном меню и подайте заявку заново."
+)
+
+# Per-user lock: защита от двойного приёма при быстрой отправке двух файлов.
+_file_upload_locks: dict[UUID, asyncio.Lock] = {}
+
+
+def _file_upload_lock(huid: UUID) -> asyncio.Lock:
+    """Вернуть asyncio.Lock для пользователя (lazy-создание)."""
+    lock = _file_upload_locks.get(huid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _file_upload_locks[huid] = lock
+    return lock
+
+
+def check_file_upload(
+    track: Track,
+    files_count: int,
+    *,
+    upload_allowed: bool,
+) -> str | None:
+    """Проверить, можно ли принять очередной файл на шаге загрузки.
+
+    Returns:
+        Текст ошибки для пользователя или ``None``, если файл можно принять.
+    """
+    if not upload_allowed:
+        return _ERR_BATCH_UPLOAD
+    if track in _SINGLE_FILE_TRACKS and files_count >= 1:
+        return _ERR_SINGLE_FILE_TRACK
+    if track == Track.TRADITIONAL and files_count >= _TRADITIONAL_MAX_FILES:
+        return (
+            f"Достигнут лимит файлов для треку «Традиционное» "
+            f"({_TRADITIONAL_MAX_FILES}). Завершите загрузку кнопкой "
+            "«Завершить загрузку»."
+        )
+    return None
+
+
+def validate_files_count_for_track(track: Track, count: int) -> str | None:
+    """Submit-time проверка количества файлов по треку.
+
+    Returns:
+        Человекочитаемая причина отказа или ``None``.
+    """
+    if track in _SINGLE_FILE_TRACKS and count != 1:
+        return "в этом треке допускается ровно один файл"
+    if track == Track.TRADITIONAL and not (1 <= count <= _TRADITIONAL_MAX_FILES):
+        return (
+            f"для трека «Традиционное рисование» допускается от 1 "
+            f"до {_TRADITIONAL_MAX_FILES} файлов"
+        )
+    return None
 
 
 # =====================================================================
@@ -146,7 +217,7 @@ async def prompt_for_files(
     _intake_temp_dir(huid)
 
     fsm = message.state.fsm
-    await fsm.update_data(files=[])
+    await fsm.update_data(files=[], file_upload_allowed=True)
 
     text = {
         Track.TRADITIONAL: _PROMPT_TRADITIONAL,
@@ -201,16 +272,24 @@ async def _handle_files_collect(
 async def _process_incoming_file(
     message: IncomingMessage, bot: Bot
 ) -> None:
-    """Валидация и сохранение одного входящего файла.
+    """Валидация и сохранение одного входящего файла."""
+    huid = message.sender.huid
+    async with _file_upload_lock(huid):
+        await _process_incoming_file_locked(message, bot)
+
+
+async def _process_incoming_file_locked(
+    message: IncomingMessage, bot: Bot
+) -> None:
+    """Критическая секция приёма файла (под per-user lock).
 
     Алгоритм:
-    1. Достать ``message.file`` (``IncomingFileAttachment``).
+    1. Проверить gate ``file_upload_allowed`` и лимиты по треку.
     2. Валидировать расширение и размер.
-    3. Если трек AI или Handmade-to-AI и уже есть 1 файл — отвергнуть.
-    4. Сохранить во временный каталог сессии с уникальным префиксом.
-    5. Пополнить FSM ``data["files"]`` и:
-       - для TRADITIONAL: показать кнопки (или автозавершить на 4-м);
-       - для AI / HANDMADE_TO_AI: сразу перейти к согласиям.
+    3. Сохранить во временный каталог сессии с уникальным префиксом.
+    4. Пополнить FSM ``data["files"]``, закрыть gate.
+    5. Для TRADITIONAL — кнопки (или автозавершение на 4-м);
+       для AI / HANDMADE_TO_AI — сразу перейти к согласиям.
     """
     fsm = message.state.fsm
     data = await fsm.get_data()
@@ -237,6 +316,20 @@ async def _process_incoming_file(
         return
 
     files: list[dict] = list(data.get("files") or [])
+    upload_allowed = bool(data.get(FSM_KEY_FILE_UPLOAD_ALLOWED, True))
+
+    limit_error = check_file_upload(
+        track, len(files), upload_allowed=upload_allowed
+    )
+    if limit_error:
+        bubbles = BubbleMarkup()
+        if (
+            track == Track.TRADITIONAL
+            and len(files) >= _TRADITIONAL_MAX_FILES
+        ):
+            bubbles = file_upload_bubbles(can_add_more=False, can_finish=True)
+        await safe_answer_transient(message, bot, limit_error, bubbles=bubbles)
+        return
 
     incoming = message.file
     original_filename = (incoming.filename or "").strip() or "file"
@@ -265,33 +358,6 @@ async def _process_incoming_file(
                 f"— {MAX_FILE_SIZE_MB} МБ. Пожалуйста, уменьшите размер "
                 "файла или загрузите другой файл."
             ),
-        )
-        return
-
-    # Запрещаем второй файл в треках с лимитом 1 (AI и Handmade-to-AI).
-    if track in (Track.AI, Track.HANDMADE_TO_AI) and len(files) >= 1:
-        await safe_answer_transient(
-            message,
-            bot,
-            (
-                "В этом треке принимается ровно один файл. Второй файл "
-                "отвергнут — если нужно заменить первый, нажмите «Подать "
-                "работу» в главном меню и подайте заявку заново."
-            ),
-        )
-        return
-
-    # TRADITIONAL: жёсткий потолок 4 файла.
-    if track == Track.TRADITIONAL and len(files) >= _TRADITIONAL_MAX_FILES:
-        await safe_answer_transient(
-            message,
-            bot,
-            (
-                f"Достигнут лимит файлов для треку «Традиционное» "
-                f"({_TRADITIONAL_MAX_FILES}). Завершите загрузку кнопкой "
-                "«Завершить загрузку»."
-            ),
-            bubbles=file_upload_bubbles(can_add_more=False, can_finish=True),
         )
         return
 
@@ -329,7 +395,7 @@ async def _process_incoming_file(
             "extension": extension,
         }
     )
-    await fsm.update_data(files=files)
+    await fsm.update_data(files=files, file_upload_allowed=False)
 
     logger.info(
         "Файл анкеты принят",
@@ -412,6 +478,8 @@ async def cmd_intake_file_more(
         track_name == Track.TRADITIONAL.name
         and len(files) < _TRADITIONAL_MAX_FILES
     )
+    if can_add_more:
+        await fsm.update_data(file_upload_allowed=True)
     bubbles = file_upload_bubbles(
         can_add_more=can_add_more, can_finish=bool(files)
     )

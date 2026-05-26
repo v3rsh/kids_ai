@@ -267,6 +267,27 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
         )
         return
 
+    try:
+        track = Track[data["track"]]
+    except (KeyError, TypeError):
+        await safe_answer_transient(
+            message,
+            bot,
+            _REJECTED_TECH_TEMPLATE.format(reason="не выбран трек"),
+        )
+        return
+
+    from handlers.user_files import validate_files_count_for_track
+
+    files_count_error = validate_files_count_for_track(track, len(files_meta))
+    if files_count_error:
+        await safe_answer_transient(
+            message,
+            bot,
+            _REJECTED_TECH_TEMPLATE.format(reason=files_count_error),
+        )
+        return
+
     # ----- Шаг 1: создание заявки в БД -----
     # Актуальный режим приёма читаем непосредственно перед submit:
     # модератор/админ/диск-монитор могли переключить FILES↔LINKS, пока
