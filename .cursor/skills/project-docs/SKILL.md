@@ -56,6 +56,7 @@ Rules (`.cursor/rules/`) содержат стандарты написания 
 | `performance.mdc` | N+1, batch, session management |
 | `bot.mdc` | Handler types, FSM conventions, message sending |
 | `message-navigation.mdc` | reply_to_user, transient, cleanup_middleware |
+| `user-messages.mdc` | Тексты UI: формат, нумерация шагов, история чата |
 | `pybotx-bubbles.mdc` | BubbleMarkup, bubbles=None, wait_callback |
 | `mentions.mdc` | MentionBuilder.contact vs .user |
 | `logging.mdc` | loguru only, no stdlib logging |

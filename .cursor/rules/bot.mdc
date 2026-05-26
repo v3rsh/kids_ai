@@ -25,6 +25,7 @@ alwaysApply: false
 - **Всегда** `wait_callback=False` — иначе 60s timeout / `CallbackNotReceivedError`
 - **Не передавать** `bubbles=None` в `edit_message` — 400 от CTS
 - Навигация: `reply_to_user()` из `utils.bot_utils`
+- Тексты и формат UI: `.cursor/rules/user-messages.mdc`
 
 ```python
 await bot.answer_message("Text", wait_callback=False)

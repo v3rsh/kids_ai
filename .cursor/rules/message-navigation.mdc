@@ -39,3 +39,7 @@ alwaysApply: false
 - Хендлеры кнопок на проактивных уведомлениях: `cleanup_middleware` + `reply_to_user()`
 - Menu→фото: `delete_source_message()` + `send_photo_transient()`
 - Фото→текст: middleware ставит `transient_source_deleted`; `reply_to_user()` сам пропустит edit
+
+## Линейный FSM с историей в чате
+
+Текстовые шаги оставляют ответ родителя + промпт бота. Шаг **только с кнопкой** при edit теряется из истории — после выбора нужно persistent-подтверждение и отдельный промпт следующего шага. Формат текстов — `.cursor/rules/user-messages.mdc`.

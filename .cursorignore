@@ -1,7 +1,6 @@
 dist/
 venv/
 env/
-logs/
 data/
 backup/
 *.tar.gz

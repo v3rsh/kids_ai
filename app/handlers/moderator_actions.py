@@ -278,8 +278,8 @@ async def cmd_status(message: IncomingMessage, bot: Bot) -> None:
         return
 
     body = (
-        f"Статус заявки {br_id} обновлён.\n"
-        f"Группа: {group} · «{result.previous_value or '—'}» → "
+        f"**Статус заявки {br_id} обновлён.**\n\n"
+        f"**Группа:** {group} · «{result.previous_value or '—'}» → "
         f"«{result.new_value or '—'}»."
     )
     await reply_to_user(
@@ -487,10 +487,11 @@ async def _send_notify_fix(
     refreshed = await find_by_br_id(app.br_id) or app
     body = (
         deadline_warning
-        + f"✏️ Участнику отправлено сообщение «требуется исправление» по {app.br_id}."
+        + f"✏️ **Участнику отправлено сообщение** «требуется исправление» "
+        f"по {app.br_id}."
     )
     if extra:
-        body += f"\nУточнение: {extra}"
+        body += f"\n\n**Уточнение:** {extra}"
     await reply_to_user(
         message,
         bot,
@@ -618,14 +619,21 @@ async def _apply_reject(
         error_lines.append("Не удалось отправить участнику сообщение.")
 
     refreshed = status_result.application or app
-    head = "🚫 Заявка отклонена."
+    head = "**Заявка отклонена.**"
     if storage_done and notify_done and not error_lines:
-        head = "🚫 Заявка отклонена. Файлы удалены, участник уведомлён."
+        head = (
+            "**Заявка отклонена.** Файлы удалены, участник уведомлён."
+        )
 
-    body_lines = [head, f"ID: {refreshed.br_id}", f"Причина: {reason}"]
+    body_lines = [
+        f"🚫 {head}",
+        "",
+        f"**ID:** {refreshed.br_id}",
+        f"**Причина:** {reason}",
+    ]
     if error_lines:
         body_lines.append("")
-        body_lines.append("Замечания:")
+        body_lines.append("**Замечания:**")
         body_lines.extend(f"• {line}" for line in error_lines)
 
     await reply_to_user(
@@ -744,7 +752,8 @@ async def cmd_notify_shortlist(message: IncomingMessage, bot: Bot) -> None:
     await reply_to_user(
         message,
         bot,
-        f"🏆 Участнику отправлено сообщение «работа в шорт-листе» по {br_id}.\n\n"
+        f"🏆 **Участнику отправлено сообщение** «работа в шорт-листе» "
+        f"по {br_id}.\n\n"
         + _full_card(app),
         bubbles=_card_action_buttons(app),
     )

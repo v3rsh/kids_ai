@@ -155,10 +155,10 @@ def _short_card(app: Application) -> str:
     """Однострочное представление для списка ``/queue``."""
     files_count = len(app.files) if app.files is not None else 0
     return (
-        f"• {app.br_id} · {app.track.value} · {app.age_category.value}\n"
+        f"• **{app.br_id}** · {app.track.value} · {app.age_category.value}\n"
         f"  «{app.title}» — {app.parent_full_name}, "
         f"ребёнок {app.child_name} ({app.child_age})\n"
-        f"  Статус: {app.moderation_status.value} · файлов: {files_count}"
+        f"  **Статус:** {app.moderation_status.value} · файлов: {files_count}"
     )
 
 
@@ -178,27 +178,33 @@ def _full_card(app: Application) -> str:
     duplicate_line = ""
     if app.is_possible_duplicate:
         related = app.related_application_br_id or "—"
-        duplicate_line = f"\n⚠️ Возможный дубль (связанная: {related})"
+        duplicate_line = (
+            f"\n\n⚠️ **Возможный дубль** (связанная: {related})"
+        )
     comment_line = ""
     if app.moderator_comment:
-        comment_line = f"\n💬 Комментарий модератора: {app.moderator_comment}"
+        comment_line = (
+            f"\n\n💬 **Комментарий модератора:** {app.moderator_comment}"
+        )
     intake_line = ""
     if app.cloud_link:
-        intake_line = f"\n🔗 Ссылка на папку: {app.cloud_link}"
+        intake_line = f"\n\n🔗 **Ссылка на папку:** {app.cloud_link}"
     return (
-        f"📄 {app.br_id}\n"
-        f"Подана: {_format_dt(app.created_at)}\n"
-        f"Родитель: {app.parent_full_name} · {app.parent_division}\n"
-        f"Контакт: {contact}\n"
-        f"Ребёнок: {app.child_name}, {app.child_age} "
-        f"({app.age_category.value})\n"
-        f"Трек: {app.track.value}\n"
-        f"Название: {app.title}\n"
-        f"Описание: {app.description}\n"
-        f"Файлов: {files_count} · Режим приёма: {app.intake_mode.value}\n"
-        f"Статус модерации: {app.moderation_status.value}\n"
-        f"Статус жюри: {app.jury_status.value} · "
-        f"Статус голосования: {app.voting_status.value}"
+        f"📄 **{app.br_id}**\n\n"
+        f"**Подана:** {_format_dt(app.created_at)}\n\n"
+        f"**Родитель:** {app.parent_full_name}\n"
+        f"**Подразделение:** {app.parent_division}\n"
+        f"**Контакт:** {contact}\n\n"
+        f"**Ребёнок:** {app.child_name}, {app.child_age} "
+        f"({app.age_category.value})\n\n"
+        f"**Трек:** {app.track.value}\n"
+        f"**Название:** {app.title}\n"
+        f"**Описание:** {app.description}\n\n"
+        f"**Файлов:** {files_count} · **Режим приёма:** "
+        f"{app.intake_mode.value}\n"
+        f"**Статус модерации:** {app.moderation_status.value}\n"
+        f"**Статус жюри:** {app.jury_status.value}\n"
+        f"**Статус голосования:** {app.voting_status.value}"
         f"{duplicate_line}{comment_line}{intake_line}"
     )
 
@@ -408,13 +414,13 @@ async def _render_queue(
 
     if not result.items:
         body = (
-            "Очередь пуста по текущим фильтрам.\n\n"
-            f"Фильтры: {_filters_summary(filters)}"
+            "**Очередь пуста** по текущим фильтрам.\n\n"
+            f"**Фильтры:** {_filters_summary(filters)}"
         )
     else:
         lines = [
-            f"📋 Очередь модерации ({result.total} всего):",
-            f"Фильтры: {_filters_summary(filters)}",
+            f"**📋 Очередь модерации** ({result.total} всего):",
+            f"**Фильтры:** {_filters_summary(filters)}",
             "",
         ]
         for app in result.items:
@@ -703,8 +709,8 @@ async def _render_browse(
 
     if total == 0 or inner_offset >= len(result.items):
         body = (
-            "Заявок по текущим фильтрам нет.\n\n"
-            f"Фильтры: {_filters_summary(filters)}"
+            "**Заявок по текущим фильтрам нет.**\n\n"
+            f"**Фильтры:** {_filters_summary(filters)}"
         )
         bubbles = BubbleMarkup()
         bubbles.add_button(command="/queue", label="📋 К очереди", new_row=True)
@@ -722,8 +728,8 @@ async def _render_browse(
 
     app = result.items[inner_offset]
     body = (
-        f"Карусель: {index + 1} из {total}\n"
-        f"Фильтры: {_filters_summary(filters)}\n\n"
+        f"**Карусель:** {index + 1} из {total}\n"
+        f"**Фильтры:** {_filters_summary(filters)}\n\n"
         + _full_card(app)
     )
 

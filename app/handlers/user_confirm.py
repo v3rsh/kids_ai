@@ -60,23 +60,17 @@ collector = HandlerCollector()
 # =====================================================================
 
 _CONSENTS_PROMPT = (
-    "Согласия.\n\n"
-    "1) Я подтверждаю, что ознакомился(лась) с правилами конкурса и "
-    "согласен(на) с условиями участия.\n"
-    "2) Я разрешаю публикацию имени ребёнка, возраста ребёнка и "
+    "**Согласия**\n\n"
+    "Я подтверждаю, что ознакомился(лась) с правилами конкурса и "
+    "согласен(на) с условиями участия.\n\n"
+    "Я разрешаю публикацию имени ребёнка, возраста ребёнка и "
     "изображения конкурсной работы во внутренних материалах, связанных "
     "с проведением и подведением итогов конкурса.\n\n"
     "Отметьте оба пункта и нажмите «Подтвердить и продолжить»."
 )
 
-_ACCEPTED_MESSAGE = (
-    "Спасибо! Заявка принята и передана на модерацию.\n"
-    "Если нам понадобится уточнение или более качественное изображение, "
-    "мы свяжемся с вами по указанному контакту."
-)
-
 _REJECTED_TECH_TEMPLATE = (
-    "Заявка не может быть принята: {reason}.\n"
+    "Заявка не может быть принята: **{reason}**.\n\n"
     "Пожалуйста, исправьте данные или загрузите файл в подходящем формате."
 )
 
@@ -201,16 +195,17 @@ def _build_review_text(data: dict) -> str:
 
     files = data.get("files") or []
     return (
-        "Проверьте данные заявки:\n\n"
-        f"Родитель: {data.get('parent_full_name', '?')}\n"
-        f"Подразделение: {data.get('parent_division', '?')}\n"
-        f"Контакт: {data.get('parent_contact', '?')}\n\n"
-        f"Ребёнок: {data.get('child_name', '?')}, {child_age if child_age else '?'}\n"
-        f"Возрастная категория: {age_category_label}\n\n"
-        f"Название работы: {data.get('title', '?')}\n"
-        f"Трек: {track_label}\n"
-        f"Описание: {data.get('description', '?')}\n\n"
-        f"Файлы: {len(files)}\n\n"
+        "**Проверьте данные заявки:**\n\n"
+        f"**Родитель:** {data.get('parent_full_name', '?')}\n"
+        f"**Подразделение:** {data.get('parent_division', '?')}\n"
+        f"**Контакт:** {data.get('parent_contact', '?')}\n\n"
+        f"**Ребёнок:** {data.get('child_name', '?')}, "
+        f"{child_age if child_age else '?'}\n"
+        f"**Возрастная категория:** {age_category_label}\n\n"
+        f"**Название работы:** {data.get('title', '?')}\n"
+        f"**Трек:** {track_label}\n"
+        f"**Описание:** {data.get('description', '?')}\n\n"
+        f"**Файлы:** {len(files)}\n\n"
         "Если всё верно, нажмите «Отправить заявку»."
     )
 
@@ -345,7 +340,10 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
     await reply_to_user(
         message,
         bot,
-        _ACCEPTED_MESSAGE + f"\n\nНомер заявки: {br_id}",
+        (
+            f"{notifications_service.ACCEPTED_TEMPLATE}\n\n"
+            f"**Номер заявки:** {br_id}"
+        ),
         bubbles=main_menu_bubbles(huid=parent_huid),
     )
 

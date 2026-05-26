@@ -40,7 +40,7 @@ from fsm import cleanup_middleware, fsm_middleware
 from handlers.common import register_state_handler
 from keyboards import track_selection_bubbles
 from states import UserIntake
-from utils.bot_utils import reply_to_user, safe_answer_transient
+from utils.bot_utils import reply_to_user, safe_answer, safe_answer_transient
 
 
 collector = HandlerCollector()
@@ -81,17 +81,20 @@ _PHONE_NORMALIZE_RE = re.compile(r"[^\d+]")
 # 6 нумерованных шагов. Загрузка файлов отдельным этапом и нумеруется
 # не как «Шаг X», а как самостоятельный экран (см. user_files.py).
 _PROMPT_PARENT_CONTACT_BASE = (
-    "Шаг 1 из 6. Контакт для связи — укажите телефон "
-    "(например, «+79991234567») или email."
+    "**Шаг 1 из 6. Контакт для связи**\n\n"
+    "Укажите телефон (например, «+79991234567») или email."
 )
 _PROMPT_CHILD_NAME = (
-    "Шаг 2 из 6. Как зовут ребёнка? Достаточно имени (например, «Маша»)."
+    "**Шаг 2 из 6. Имя ребёнка**\n\n"
+    "Как зовут ребёнка? Достаточно имени (например, «Маша»)."
 )
 _PROMPT_CHILD_AGE = (
-    "Шаг 3 из 6. Сколько ребёнку полных лет? Введите число от 0 до 18."
+    "**Шаг 3 из 6. Возраст ребёнка**\n\n"
+    "Сколько ребёнку полных лет? Введите число от 0 до 18."
 )
 _PROMPT_TRACK = (
-    "Шаг 4 из 6. Выберите конкурсный трек одной из кнопок ниже:\n\n"
+    "**Шаг 4 из 6. Конкурсный трек**\n\n"
+    "Выберите один из вариантов кнопкой ниже:\n\n"
     "• Традиционное рисование — рисунок, открытка, коллаж, аппликация, "
     "комикс, поделка, 3D-модель, фотоинсталляция или другая визуальная "
     "работа.\n"
@@ -99,13 +102,19 @@ _PROMPT_TRACK = (
     "генеративного ИИ.\n"
     "• От руки к ИИ — общий коллаж «до/после»: ручная работа + ИИ-версия."
 )
-_PROMPT_TITLE = "Шаг 5 из 6. Введите название работы."
+
+
+def _track_selected_prompt(track: Track) -> str:
+    return f"**Шаг 4 из 6.** Выбран трек: {track.value}"
+
+
+_PROMPT_TITLE = "**Шаг 5 из 6. Название работы**\n\nВведите название работы."
 _PROMPT_DESCRIPTION_BASE = (
-    "Шаг 6 из 6. Опишите работу: что изображено и почему "
-    "ребёнок выбрал эту тему."
+    "**Шаг 6 из 6. Описание работы**\n\n"
+    "Опишите работу: что изображено и почему ребёнок выбрал эту тему."
 )
 _PROMPT_DESCRIPTION_HANDMADE_TO_AI = (
-    "Шаг 6 из 6. Опишите работу.\n\n"
+    "**Шаг 6 из 6. Описание работы**\n\n"
     "Коротко напишите, что было в ручной работе и как ИИ "
     "помог переосмыслить или развить идею."
 )
@@ -113,12 +122,13 @@ _PROMPT_DESCRIPTION_HANDMADE_TO_AI = (
 # Fallback-приглашения (вне сквозной нумерации шагов — они появляются,
 # только если CTS не дал данных, и предшествуют шагу 1).
 _PROMPT_PARENT_FULL_NAME_FB = (
-    "Не нашли ваше ФИО в профиле eXpress. Укажите ФИО полностью "
-    "(например, «Иванова Анна Сергеевна»)."
+    "Не нашли ваше ФИО в профиле eXpress.\n\n"
+    "Укажите ФИО полностью (например, «Иванова Анна Сергеевна»)."
 )
 _PROMPT_PARENT_DIVISION_FB = (
-    "Не нашли ваше подразделение в профиле eXpress. Введите его "
-    "вручную (например, «Управление информационной безопасности»)."
+    "Не нашли ваше подразделение в профиле eXpress.\n\n"
+    "Введите его вручную (например, «Управление информационной "
+    "безопасности»)."
 )
 
 
@@ -150,7 +160,7 @@ def _build_contact_prompt(data: dict) -> str:
         return _PROMPT_PARENT_CONTACT_BASE
     return (
         _PROMPT_PARENT_CONTACT_BASE
-        + "\n\nИз вашего профиля eXpress (можете указать любой свой):\n"
+        + "\n\n**Из вашего профиля eXpress** (можете указать любой свой):\n"
         + "\n".join(hints)
     )
 
@@ -438,7 +448,10 @@ async def cmd_intake_track(message: IncomingMessage, bot: Bot) -> None:
         track=track.name,
         sender=str(message.sender.huid),
     )
-    await reply_to_user(message, bot, _PROMPT_TITLE, bubbles=BubbleMarkup())
+    await reply_to_user(
+        message, bot, _track_selected_prompt(track), bubbles=BubbleMarkup()
+    )
+    await safe_answer(bot, _PROMPT_TITLE, bubbles=BubbleMarkup())
 
 
 async def _handle_track_text_fallback(

@@ -151,33 +151,33 @@ def _render_task_text(
         vote_line = "❌ Нет"
 
     lines = [
-        f"Работа {index + 1} из {total}",
+        f"**Работа {index + 1} из {total}**",
         "",
-        f"Название: {app.title}",
-        f"Описание: {app.description}",
+        f"**Название:** {app.title}",
+        f"**Описание:** {app.description}",
         "",
-        f"Возрастная категория: {pool.age_category.value}",
-        f"Трек: {pool.track.value}",
-        f"Раунд: {round_no}",
+        f"**Возрастная категория:** {pool.age_category.value}",
+        f"**Трек:** {pool.track.value}",
+        f"**Раунд:** {round_no}",
         "",
-        f"Твоя оценка: {vote_line}",
+        f"**Твоя оценка:** {vote_line}",
     ]
     if cloud_link:
-        lines.append(f"\n🔗 Ссылка на работу: {cloud_link}")
+        lines.append(f"\n🔗 **Ссылка на работу:** {cloud_link}")
     lines.append(
-        f"\nПрогресс по раунду: "
+        f"\n**Прогресс по раунду:** "
         f"✅ {progress_yes} · ❌ {progress_no} · "
         f"осталось {total - progress_yes - progress_no} из {total}"
     )
     if not can_submit:
         lines.append(
-            "\nКнопка «Отправить оценки» появится, когда у всех работ "
+            "\n\nКнопка «Отправить оценки» появится, когда у всех работ "
             "будет оценка и среди них будут и «Да», и «Нет»."
         )
     else:
-        lines.append("\nГотово! Нажмите «Отправить оценки» для финализации.")
+        lines.append("\n\nГотово! Нажмите «Отправить оценки» для финализации.")
     lines.append(
-        "\nИнструкция:\n"
+        "\n\n**Инструкция:**\n"
         "— Оцените, достойна ли работа финала.\n"
         "— Все работы должны быть с оценкой.\n"
         "— Как минимум одна работа должна иметь оценку, отличную "
