@@ -78,7 +78,7 @@ app/
 │   ├── storage.py       # фабрика get_fsm_storage()/init/close
 │   ├── redis_storage.py # RedisFSMStorage — единственное хранилище
 │   ├── middleware.py    # fsm_middleware, personal_chat_only, FSMContext
-│   ├── chat_gate.py     # GLOBAL middleware: PERSONAL_CHAT + чат модерации (модераторы)
+│   ├── chat_gate.py     # GLOBAL middleware: пропускает только PERSONAL_CHAT
 │   └── cleanup_middleware.py  # Удаление transient-сообщений при навигации
 └── utils/
     ├── bot_utils.py     # reply_to_user, safe_answer_transient, send_photo_transient
@@ -510,32 +510,26 @@ FSM-state `admin:menu` перерисовывается диспетчером �
 ### Chat-gate middleware (`fsm/chat_gate.py`)
 
 Глобальный middleware, подключённый через `Bot(middlewares=[…])`
-в `main.create_bot()`. Пропускает входящие в личных чатах
-(`ChatTypes.PERSONAL_CHAT`) и в **чате модерации** — только если
-отправитель в `moderators` (`is_moderator`). Остальные групповые чаты
-молча игнорируются. Outbound (`bot.send_message(chat_id=…)`) не gated.
+в `main.create_bot()`. Пропускает входящие **только** в личных чатах
+(`ChatTypes.PERSONAL_CHAT`); всё остальное (включая чат модерации)
+молча игнорируется. Outbound (`bot.send_message(chat_id=…)`) не gated —
+бот свободно пушит служебные уведомления в чат модерации.
 
-В чате модерации модератор может нажимать кнопки на служебных
-уведомлениях (например, «📄 Карточка» → `/find BR-…`). Основная
-навигация по очереди по-прежнему в DM с ботом; deeplink открывает DM
-с подстановкой команды (если CTS поддерживает шаблон).
+Модерация (очередь, карточки, действия) — только в **личном DM** с ботом.
+В групповом чате — текст «Быстрые команды» (`/find`, `/files`) для копирования.
 
 `ChatCreatedEvent` идёт отдельно (system event, не проходит через
 middlewares) — обрабатывается в `handlers/common.py::on_chat_created`,
 который сам разветвляет PERSONAL_CHAT vs группа.
 
-### Deeplink в чате модерации (`utils/deeplink.py`)
+### Deeplink (`utils/deeplink.py`)
 
-Шаблон `EXPRESS_DEEPLINK_TEMPLATE` (env, optional):
+Шаблон `EXPRESS_DEEPLINK_TEMPLATE` + `EXPRESS_ETS_ID` (env, optional) —
+утилиты `build_bot_deeplink` / `build_find_deeplink` для ручного использования
+или будущих сценариев в DM. **В групповой чат модерации кнопки-ссылки не
+отправляются** — только текст уведомления.
 
-- `build_bot_deeplink` / `build_find_deeplink` — рендер `EXPRESS_DEEPLINK_TEMPLATE`.
-  Плейсхолдеры: `{bot_id}`, `{ets_id}` (`EXPRESS_ETS_ID`), `{cts_url}`;
-  для заявки — `{br_id}`, `{command}`, `{command_encoded}` (если есть в шаблоне).
-  Beeline: `https://link.buzz.beeline.ru/open/profile/{bot_id}?ets_id={ets_id}`.
-
-В теле уведомления о новой заявке — блок «Быстрые команды» (`/find`,
-`/files`) и инлайн-кнопка «📄 Карточка» (работает в чате модерации).
-Если шаблон пуст — кнопки-ссылки не добавляются (graceful degradation).
+Beeline-пример: `https://link.buzz.beeline.ru/open/profile/{bot_id}?ets_id={ets_id}`.
 
 ---
 

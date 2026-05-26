@@ -1,4 +1,4 @@
-"""Проактивные DM участнику: в каждом уведомлении есть клавиатура."""
+"""Проактивные уведомления: клавиатура в DM участнику; чат модерации без bubbles."""
 from __future__ import annotations
 
 import uuid
@@ -143,3 +143,28 @@ class TestParticipantNotificationsBubbles:
             await notifications.notify_participant_accepted(fake_bot, fake_app)
 
         fake_bot.send_message.assert_not_awaited()
+
+
+class TestModerationChatOutboundOnly:
+    async def test_new_application_sends_without_bubbles(
+        self, fake_bot: MagicMock, fake_app: MagicMock
+    ) -> None:
+        mod_chat_id = uuid.uuid4()
+        with patch.object(
+            notifications,
+            "get_moderation_chat_id",
+            return_value=mod_chat_id,
+        ), patch.object(
+            notifications, "resolve_bot_id", return_value=uuid.uuid4()
+        ), patch.object(
+            notifications.MentionBuilder,
+            "contact",
+            return_value="@@Parent",
+        ):
+            await notifications.notify_moderation_chat_new_application(
+                fake_bot, fake_app
+            )
+
+        fake_bot.send_message.assert_awaited_once()
+        kwargs = fake_bot.send_message.await_args.kwargs
+        assert "bubbles" not in kwargs

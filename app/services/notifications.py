@@ -492,8 +492,8 @@ async def notify_moderation_chat_new_application(
     - В режиме ``IntakeMode.LINKS`` (или если файлов нет на диске) —
       отправляется только текстовая карточка со ссылкой/командой.
 
-    Кнопки: «📄 Карточка» (``/find``) и «📄 Карточка в очереди»
-    (deeplink с ``/find``, если задан ``EXPRESS_DEEPLINK_TEMPLATE``).
+    Без инлайн-кнопок: чат модерации только outbound. Команды ``/find``,
+    ``/files`` в теле — для копирования в личный DM с ботом.
     """
     from database.models import IntakeMode
 
@@ -511,8 +511,6 @@ async def notify_moderation_chat_new_application(
         title=app.title,
         files_pointer=_format_files_pointer(app),
     )
-    bubbles = _moderation_new_application_bubbles(bot, app)
-
     attachments: list["OutgoingAttachment"] = []
     if app.intake_mode is IntakeMode.FILES:
         try:
@@ -532,7 +530,6 @@ async def notify_moderation_chat_new_application(
             bot,
             body,
             purpose="moderation_new_application",
-            bubbles=bubbles,
         )
         return
 
@@ -541,7 +538,6 @@ async def notify_moderation_chat_new_application(
         bot,
         body,
         purpose="moderation_new_application",
-        bubbles=bubbles,
         file=first,
     )
     for idx, attachment in enumerate(rest, start=2):
@@ -552,60 +548,6 @@ async def notify_moderation_chat_new_application(
             purpose="moderation_new_application_extra_file",
             file=attachment,
         )
-
-
-def _moderation_new_application_bubbles(bot: "Bot", app: "Application"):
-    """Кнопки уведомления о новой заявке: карточка и deeplink.
-
-    Всегда добавляет инлайн ``/find`` (работает в чате модерации для
-    модераторов после ``chat_gate``). Кнопка-ссылка — только если
-    настроен ``EXPRESS_DEEPLINK_TEMPLATE`` с ``build_find_deeplink``.
-    """
-    from pybotx import BubbleMarkup
-
-    from utils.deeplink import build_find_deeplink
-
-    find_cmd = f"/find {app.br_id}"
-    bubbles = BubbleMarkup()
-    bubbles.add_button(
-        command=find_cmd,
-        label="📄 Карточка",
-        new_row=True,
-    )
-    bot_id = getattr(bot, "id", None) or resolve_bot_id(bot)
-    link = build_find_deeplink(bot_id, app.br_id)
-    if link:
-        bubbles.add_button(
-            command=find_cmd,
-            label="📄 Карточка в очереди",
-            link=link,
-            new_row=True,
-        )
-    return bubbles
-
-
-def _moderation_chat_open_in_bot_bubbles(bot: "Bot"):
-    """``BubbleMarkup`` с одной кнопкой-ссылкой «Открыть в боте».
-
-    Для служебных уведомлений (диск, жюри) без привязки к заявке.
-    Возвращает None, если deeplink не настроен.
-    """
-    from pybotx import BubbleMarkup
-
-    from utils.deeplink import build_bot_deeplink
-
-    bot_id = getattr(bot, "id", None) or resolve_bot_id(bot)
-    link = build_bot_deeplink(bot_id)
-    if not link:
-        return None
-    bubbles = BubbleMarkup()
-    bubbles.add_button(
-        command="/open_in_bot",
-        label="🔎 Открыть в боте",
-        link=link,
-        new_row=True,
-    )
-    return bubbles
 
 
 async def notify_moderation_chat_disk_alert(
@@ -635,7 +577,6 @@ async def notify_moderation_chat_disk_alert(
         bot,
         body,
         purpose=f"moderation_disk_alert_{threshold_pct}",
-        bubbles=_moderation_chat_open_in_bot_bubbles(bot),
     )
 
 
@@ -755,7 +696,6 @@ async def _flush_aggregator() -> None:
             bot,
             body,
             purpose=f"moderation_jury_{kind}_aggregated",
-            bubbles=_moderation_chat_open_in_bot_bubbles(bot),
         )
 
 
@@ -770,14 +710,12 @@ async def _send_jury_event_single(bot: "Bot", ev: _JuryEvent) -> None:
             bot,
             body,
             purpose="moderation_jury_lot",
-            bubbles=_moderation_chat_open_in_bot_bubbles(bot),
         )
     elif ev.kind == "shortlist_ready":
         await _send_to_moderation_chat(
             bot,
             JURY_SHORTLIST_READY_TEMPLATE,
             purpose="moderation_jury_shortlist_ready",
-            bubbles=_moderation_chat_open_in_bot_bubbles(bot),
         )
 
 
