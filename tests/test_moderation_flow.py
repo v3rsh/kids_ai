@@ -113,8 +113,9 @@ class TestQueueFilters:
         assert len(clauses) == 5
 
     def test_default_queue_statuses_are_moderation_pending(self):
-        """Дефолт /queue — заявки на модерации + нужно исправить."""
-        assert set(DEFAULT_QUEUE_STATUSES) == {
-            ModerationStatus.NA_MODERATSII,
-            ModerationStatus.NUZHNO_ISPRAVIT,
-        }
+        """Дефолт /queue — только неразобранные новые заявки.
+
+        Статус «нужно исправить» вынесен в отдельный раздел меню
+        «На рассмотрении» (см. ``handlers/moderator_queue.cmd_m_review``).
+        """
+        assert set(DEFAULT_QUEUE_STATUSES) == {ModerationStatus.NA_MODERATSII}

@@ -97,10 +97,24 @@ def back_to_main_menu_bubbles() -> BubbleMarkup:
 
 
 def moderator_menu_bubbles() -> BubbleMarkup:
-    """Кнопки главного меню модератора."""
+    """Кнопки главного меню модератора.
+
+    Разделы по статусам разнесены по отдельным кнопкам:
+    «Очередь» показывает только новые (на разборе), а «Принятые /
+    На рассмотрении / Отклонённые» — карты соответствующих статусов
+    с навигацией трек → возрастная категория → список.
+    """
     bubbles = BubbleMarkup()
     bubbles.add_button(command="/queue", label="📋 Очередь")
-    bubbles.add_button(command="/browse", label="🖼️ Карусель", new_row=True)
+    bubbles.add_button(
+        command="/m_accepted", label="✅ Принятые заявки", new_row=True
+    )
+    bubbles.add_button(
+        command="/m_review", label="✏️ На рассмотрении", new_row=True
+    )
+    bubbles.add_button(
+        command="/m_rejected", label="🚫 Отклонённые заявки", new_row=True
+    )
     bubbles.add_button(
         command="/stats today", label="📈 Статистика — сегодня", new_row=True
     )

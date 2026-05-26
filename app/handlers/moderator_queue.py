@@ -459,6 +459,52 @@ def _browse_navigation_buttons(
 
 
 @collector.command(
+    "/queue_next",
+    description="Перейти к следующей заявке очереди модерации",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@moderator_only
+async def cmd_queue_next(message: IncomingMessage, bot: Bot) -> None:
+    """Открыть первую (свежую) заявку из дефолтной очереди модерации.
+
+    Сбрасывает фильтры/пагинацию модератора и ищет одну заявку в
+    статусе ``DEFAULT_QUEUE_STATUSES`` (по умолчанию — только новые).
+    Если очередь пуста — короткое сообщение с возвратом в меню.
+    """
+    page = await list_queue(
+        filters=QueueFilters(),
+        page=1,
+        page_size=1,
+    )
+    if not page.items:
+        bubbles = BubbleMarkup()
+        bubbles.add_button(command="/queue", label="📋 К очереди", new_row=True)
+        bubbles.add_button(
+            command="/moderator", label="◀ В меню модератора", new_row=True
+        )
+        await reply_to_user(
+            message,
+            bot,
+            "🎉 **Очередь разобрана.** Новых заявок на модерацию нет.",
+            bubbles=bubbles,
+        )
+        return
+
+    app = page.items[0]
+    from handlers.moderator_actions import _card_action_buttons
+
+    await _save_queue_page(message, 1)
+    await render_application_card(
+        message,
+        bot,
+        app=app,
+        bubbles=_card_action_buttons(app),
+        prefix=f"▶ Следующая заявка в очереди ({page.total} всего):\n\n",
+    )
+
+
+@collector.command(
     "/queue",
     description="Очередь заявок на модерации",
     visible=False,
@@ -846,6 +892,310 @@ async def _render_browse(
 
     await render_application_card(
         message, bot, app=app, bubbles=bubbles, prefix=prefix
+    )
+
+
+# =====================================================================
+# Разделы по статусам модерации (Принятые / На рассмотрении / Отклонённые)
+# =====================================================================
+#
+# Навигация: главное меню модератора → /m_accepted, /m_review, /m_rejected
+# (роут открывает выбор трека) → выбор трека → выбор возрастной категории
+# → постраничный список заявок выбранного среза.
+#
+# Все три статуса используют один универсальный хендлер /m_list,
+# который по содержимому `data` определяет уровень навигации:
+#   data={"st": <STATUS>}                       → выбор трека
+#   data={"st": <STATUS>, "tr": <TRACK>}        → выбор возраста
+#   data={"st": <STATUS>, "tr": ..., "ag": ...} → список заявок
+#   + опциональный "p": номер страницы
+
+
+_SECTION_LABELS: dict[str, tuple[str, str]] = {
+    ModerationStatus.DOPUSHCHENO.name: ("✅ Принятые", "Принятые заявки"),
+    ModerationStatus.NUZHNO_ISPRAVIT.name: ("✏️ На рассмотрении", "Заявки на рассмотрении"),
+    ModerationStatus.OTKLONENO.name: ("🚫 Отклонённые", "Отклонённые заявки"),
+}
+
+_REJECTED_NOTE = (
+    "_Файлы отклонённых заявок на сервере не хранятся — доступны только "
+    "метаданные заявки._"
+)
+
+
+def _section_label(status_name: str) -> tuple[str, str]:
+    """Пара (короткий, длинный) подпись раздела для данного статуса."""
+    return _SECTION_LABELS.get(status_name, ("Раздел", "Раздел заявок"))
+
+
+def _back_to_moderator_button(bubbles: BubbleMarkup) -> None:
+    bubbles.add_button(
+        command="/moderator",
+        label="◀ В меню модератора",
+        new_row=True,
+    )
+
+
+async def _render_section_track_picker(
+    message: IncomingMessage,
+    bot: Bot,
+    *,
+    status_name: str,
+) -> None:
+    """Уровень 1 раздела — выбор трека."""
+    short, long_ = _section_label(status_name)
+    bubbles = BubbleMarkup()
+    for track in Track:
+        bubbles.add_button(
+            command="/m_list",
+            label=f"🎨 {track.value}",
+            data={"st": status_name, "tr": track.name},
+            new_row=True,
+        )
+    _back_to_moderator_button(bubbles)
+    body = f"**{short} · {long_}**\n\nВыберите трек:"
+    if status_name == ModerationStatus.OTKLONENO.name:
+        body = f"{body}\n\n{_REJECTED_NOTE}"
+    await reply_to_user(message, bot, body, bubbles=bubbles)
+
+
+async def _render_section_age_picker(
+    message: IncomingMessage,
+    bot: Bot,
+    *,
+    status_name: str,
+    track: Track,
+) -> None:
+    """Уровень 2 раздела — выбор возрастной категории."""
+    short, _ = _section_label(status_name)
+    bubbles = BubbleMarkup()
+    for cat in AgeCategory:
+        bubbles.add_button(
+            command="/m_list",
+            label=f"👶 {cat.value}",
+            data={"st": status_name, "tr": track.name, "ag": cat.name},
+            new_row=True,
+        )
+    bubbles.add_button(
+        command="/m_list",
+        label="◀ К трекам",
+        data={"st": status_name},
+        new_row=True,
+    )
+    _back_to_moderator_button(bubbles)
+    body = (
+        f"**{short} · {track.value}**\n\nВыберите возрастную категорию:"
+    )
+    if status_name == ModerationStatus.OTKLONENO.name:
+        body = f"{body}\n\n{_REJECTED_NOTE}"
+    await reply_to_user(message, bot, body, bubbles=bubbles)
+
+
+async def _render_section_list(
+    message: IncomingMessage,
+    bot: Bot,
+    *,
+    status_name: str,
+    track: Track,
+    age: AgeCategory,
+    page: int,
+) -> None:
+    """Уровень 3 раздела — постраничный список заявок выбранного среза."""
+    status = ModerationStatus[status_name]
+    short, _ = _section_label(status_name)
+    filters = QueueFilters(
+        tracks=(track,),
+        age_categories=(age,),
+        moderation_statuses=(status,),
+    )
+    result = await list_queue(
+        filters=filters, page=page, page_size=QUEUE_PAGE_SIZE
+    )
+
+    header_lines = [
+        f"**{short} · {track.value} / {age.value}** ({result.total} всего)",
+    ]
+    if status_name == ModerationStatus.OTKLONENO.name:
+        header_lines.append(_REJECTED_NOTE)
+
+    if not result.items:
+        body = "\n\n".join(header_lines + ["По этому срезу заявок нет."])
+    else:
+        body_lines = list(header_lines) + [""]
+        for app in result.items:
+            body_lines.append(_short_card(app))
+        body = "\n\n".join(body_lines)
+
+    bubbles = BubbleMarkup()
+    for app in result.items:
+        bubbles.add_button(
+            command=f"/find {app.br_id}",
+            label=f"📄 {app.br_id}",
+            new_row=True,
+        )
+
+    # Пагинация.
+    has_prev = result.page > 1
+    has_next = result.page < result.total_pages
+    if has_prev:
+        bubbles.add_button(
+            command="/m_list",
+            label="← Назад",
+            data={
+                "st": status_name,
+                "tr": track.name,
+                "ag": age.name,
+                "p": str(result.page - 1),
+            },
+            new_row=True,
+        )
+    if result.total_pages > 0:
+        bubbles.add_button(
+            command="/m_list",
+            label=f"{result.page} из {result.total_pages}",
+            data={
+                "st": status_name,
+                "tr": track.name,
+                "ag": age.name,
+                "p": str(result.page),
+            },
+            new_row=not has_prev,
+        )
+    if has_next:
+        bubbles.add_button(
+            command="/m_list",
+            label="Вперёд →",
+            data={
+                "st": status_name,
+                "tr": track.name,
+                "ag": age.name,
+                "p": str(result.page + 1),
+            },
+        )
+
+    bubbles.add_button(
+        command="/m_list",
+        label="◀ К возрастам",
+        data={"st": status_name, "tr": track.name},
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/m_list",
+        label="🎨 К трекам",
+        data={"st": status_name},
+    )
+    _back_to_moderator_button(bubbles)
+
+    await reply_to_user(message, bot, body, bubbles=bubbles)
+
+
+@collector.command(
+    "/m_list",
+    description="Раздел модератора: трек → возраст → список",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@moderator_only
+async def cmd_m_list(message: IncomingMessage, bot: Bot) -> None:
+    """Универсальная навигация по разделу: трек → возраст → список.
+
+    Состояние навигации передаётся в ``data`` (``BubbleMarkup``-кнопкой);
+    хендлер сам определяет, какой уровень рендерить.
+    """
+    data = message.data or {}
+    status_name = data.get("st")
+    if not status_name or status_name not in _SECTION_LABELS:
+        await reply_to_user(
+            message,
+            bot,
+            "Не удалось открыть раздел: некорректные параметры.",
+        )
+        return
+
+    track_name = data.get("tr")
+    age_name = data.get("ag")
+    raw_page = data.get("p")
+    try:
+        page = max(1, int(raw_page)) if raw_page is not None else 1
+    except (TypeError, ValueError):
+        page = 1
+
+    if not track_name:
+        await _render_section_track_picker(message, bot, status_name=status_name)
+        return
+
+    if track_name not in Track.__members__:
+        await reply_to_user(message, bot, f"Неизвестный трек: {track_name!r}.")
+        return
+    track = Track[track_name]
+
+    if not age_name:
+        await _render_section_age_picker(
+            message, bot, status_name=status_name, track=track
+        )
+        return
+
+    if age_name not in AgeCategory.__members__:
+        await reply_to_user(
+            message, bot, f"Неизвестная возрастная категория: {age_name!r}."
+        )
+        return
+    age = AgeCategory[age_name]
+
+    await _render_section_list(
+        message,
+        bot,
+        status_name=status_name,
+        track=track,
+        age=age,
+        page=page,
+    )
+
+
+@collector.command(
+    "/m_accepted",
+    description="Принятые заявки (трек → возраст → список)",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@moderator_only
+async def cmd_m_accepted(message: IncomingMessage, bot: Bot) -> None:
+    """Принятые заявки (статус «допущено») — выбор трека."""
+    await _render_section_track_picker(
+        message, bot, status_name=ModerationStatus.DOPUSHCHENO.name
+    )
+
+
+@collector.command(
+    "/m_review",
+    description="Заявки на рассмотрении (нужно исправить)",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@moderator_only
+async def cmd_m_review(message: IncomingMessage, bot: Bot) -> None:
+    """Заявки, отправленные на исправление родителю — выбор трека."""
+    await _render_section_track_picker(
+        message, bot, status_name=ModerationStatus.NUZHNO_ISPRAVIT.name
+    )
+
+
+@collector.command(
+    "/m_rejected",
+    description="Отклонённые заявки (без файлов)",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@moderator_only
+async def cmd_m_rejected(message: IncomingMessage, bot: Bot) -> None:
+    """Отклонённые заявки — выбор трека.
+
+    Файлы отклонённых заявок физически удалены с сервера (см.
+    ``services.storage.delete_application_files``), поэтому открытие
+    карточки покажет только метаданные.
+    """
+    await _render_section_track_picker(
+        message, bot, status_name=ModerationStatus.OTKLONENO.name
     )
 
 

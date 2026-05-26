@@ -156,11 +156,12 @@ StatsPeriod = Literal["today", "all"]
 # Внутренние утилиты
 # =====================================================================
 
-# Модератор работает с активной очередью —
-# в дефолте это статусы «на модерации» и «нужно исправить».
+# «Очередь» — только неразобранные новые заявки в статусе
+# «на модерации». Заявки со статусом «нужно исправить» (NUZHNO_ISPRAVIT)
+# вынесены в отдельный раздел меню «На рассмотрении» (см.
+# ``handlers/moderator_queue.py → cmd_m_review``).
 DEFAULT_QUEUE_STATUSES: tuple[ModerationStatus, ...] = (
     ModerationStatus.NA_MODERATSII,
-    ModerationStatus.NUZHNO_ISPRAVIT,
 )
 
 
