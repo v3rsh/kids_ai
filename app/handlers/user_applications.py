@@ -5,12 +5,16 @@
 - ``/menu_my_applications`` — список заявок родителя;
 - ``/my_apps_page`` — пагинация списка;
 - ``/my_apps_refresh`` — обновить текущую страницу;
-- ``/my_app BR-2026-XXXX`` — карточка одной заявки.
+- ``/my_app BR-2026-XXXX`` — карточка одной заявки;
+- ``/my_app_files BR-2026-XXXX`` — все файлы работы заявки.
 """
 from __future__ import annotations
 
+from loguru import logger
 from pybotx import Bot, HandlerCollector, IncomingMessage
+from pybotx.models.attachments import OutgoingAttachment
 
+from database.models import Application, IntakeMode
 from fsm import cleanup_middleware, fsm_middleware
 from keyboards import (
     back_to_main_menu_bubbles,
@@ -19,7 +23,13 @@ from keyboards import (
 )
 from services import applications as applications_service
 from services.user_application_views import format_application_detail, format_list_item
-from utils.bot_utils import reply_to_user
+from utils.bot_utils import (
+    delete_source_message,
+    load_user_photo,
+    reply_to_user,
+    safe_answer_transient,
+    send_photo_transient,
+)
 
 collector = HandlerCollector()
 
@@ -48,6 +58,93 @@ async def _save_page(message: IncomingMessage, page: int) -> None:
 async def _load_page(message: IncomingMessage) -> int:
     data = await message.state.fsm.get_data()
     return max(1, int(data.get(FSM_KEY_MY_APPS_PAGE) or 1))
+
+
+async def _resolve_participant_app(
+    message: IncomingMessage,
+    bot: Bot,
+    *,
+    br_id: str,
+):
+    """Загрузить заявку участника или ответить об ошибке."""
+    if not br_id:
+        await reply_to_user(
+            message,
+            bot,
+            "Не удалось открыть заявку. Вернитесь в «Мои заявки».",
+            bubbles=back_to_main_menu_bubbles(),
+        )
+        return None
+
+    app = await applications_service.get_for_participant(
+        br_id,
+        message.sender.huid,
+    )
+    if app is None:
+        empty_page = applications_service.ParentApplicationsPage(
+            items=[],
+            total=0,
+            page=1,
+            page_size=MY_APPS_PAGE_SIZE,
+        )
+        await reply_to_user(
+            message,
+            bot,
+            "Заявка не найдена.",
+            bubbles=my_applications_list_bubbles(
+                apps=[],
+                page=empty_page,
+                empty=True,
+            ),
+        )
+        return None
+    return app
+
+
+async def _load_application_preview(app: Application) -> OutgoingAttachment | None:
+    """Превью работы для карточки участника."""
+    if app.intake_mode is IntakeMode.LINKS:
+        return None
+    try:
+        from services import storage as storage_service
+    except ImportError:
+        return None
+
+    try:
+        preview_path = await storage_service.get_preview_path(app)
+    except Exception:
+        logger.exception(
+            "Не удалось получить путь к preview.webp",
+            br_id=app.br_id,
+        )
+        return None
+    if preview_path is None:
+        return None
+    return await load_user_photo(str(preview_path))
+
+
+async def _render_application_detail(
+    message: IncomingMessage,
+    bot: Bot,
+    *,
+    app: Application,
+) -> None:
+    """Карточка заявки — превью + caption или текстовый fallback."""
+    body = await format_application_detail(app)
+    bubbles = my_application_detail_bubbles(app)
+    photo = await _load_application_preview(app)
+    if photo is None:
+        await reply_to_user(message, bot, body, bubbles=bubbles)
+        return
+
+    await delete_source_message(message, bot)
+    await send_photo_transient(
+        message,
+        bot,
+        body=body,
+        photo=photo,
+        bubbles=bubbles,
+    )
 
 
 async def _render_list(
@@ -143,44 +240,89 @@ async def cmd_my_app(message: IncomingMessage, bot: Bot) -> None:
     """Карточка одной заявки с проверкой владельца."""
     arg = _split_command_argument(message)
     br_id = _normalize_br_id(arg.split(maxsplit=1)[0] if arg else "")
-    if not br_id:
-        await reply_to_user(
-            message,
-            bot,
-            "Не удалось открыть заявку. Вернитесь в «Мои заявки».",
-            bubbles=back_to_main_menu_bubbles(),
-        )
-        return
-
-    app = await applications_service.get_for_participant(
-        br_id,
-        message.sender.huid,
-    )
+    app = await _resolve_participant_app(message, bot, br_id=br_id)
     if app is None:
-        empty_page = applications_service.ParentApplicationsPage(
-            items=[],
-            total=0,
-            page=1,
-            page_size=MY_APPS_PAGE_SIZE,
-        )
-        await reply_to_user(
+        return
+    await _render_application_detail(message, bot, app=app)
+
+
+@collector.command(
+    "/my_app_files",
+    description="Все файлы работы заявки участника",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+async def cmd_my_app_files(message: IncomingMessage, bot: Bot) -> None:
+    """Выдача всех файлов работы участнику по его заявке."""
+    arg = _split_command_argument(message)
+    br_id = _normalize_br_id(arg.split(maxsplit=1)[0] if arg else "")
+    app = await _resolve_participant_app(message, bot, br_id=br_id)
+    if app is None:
+        return
+
+    bubbles = my_application_detail_bubbles(app)
+
+    if app.intake_mode is IntakeMode.LINKS:
+        link = app.cloud_link or "—"
+        await safe_answer_transient(
             message,
             bot,
-            "Заявка не найдена.",
-            bubbles=my_applications_list_bubbles(
-                apps=[],
-                page=empty_page,
-                empty=True,
+            (
+                f"🔗 Заявка {app.br_id} — режим приёма «links».\n"
+                f"Ссылка на папку участника: {link}"
             ),
+            bubbles=bubbles,
         )
         return
 
-    body = await format_application_detail(app)
-    await reply_to_user(
+    try:
+        from services import storage as storage_service
+
+        attachments = await storage_service.get_application_files_for_chat(app)
+    except Exception:
+        logger.exception(
+            "Не удалось загрузить файлы заявки для участника",
+            br_id=app.br_id,
+        )
+        attachments = []
+
+    if not attachments:
+        await safe_answer_transient(
+            message,
+            bot,
+            f"У заявки {app.br_id} нет сохранённых файлов в хранилище.",
+            bubbles=bubbles,
+        )
+        return
+
+    sent = 0
+    failed: list[str] = []
+    for attachment in attachments:
+        try:
+            await bot.answer_message(
+                f"📎 {app.br_id}: {attachment.filename}",
+                file=attachment,
+                wait_callback=False,
+            )
+            sent += 1
+        except Exception:
+            logger.exception(
+                "Не удалось отправить вложение участнику",
+                br_id=app.br_id,
+                file=attachment.filename,
+            )
+            failed.append(attachment.filename)
+
+    summary_lines = [
+        f"📂 Файлы заявки {app.br_id}: отправлено {sent} из {len(attachments)}."
+    ]
+    if failed:
+        summary_lines.append("Не удалось: " + ", ".join(failed))
+    await safe_answer_transient(
         message,
         bot,
-        body,
-        bubbles=my_application_detail_bubbles(app),
+        "\n".join(summary_lines),
+        bubbles=bubbles,
     )
 
 

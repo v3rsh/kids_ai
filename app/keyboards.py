@@ -13,7 +13,7 @@ from uuid import UUID
 
 from pybotx import BubbleMarkup
 
-from database.models import Application, ModerationStatus, Track
+from database.models import Application, IntakeMode, ModerationStatus, Track
 
 
 # =====================================================================
@@ -143,6 +143,15 @@ def my_application_detail_bubbles(app: Application) -> BubbleMarkup:
         bubbles.add_button(
             command="/menu_contacts",
             label="Контакты организаторов",
+            new_row=True,
+        )
+    if (
+        app.intake_mode is IntakeMode.FILES
+        and app.moderation_status is not ModerationStatus.OTKLONENO
+    ):
+        bubbles.add_button(
+            command=f"/my_app_files {app.br_id}",
+            label="📂 Все файлы",
             new_row=True,
         )
     bubbles.add_button(
