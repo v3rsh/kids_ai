@@ -65,11 +65,30 @@ from services.moderation import (
     find_by_br_id,
     parse_status_group,
 )
+from keyboards import back_to_moderator_menu_bubbles
 from states import ModeratorAction
 from utils.bot_utils import reply_to_user, safe_answer_transient
 
 
 collector = HandlerCollector()
+
+_MODERATOR_BACK = back_to_moderator_menu_bubbles()
+
+
+async def _reply_with_mod_menu(
+    message: IncomingMessage,
+    bot: Bot,
+    body: str,
+    *,
+    bubbles: BubbleMarkup | None = None,
+) -> None:
+    """Ответ модератору; по умолчанию — кнопка возврата в меню роли."""
+    await reply_to_user(
+        message,
+        bot,
+        body,
+        bubbles=bubbles if bubbles is not None else _MODERATOR_BACK,
+    )
 
 
 # =====================================================================
@@ -296,7 +315,7 @@ async def cmd_find(message: IncomingMessage, bot: Bot) -> None:
     br_id, _ = _split_id_and_rest(arg)
     br_id = _normalize_br_id(br_id)
     if not br_id:
-        await reply_to_user(
+        await _reply_with_mod_menu(
             message,
             bot,
             "Команда: /find BR-2026-XXXX",
@@ -304,7 +323,7 @@ async def cmd_find(message: IncomingMessage, bot: Bot) -> None:
         return
     app = await find_by_br_id(br_id)
     if app is None:
-        await reply_to_user(
+        await _reply_with_mod_menu(
             message,
             bot,
             f"Заявка {br_id} не найдена.",
@@ -347,7 +366,7 @@ async def cmd_status(message: IncomingMessage, bot: Bot) -> None:
     br_id = _normalize_br_id(br_id_token)
 
     if not br_id or not group_token or not value_token:
-        await reply_to_user(
+        await _reply_with_mod_menu(
             message,
             bot,
             (
@@ -360,7 +379,7 @@ async def cmd_status(message: IncomingMessage, bot: Bot) -> None:
 
     group = parse_status_group(group_token)
     if group is None:
-        await reply_to_user(
+        await _reply_with_mod_menu(
             message,
             bot,
             (
@@ -377,7 +396,7 @@ async def cmd_status(message: IncomingMessage, bot: Bot) -> None:
         by_huid=message.sender.huid,
     )
     if not result.ok:
-        await reply_to_user(message, bot, f"❌ {result.error}")
+        await _reply_with_mod_menu(message, bot, f"❌ {result.error}")
         return
 
     if group == "moderation":
@@ -425,7 +444,7 @@ async def cmd_comment(message: IncomingMessage, bot: Bot) -> None:
     br_id_token, rest = _split_id_and_rest(arg)
     br_id = _normalize_br_id(br_id_token)
     if not br_id:
-        await reply_to_user(
+        await _reply_with_mod_menu(
             message,
             bot,
             "Команда: /comment BR-2026-XXXX <текст>",
@@ -437,7 +456,7 @@ async def cmd_comment(message: IncomingMessage, bot: Bot) -> None:
             ModeratorAction.moderator_action_comment_input
         )
         await message.state.fsm.update_data(moderator_target_br_id=br_id)
-        await reply_to_user(
+        await _reply_with_mod_menu(
             message,
             bot,
             (
@@ -463,7 +482,7 @@ async def _apply_comment(
         br_id=br_id, text=new_text, by_huid=message.sender.huid
     )
     if app is None:
-        await reply_to_user(message, bot, f"Заявка {br_id} не найдена.")
+        await _reply_with_mod_menu(message, bot, f"Заявка {br_id} не найдена.")
         return
     if cleared:
         body = f"Комментарий к {br_id} удалён."
@@ -489,7 +508,7 @@ async def _state_handle_comment(message: IncomingMessage, bot: Bot) -> None:
     text = (message.body or "").strip()
     await fsm.clear()
     if not br_id:
-        await reply_to_user(
+        await _reply_with_mod_menu(
             message,
             bot,
             "Контекст комментария потерян. Используйте /comment <ID> <текст>.",
@@ -523,7 +542,7 @@ async def cmd_notify_fix(message: IncomingMessage, bot: Bot) -> None:
     br_id_token, rest = _split_id_and_rest(arg)
     br_id = _normalize_br_id(br_id_token)
     if not br_id:
-        await reply_to_user(
+        await _reply_with_mod_menu(
             message,
             bot,
             "Команда: /notify_fix BR-2026-XXXX [текст_уточнения]",
@@ -532,7 +551,7 @@ async def cmd_notify_fix(message: IncomingMessage, bot: Bot) -> None:
 
     app = await find_by_br_id(br_id)
     if app is None:
-        await reply_to_user(message, bot, f"Заявка {br_id} не найдена.")
+        await _reply_with_mod_menu(message, bot, f"Заявка {br_id} не найдена.")
         return
 
     extra = rest.strip() or None
@@ -581,7 +600,7 @@ async def _send_notify_fix(
         # Сервис уведомлений ещё не реализован — модератор получает
         # явный диагностический ответ, и статус заявки всё равно
         # переключён, чтобы очередь оставалась консистентной.
-        await reply_to_user(
+        await _reply_with_mod_menu(
             message,
             bot,
             deadline_warning
@@ -596,7 +615,7 @@ async def _send_notify_fix(
             "Не удалось отправить участнику сообщение «требуется исправление»",
             br_id=app.br_id,
         )
-        await reply_to_user(
+        await _reply_with_mod_menu(
             message,
             bot,
             f"❌ Не удалось отправить участнику сообщение по заявке {app.br_id}.",
@@ -642,7 +661,7 @@ async def cmd_notify_reject(message: IncomingMessage, bot: Bot) -> None:
     br_id_token, rest = _split_id_and_rest(arg)
     br_id = _normalize_br_id(br_id_token)
     if not br_id:
-        await reply_to_user(
+        await _reply_with_mod_menu(
             message,
             bot,
             "Команда: /notify_reject BR-2026-XXXX <причина>",
@@ -654,7 +673,7 @@ async def cmd_notify_reject(message: IncomingMessage, bot: Bot) -> None:
             ModeratorAction.moderator_action_reject_reason
         )
         await message.state.fsm.update_data(moderator_target_br_id=br_id)
-        await reply_to_user(
+        await _reply_with_mod_menu(
             message,
             bot,
             (
@@ -676,7 +695,7 @@ async def _apply_reject(
 ) -> None:
     app = await find_by_br_id(br_id)
     if app is None:
-        await reply_to_user(message, bot, f"Заявка {br_id} не найдена.")
+        await _reply_with_mod_menu(message, bot, f"Заявка {br_id} не найдена.")
         return
 
     storage_done = False
@@ -774,14 +793,14 @@ async def _state_handle_reject_reason(
     reason = (message.body or "").strip()
     await fsm.clear()
     if not br_id:
-        await reply_to_user(
+        await _reply_with_mod_menu(
             message,
             bot,
             "Контекст отклонения потерян. Используйте /notify_reject <ID> <причина>.",
         )
         return
     if not reason:
-        await reply_to_user(
+        await _reply_with_mod_menu(
             message,
             bot,
             "Причина не может быть пустой.",
@@ -800,7 +819,7 @@ async def _state_handle_fix_note(
     text = (message.body or "").strip()
     await fsm.clear()
     if not br_id:
-        await reply_to_user(
+        await _reply_with_mod_menu(
             message,
             bot,
             "Контекст потерян. Используйте /notify_fix <ID> [текст].",
@@ -808,7 +827,7 @@ async def _state_handle_fix_note(
         return
     app = await find_by_br_id(br_id)
     if app is None:
-        await reply_to_user(message, bot, f"Заявка {br_id} не найдена.")
+        await _reply_with_mod_menu(message, bot, f"Заявка {br_id} не найдена.")
         return
     extra = text or None
     if extra and extra.casefold() in {"-", "—", "нет"}:
@@ -845,7 +864,7 @@ async def cmd_files(message: IncomingMessage, bot: Bot) -> None:
     br_id_token, _ = _split_id_and_rest(arg)
     br_id = _normalize_br_id(br_id_token)
     if not br_id:
-        await reply_to_user(
+        await _reply_with_mod_menu(
             message,
             bot,
             "Команда: /files BR-2026-XXXX",
@@ -854,7 +873,7 @@ async def cmd_files(message: IncomingMessage, bot: Bot) -> None:
 
     app = await find_by_br_id(br_id)
     if app is None:
-        await reply_to_user(message, bot, f"Заявка {br_id} не найдена.")
+        await _reply_with_mod_menu(message, bot, f"Заявка {br_id} не найдена.")
         return
 
     if app.intake_mode == IntakeMode.LINKS:
@@ -915,6 +934,7 @@ async def cmd_files(message: IncomingMessage, bot: Bot) -> None:
         message,
         bot,
         "\n".join(summary_lines),
+        bubbles=_MODERATOR_BACK,
     )
 
 

@@ -12,6 +12,7 @@ import utils.deeplink as deeplink_module
 def _reset_deeplink_config(monkeypatch):
     """Изолировать env-шаблон между тестами."""
     monkeypatch.setattr(deeplink_module, "EXPRESS_DEEPLINK_TEMPLATE", "")
+    monkeypatch.setattr(deeplink_module, "EXPRESS_ETS_ID", "")
     monkeypatch.setattr(deeplink_module, "CTS_URL", "https://cts.example.com")
     yield
 
@@ -39,6 +40,25 @@ class TestBuildBotDeeplink:
             "express://chat?bot_id={bot_id}",
         )
         assert deeplink_module.build_bot_deeplink(None) is None
+
+    def test_beeline_profile_template(self, monkeypatch):
+        monkeypatch.setattr(
+            deeplink_module,
+            "EXPRESS_DEEPLINK_TEMPLATE",
+            "https://link.buzz.beeline.ru/open/profile/{bot_id}?ets_id={ets_id}",
+        )
+        monkeypatch.setattr(
+            deeplink_module,
+            "EXPRESS_ETS_ID",
+            "08c2c31b-bf8a-5c45-80e3-8fef2e745d60",
+        )
+        bot_id = UUID("5451826f-cb67-55a7-925e-30d234013bcc")
+        assert (
+            deeplink_module.build_bot_deeplink(bot_id)
+            == "https://link.buzz.beeline.ru/open/profile/"
+            "5451826f-cb67-55a7-925e-30d234013bcc"
+            "?ets_id=08c2c31b-bf8a-5c45-80e3-8fef2e745d60"
+        )
 
 
 class TestBuildFindDeeplink:
@@ -77,6 +97,19 @@ class TestBuildFindDeeplink:
             "{command}",
         )
         assert deeplink_module.build_find_deeplink(UUID(int=4), "") is None
+
+    def test_beeline_find_same_as_profile_link(self, monkeypatch):
+        """Beeline-шаблон без {command}: ссылка на бота, не prefilled /find."""
+        monkeypatch.setattr(
+            deeplink_module,
+            "EXPRESS_DEEPLINK_TEMPLATE",
+            "https://link.buzz.beeline.ru/open/profile/{bot_id}?ets_id={ets_id}",
+        )
+        monkeypatch.setattr(deeplink_module, "EXPRESS_ETS_ID", "ets-uuid")
+        bot_id = UUID("5451826f-cb67-55a7-925e-30d234013bcc")
+        profile = deeplink_module.build_bot_deeplink(bot_id)
+        find_link = deeplink_module.build_find_deeplink(bot_id, "BR-2026-0001")
+        assert find_link == profile
 
     def test_invalid_template_logs_and_returns_none(self, monkeypatch):
         monkeypatch.setattr(

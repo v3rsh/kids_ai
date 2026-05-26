@@ -207,7 +207,13 @@ def _make_role_decorator(
                     role=role_log,
                     huid=str(huid) if huid else None,
                 )
-                await bot.answer_message(deny_message, wait_callback=False)
+                from keyboards import main_menu_bubbles
+
+                kwargs = {"wait_callback": False}
+                menu = main_menu_bubbles(huid=huid)
+                if menu is not None:
+                    kwargs["bubbles"] = menu
+                await bot.answer_message(deny_message, **kwargs)
                 return None
             return await handler(message, bot, *args, **kwargs)
 

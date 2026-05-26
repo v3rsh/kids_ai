@@ -120,6 +120,8 @@ async def cmd_moderator_menu(message: IncomingMessage, bot: Bot) -> None:
     await discovery.notify_admin_role_candidate(
         bot, huid=huid, role="moderator"
     )
+    from keyboards import main_menu_bubbles
+
     await reply_to_user(
         message,
         bot,
@@ -128,6 +130,7 @@ async def cmd_moderator_menu(message: IncomingMessage, bot: Bot) -> None:
             "Доступ к меню модератора ограничен.\n"
             "Запрос отправлен администратору на одобрение."
         ),
+        bubbles=main_menu_bubbles(huid=huid),
     )
 
 

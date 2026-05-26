@@ -28,12 +28,15 @@ from pybotx import (
 from pybotx.models.attachments import OutgoingAttachment
 
 from fsm import cleanup_middleware, fsm_middleware
+from keyboards import back_to_moderator_menu_bubbles
 from services.access import moderator_only
 from services.moderation import StatsCounters, StatsPeriod, count_stats
 from utils.bot_utils import reply_to_user
 
 
 collector = HandlerCollector()
+
+_MODERATOR_BACK = back_to_moderator_menu_bubbles()
 
 
 # =====================================================================
@@ -122,6 +125,7 @@ async def cmd_export(message: IncomingMessage, bot: Bot) -> None:
             message,
             bot,
             "❌ Не удалось сформировать registry.xlsx. См. логи.",
+            bubbles=_MODERATOR_BACK,
         )
         return
 
@@ -134,6 +138,7 @@ async def cmd_export(message: IncomingMessage, bot: Bot) -> None:
             "📤 Реестр заявок (актуально на момент запроса).",
             file=attachment,
             wait_callback=False,
+            bubbles=_MODERATOR_BACK,
         )
     except Exception:
         logger.exception("Не удалось отправить XLSX-реестр")
@@ -141,6 +146,7 @@ async def cmd_export(message: IncomingMessage, bot: Bot) -> None:
             message,
             bot,
             "❌ Не удалось отправить XLSX-реестр в чат. См. логи.",
+            bubbles=_MODERATOR_BACK,
         )
 
 
@@ -168,6 +174,7 @@ async def cmd_export_shortlist(message: IncomingMessage, bot: Bot) -> None:
             message,
             bot,
             "❌ Не удалось сформировать XLSX шорт-листа. См. логи.",
+            bubbles=_MODERATOR_BACK,
         )
         return
 
@@ -180,6 +187,7 @@ async def cmd_export_shortlist(message: IncomingMessage, bot: Bot) -> None:
             "🏆 Шорт-лист по результатам жюри.",
             file=attachment,
             wait_callback=False,
+            bubbles=_MODERATOR_BACK,
         )
     except Exception:
         logger.exception("Не удалось отправить XLSX шорт-листа")
@@ -187,6 +195,7 @@ async def cmd_export_shortlist(message: IncomingMessage, bot: Bot) -> None:
             message,
             bot,
             "❌ Не удалось отправить XLSX шорт-листа в чат. См. логи.",
+            bubbles=_MODERATOR_BACK,
         )
 
 
@@ -211,12 +220,13 @@ async def cmd_stats(message: IncomingMessage, bot: Bot) -> None:
             message,
             bot,
             "Команда: /stats today  или  /stats all",
+            bubbles=_MODERATOR_BACK,
         )
         return
 
     stats = await count_stats(period=period)
     body = _format_stats(stats)
-    await reply_to_user(message, bot, body)
+    await reply_to_user(message, bot, body, bubbles=_MODERATOR_BACK)
 
 
 __all__ = ["collector"]

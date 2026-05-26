@@ -528,10 +528,10 @@ middlewares) — обрабатывается в `handlers/common.py::on_chat_cr
 
 Шаблон `EXPRESS_DEEPLINK_TEMPLATE` (env, optional):
 
-- `build_bot_deeplink` — кнопка «🔎 Открыть в боте» (диск, жюри);
-  плейсхолдеры `{bot_id}`, `{cts_url}`.
-- `build_find_deeplink` — «📄 Карточка в очереди» на уведомлении о
-  новой заявке; дополнительно `{br_id}`, `{command}`, `{command_encoded}`.
+- `build_bot_deeplink` / `build_find_deeplink` — рендер `EXPRESS_DEEPLINK_TEMPLATE`.
+  Плейсхолдеры: `{bot_id}`, `{ets_id}` (`EXPRESS_ETS_ID`), `{cts_url}`;
+  для заявки — `{br_id}`, `{command}`, `{command_encoded}` (если есть в шаблоне).
+  Beeline: `https://link.buzz.beeline.ru/open/profile/{bot_id}?ets_id={ets_id}`.
 
 В теле уведомления о новой заявке — блок «Быстрые команды» (`/find`,
 `/files`) и инлайн-кнопка «📄 Карточка» (работает в чате модерации).
@@ -542,6 +542,22 @@ middlewares) — обрабатывается в `handlers/common.py::on_chat_cr
 ## 6. Навигация в одном сообщении
 
 Принцип: каждый клик по кнопке **редактирует** текущее меню, transient-сообщения (фото, ошибки, уведомления) **удаляются автоматически**.
+
+**Инвариант клавиатуры:** у каждого исходящего DM-сообщения бота под текстом
+есть `BubbleMarkup`. Если нет контекстного меню (карточка заявки, меню роли,
+выбор режима intake) — одна кнопка возврата по роли получателя:
+
+| Роль | Конструктор | Команда |
+|------|-------------|---------|
+| Родитель | `back_to_main_menu_bubbles()` | `/start` |
+| Модератор | `back_to_moderator_menu_bubbles()` | `/moderator` |
+| Жюри | `back_to_jury_menu_bubbles()` | `/jury` |
+| Админ | `back_to_admin_menu_bubbles()` | `/admin` |
+
+Проактивные DM участнику (`services.notifications.notify_participant_*`) и
+«нужна правка» (`fix_needed_notification_bubbles`: контакты + `/start`) —
+в `app/services/notifications.py`. **Не добавляем** кнопки роли в групповой
+чат модерации и к transient-ошибкам валидации внутри живой анкеты.
 
 ### Типы сообщений
 

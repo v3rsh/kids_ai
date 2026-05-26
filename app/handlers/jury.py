@@ -71,6 +71,8 @@ async def cmd_jury_menu(message: IncomingMessage, bot: Bot) -> None:
     await discovery.notify_admin_role_candidate(
         bot, huid=huid, role="jury"
     )
+    from keyboards import main_menu_bubbles
+
     await reply_to_user(
         message,
         bot,
@@ -79,6 +81,7 @@ async def cmd_jury_menu(message: IncomingMessage, bot: Bot) -> None:
             "Доступ к меню жюри ограничен.\n"
             "Запрос отправлен администратору на одобрение."
         ),
+        bubbles=main_menu_bubbles(huid=huid),
     )
 
 

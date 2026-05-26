@@ -52,7 +52,8 @@
 | `CTS_URL` | URL CTS-сервера |
 | `BOT_SECRET_KEY` | Секретный ключ бота |
 | `ADMIN_HUID` / `ADMIN_HUIDS` | UUID администраторов через запятую (тех. роль — `/disk`, `/intake_mode`, discovery-кнопки; первый получает системные уведомления). Меняется только через рестарт. |
-| `EXPRESS_DEEPLINK_TEMPLATE` | Опционально. Шаблон URL-deeplink в чате модерации. Плейсхолдеры: `{bot_id}`, `{cts_url}`; для новой заявки также `{br_id}`, `{command}`, `{command_encoded}`. Пример с карточкой: `express://chat?bot_id={bot_id}&text={command_encoded}`. Если пусто — кнопки-ссылки не добавляются. |
+| `EXPRESS_DEEPLINK_TEMPLATE` | Опционально. URL-шаблон deeplink в чате модерации. Плейсхолдеры: `{bot_id}`, `{ets_id}`, `{cts_url}`; опционально `{command_encoded}` и др. Beeline: `https://link.buzz.beeline.ru/open/profile/{bot_id}?ets_id={ets_id}`. Если пусто — кнопки-ссылки не добавляются. |
+| `EXPRESS_ETS_ID` | Опционально. UUID параметра `ets_id` в ссылке Beeline (из `open/profile/…?ets_id=…`). Нужен, если шаблон содержит `{ets_id}`. |
 
 > Модераторы, жюри и чат модерации в env **не задаются** — только через
 > discovery в боте (см. ниже «Управление ролями через бот»).

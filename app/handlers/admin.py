@@ -52,6 +52,8 @@ from keyboards import (
     admin_stats_menu_bubbles,
     admin_system_menu_bubbles,
     admin_users_menu_bubbles,
+    back_to_admin_menu_bubbles,
+    main_menu_bubbles,
 )
 from services import access
 from services.access import admin_only, moderator_only
@@ -655,7 +657,12 @@ async def cmd_disk(message: IncomingMessage, bot: Bot) -> None:
     except Exception:
         logger.exception("Авто-переключение в LINKS не удалось (вызов из /disk)")
 
-    await reply_to_user(message, bot, "\n".join(body_parts))
+    await reply_to_user(
+        message,
+        bot,
+        "\n".join(body_parts),
+        bubbles=main_menu_bubbles(huid=_sender_huid(message)),
+    )
 
 
 # =====================================================================
@@ -783,7 +790,9 @@ async def cmd_admin_state(message: IncomingMessage, bot: Bot) -> None:
         f"{disk_block}\n"
         f"{roles_block}"
     )
-    await reply_to_user(message, bot, body)
+    await reply_to_user(
+        message, bot, body, bubbles=back_to_admin_menu_bubbles()
+    )
 
 
 # =====================================================================

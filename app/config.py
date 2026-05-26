@@ -86,12 +86,14 @@ UVICORN_WORKERS = max(1, int(os.getenv("UVICORN_WORKERS", "1")))
 # Источник истины — таблица ``app_settings`` (chat) и
 # ``moderators`` / ``jury_members`` (роли).
 
-# Шаблон URL-deeplink на DM с ботом для кнопок в чате модерации.
-# Точный синтаксис зависит от версии eXpress CTS — уточняйте у админов.
-# Плейсхолдеры: {bot_id}, {cts_url}; для новой заявки также {br_id},
-# {command} (/find BR-…), {command_encoded} (URL-encoded).
-# Если переменная пуста — кнопка-ссылка не добавляется.
+# Deeplink на профиль/DM бота в клиенте eXpress (кнопки в чате модерации).
+# Шаблон: EXPRESS_DEEPLINK_TEMPLATE. Плейсхолдеры:
+#   {bot_id}, {ets_id}, {cts_url}; для карточки заявки также {br_id},
+#   {command}, {command_encoded} (если CTS поддерживает prefilled command).
+# EXPRESS_ETS_ID — query-параметр ets_id (Beeline: link.buzz.beeline.ru/...).
+# Если шаблон пуст — кнопки-ссылки не добавляются.
 EXPRESS_DEEPLINK_TEMPLATE: str = os.getenv("EXPRESS_DEEPLINK_TEMPLATE", "")
+EXPRESS_ETS_ID: str = os.getenv("EXPRESS_ETS_ID", "")
 
 # Локальное хранилище файлов конкурса.
 # В контейнере — bind-mount ./data/attachments хоста (см. docker-compose.yml).

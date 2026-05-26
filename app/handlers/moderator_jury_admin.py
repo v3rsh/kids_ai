@@ -54,11 +54,14 @@ from database.models import (
     Track,
 )
 from fsm import cleanup_middleware, fsm_middleware
+from keyboards import back_to_moderator_menu_bubbles
 from services.access import moderator_only
 from utils.bot_utils import reply_to_user
 
 
 collector = HandlerCollector()
+
+_MODERATOR_BACK = back_to_moderator_menu_bubbles()
 
 
 # =====================================================================
@@ -246,7 +249,9 @@ async def cmd_jury_state(message: IncomingMessage, bot: Bot) -> None:
         lines.append("")
         lines.append("Открытых раундов нет.")
 
-    await reply_to_user(message, bot, "\n".join(lines))
+    await reply_to_user(
+        message, bot, "\n".join(lines), bubbles=_MODERATOR_BACK
+    )
 
 
 def _format_deadline(deadline_at: datetime, delta) -> str:
@@ -288,6 +293,7 @@ async def cmd_jury_close_round(message: IncomingMessage, bot: Bot) -> None:
                 "Команда: /jury_close_round <пул>  или  /jury_close_round all\n"
                 "Пример: /jury_close_round traditional/7-12"
             ),
+            bubbles=_MODERATOR_BACK,
         )
         return
 
@@ -304,6 +310,7 @@ async def cmd_jury_close_round(message: IncomingMessage, bot: Bot) -> None:
                 f"Не понимаю пул «{arg}». Формат: <track>/<age>, "
                 "например traditional/7-12."
             ),
+            bubbles=_MODERATOR_BACK,
         )
         return
 
@@ -333,7 +340,7 @@ async def _close_open_rounds(
                 f"В пуле {_format_pool(*target)} нет открытого раунда — "
                 "закрывать нечего."
             )
-        await reply_to_user(message, bot, text)
+        await reply_to_user(message, bot, text, bubbles=_MODERATOR_BACK)
         return
 
     closed: list[str] = []
@@ -383,7 +390,9 @@ async def _close_open_rounds(
     if not lines:
         lines.append("Ничего не сделано.")
 
-    await reply_to_user(message, bot, "\n".join(lines))
+    await reply_to_user(
+        message, bot, "\n".join(lines), bubbles=_MODERATOR_BACK
+    )
 
 
 # =====================================================================
@@ -414,6 +423,7 @@ async def cmd_jury_finalize(message: IncomingMessage, bot: Bot) -> None:
             bot,
             "⏳ services.jury.build_shortlist() ещё не реализован — "
             "финализация будет доступна, когда сервис будет подключен.",
+            bubbles=_MODERATOR_BACK,
         )
         return
     except Exception:
@@ -422,6 +432,7 @@ async def cmd_jury_finalize(message: IncomingMessage, bot: Bot) -> None:
             message,
             bot,
             "❌ Не удалось финализировать процесс жюри. См. логи.",
+            bubbles=_MODERATOR_BACK,
         )
         return
 
@@ -434,6 +445,7 @@ async def cmd_jury_finalize(message: IncomingMessage, bot: Bot) -> None:
             f"В шорт-лист вошло заявок: {count}.\n"
             "Файл доступен по команде /export_shortlist."
         ),
+        bubbles=_MODERATOR_BACK,
     )
 
 

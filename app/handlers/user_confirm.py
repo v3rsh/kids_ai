@@ -306,12 +306,15 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
             "Сбой при создании заявки",
             parent_huid=str(parent_huid),
         )
+        from keyboards import back_to_main_menu_bubbles
+
         await safe_answer_transient(
             message,
             bot,
             _REJECTED_TECH_TEMPLATE.format(
                 reason="временная техническая ошибка, попробуйте ещё раз"
             ),
+            bubbles=back_to_main_menu_bubbles(),
         )
         return
 

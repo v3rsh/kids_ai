@@ -220,11 +220,14 @@ async def _process_incoming_file(
             "files_collect: track отсутствует в FSM — сбрасываем",
             sender=str(message.sender.huid),
         )
+        from keyboards import back_to_main_menu_bubbles
+
         await safe_answer_transient(
             message,
             bot,
             "Сессия анкеты потерялась. Начните заново — нажмите «Подать "
             "работу» в главном меню.",
+            bubbles=back_to_main_menu_bubbles(),
         )
         return
     try:

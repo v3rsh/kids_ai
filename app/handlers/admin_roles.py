@@ -39,6 +39,7 @@ from keyboards import (
     admin_confirm_bubbles,
     admin_resend_welcome_role_bubbles,
     admin_roles_menu_bubbles,
+    back_to_admin_menu_bubbles,
 )
 from services import access, discovery
 from services.access import admin_only
@@ -142,8 +143,10 @@ async def cmd_admin_role_approve(message: IncomingMessage, bot: Bot) -> None:
 
     if role not in ("moderator", "jury") or huid is None:
         await reply_to_user(
-            message, bot,
+            message,
+            bot,
             "❌ Не удалось обработать кнопку: повреждены данные карточки.",
+            bubbles=back_to_admin_menu_bubbles(),
         )
         return
 
@@ -161,7 +164,9 @@ async def cmd_admin_role_approve(message: IncomingMessage, bot: Bot) -> None:
         huid=str(huid),
         by_huid=str(message.sender.huid),
     )
-    await reply_to_user(message, bot, body)
+    await reply_to_user(
+        message, bot, body, bubbles=back_to_admin_menu_bubbles()
+    )
 
 
 @collector.command(
@@ -178,8 +183,10 @@ async def cmd_admin_role_reject(message: IncomingMessage, bot: Bot) -> None:
     name = (data.get("name") or "").strip() or data.get("huid") or "—"
     role_label = "модератора" if role == "moderator" else "члена жюри"
     await reply_to_user(
-        message, bot,
+        message,
+        bot,
         f"❌ Запрос на роль {role_label} отклонён: **{name}**.",
+        bubbles=back_to_admin_menu_bubbles(),
     )
 
 
@@ -209,8 +216,10 @@ async def cmd_admin_chat_approve(message: IncomingMessage, bot: Bot) -> None:
     chat_name = (data.get("chat_name") or "").strip()
     if chat_id is None:
         await reply_to_user(
-            message, bot,
+            message,
+            bot,
             "❌ Не удалось обработать кнопку: повреждены данные карточки.",
+            bubbles=back_to_admin_menu_bubbles(),
         )
         return
 
@@ -238,7 +247,9 @@ async def cmd_admin_chat_approve(message: IncomingMessage, bot: Bot) -> None:
         f"✅ Чат «{chat_name or chat_id}» назначен чатом модерации.\n"
         f"• Подтверждение в чат: {'отправлено' if welcome_ok else 'не отправлено'}"
     )
-    await reply_to_user(message, bot, body)
+    await reply_to_user(
+        message, bot, body, bubbles=back_to_admin_menu_bubbles()
+    )
 
 
 @collector.command(
@@ -253,8 +264,10 @@ async def cmd_admin_chat_reject(message: IncomingMessage, bot: Bot) -> None:
     data = _btn_data(message)
     chat_name = (data.get("chat_name") or "").strip() or data.get("chat_id") or "—"
     await reply_to_user(
-        message, bot,
+        message,
+        bot,
         f"❌ Отклонён чат-кандидат на чат модерации: **{chat_name}**.",
+        bubbles=back_to_admin_menu_bubbles(),
     )
 
 

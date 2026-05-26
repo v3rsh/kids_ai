@@ -39,10 +39,14 @@ async def _global_error_handler(
 ) -> None:
     """Safety net: ловит все необработанные исключения из хендлеров."""
     logger.exception("Необработанная ошибка в хендлере:")
+    from keyboards import main_menu_bubbles
     from utils.bot_utils import send_with_retry
+
+    huid = getattr(getattr(message, "sender", None), "huid", None)
     await send_with_retry(
         bot,
         "Произошла ошибка. Попробуй ещё раз или начни сначала – команда **/start**",
+        bubbles=main_menu_bubbles(huid=huid),
     )
 
 

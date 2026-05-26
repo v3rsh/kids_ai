@@ -65,6 +65,8 @@ python -m pytest tests/test_application_flow.py tests/test_jury_flow.py -q
 | `tests/test_jury_flow.py` | Расширение `test_jury_algorithm`: размер top_n, above_tie == TOP_N, детерминизм сортировки, `services.pools.all_pools()` = 3×3 = 9 пулов | [`architecture.md`](architecture.md) → «jury_pool_assignments» |
 | `tests/test_registry.py` | `services.registry`: `registry_export_filename`, `transliterate_icao_9303`, `jury_column_header`, `view_command_or_link`, `contact_field`, `jury_outcome` + smoke-рендер XLSX через `_render_registry_workbook` (без БД) | [`registry-spec.md`](registry-spec.md) → §2.2, §2.3.1, §4 |
 | `tests/test_discovery_welcome.py` | `services.discovery`: welcome-DM модератору и жюри несёт меню роли (`/queue`, `/jury_tasks`, …) и параллельно ставит FSM-state `moderator:menu` / `jury:menu`; крайний кейс — нет `users.chat_id` (DM не уходит, но state записывается) | [`architecture.md`](architecture.md) → «Discovery» |
+| `tests/test_keyboards.py` | `keyboards`: `back_to_*_menu_bubbles`, `fix_needed_notification_bubbles` — команды кнопок возврата | [`architecture.md`](architecture.md) → «Навигация в одном сообщении» |
+| `tests/test_notifications.py` | `services.notifications`: проактивные DM участнику (`notify_participant_*`) всегда передают `bubbles` (`/start`, для fix — ещё `/menu_contacts`) | [`architecture.md`](architecture.md) → «Навигация в одном сообщении» |
 
 ---
 

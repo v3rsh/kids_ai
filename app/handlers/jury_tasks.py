@@ -27,6 +27,7 @@ from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
 from database.db import get_session
 from database.models import Application, JuryVoteValue
 from fsm import cleanup_middleware, fsm_middleware
+from keyboards import back_to_jury_menu_bubbles
 from services import jury as jury_service
 from services.access import jury_only
 from states import JuryTaskFlow
@@ -481,6 +482,7 @@ async def cmd_jt_vote(message: IncomingMessage, bot: Bot) -> None:
                 message,
                 bot,
                 "Голос по этой работе уже отправлен — изменить нельзя.",
+                bubbles=_back_to_tasks_bubbles(),
             )
             return
 
@@ -594,6 +596,7 @@ async def cmd_jt_submit(message: IncomingMessage, bot: Bot) -> None:
                 bot,
                 "Сначала оцените все работы и убедитесь, что среди "
                 "оценок есть и «Да», и «Нет» (правило разброса в одном раунде).",
+                bubbles=_back_to_tasks_bubbles(),
             )
             return
         try:
@@ -616,6 +619,7 @@ async def cmd_jt_submit(message: IncomingMessage, bot: Bot) -> None:
                 message,
                 bot,
                 f"Не удалось отправить оценки: {exc}",
+                bubbles=_back_to_tasks_bubbles(),
             )
             return
 
@@ -629,6 +633,7 @@ async def cmd_jt_submit(message: IncomingMessage, bot: Bot) -> None:
         message,
         bot,
         "✅ Оценки отправлены. Спасибо!",
+        bubbles=back_to_jury_menu_bubbles(),
     )
     await cmd_jury_tasks_internal(message, bot)
 
@@ -645,6 +650,7 @@ async def _voting_text_handler(message: IncomingMessage, bot: Bot) -> None:
         bot,
         "Для оценки используйте кнопки «Да» / «Нет», навигацию и "
         "«Отправить оценки». Свободный текст здесь не обрабатывается.",
+        bubbles=back_to_jury_menu_bubbles(),
     )
 
 
