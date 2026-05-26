@@ -34,9 +34,13 @@ from pybotx import (
     BubbleMarkup,
     HandlerCollector,
     IncomingMessage,
+    MentionBuilder,
 )
 
-from database.models import AgeCategory, Application, ModerationStatus, Track
+import aiofiles
+from pybotx.models.attachments import OutgoingAttachment
+
+from database.models import AgeCategory, Application, IntakeMode, ModerationStatus, Track
 from fsm import cleanup_middleware, fsm_middleware
 from services.access import moderator_only
 from services.moderation import (
@@ -45,7 +49,11 @@ from services.moderation import (
     QueuePage,
     list_queue,
 )
-from utils.bot_utils import reply_to_user
+from utils.bot_utils import (
+    delete_source_message,
+    reply_to_user,
+    send_photo_transient,
+)
 
 
 collector = HandlerCollector()
@@ -165,10 +173,19 @@ def _short_card(app: Application) -> str:
 def _full_card(app: Application) -> str:
     """Развёрнутая карточка для ``/browse`` и ``/find``.
 
-    Контакт собираем по приоритету: явно введённый родителем
-    ``parent_contact`` → ``@ad_login`` → ``HUID:`` (последний fallback).
+    Поле «Родитель» рендерится через ``MentionBuilder.contact`` —
+    клиент eXpress показывает кликабельный ``@@ФИО``, открывающий чат
+    с родителем (см. ``.cursor/rules/mentions.mdc``).
+
+    Контакт для связи (email/телефон, явно введённый родителем на шаге
+    «Контакт» анкеты) показывается отдельной строкой; если поле пустое —
+    fallback на ``@ad_login`` или ``HUID:``.
     """
     files_count = len(app.files) if app.files is not None else 0
+    parent_mention = MentionBuilder.contact(
+        entity_id=app.parent_huid,
+        name=app.parent_full_name,
+    )
     if getattr(app, "parent_contact", None):
         contact = app.parent_contact
     elif app.parent_ad_login:
@@ -192,7 +209,7 @@ def _full_card(app: Application) -> str:
     return (
         f"📄 **{app.br_id}**\n\n"
         f"**Подана:** {_format_dt(app.created_at)}\n\n"
-        f"**Родитель:** {app.parent_full_name}\n"
+        f"**Родитель:** {parent_mention}\n"
         f"**Подразделение:** {app.parent_division}\n"
         f"**Контакт:** {contact}\n\n"
         f"**Ребёнок:** {app.child_name}, {app.child_age} "
@@ -233,6 +250,97 @@ def _filters_summary(filters: QueueFilters) -> str:
         dt_ = filters.date_to.isoformat() if filters.date_to else "—"
         parts.append(f"дата: {df}…{dt_}")
     return "; ".join(parts) if parts else "по умолчанию (на модерации + нужно исправить)"
+
+
+# =====================================================================
+# Загрузка фото-карточки заявки
+# =====================================================================
+
+
+async def _load_application_photo(app: Application) -> OutgoingAttachment | None:
+    """Загрузить главное фото заявки для карточки модератора.
+
+    Приоритет:
+    1. ``preview.webp`` (через ``storage.get_preview_path``) — лёгкий
+       вариант, генерируется лениво и подходит для большинства треков.
+    2. Если превью не получилось (нет исходника, HEIC без plugin'а,
+       режим ``LINKS``, отклонённая заявка с удалёнными файлами) —
+       возвращает ``None``, и вызывающий код переходит на текстовую
+       карточку.
+
+    Returns:
+        OutgoingAttachment | None — None означает «фото нет, рендерим
+        обычной карточкой».
+    """
+    if app.intake_mode is IntakeMode.LINKS:
+        return None
+    try:
+        from services import storage as storage_service
+    except ImportError:
+        return None
+
+    try:
+        preview_path = await storage_service.get_preview_path(app)
+    except Exception:
+        logger.exception(
+            "Не удалось получить путь к preview.webp",
+            br_id=app.br_id,
+        )
+        return None
+    if preview_path is None or not preview_path.exists():
+        return None
+
+    try:
+        async with aiofiles.open(preview_path, "rb") as fp:
+            content = await fp.read()
+    except OSError:
+        logger.exception(
+            "Не удалось прочитать preview.webp",
+            br_id=app.br_id,
+            path=str(preview_path),
+        )
+        return None
+
+    return OutgoingAttachment(content=content, filename=preview_path.name)
+
+
+async def render_application_card(
+    message: IncomingMessage,
+    bot: Bot,
+    *,
+    app: Application,
+    bubbles: BubbleMarkup,
+    prefix: str = "",
+) -> None:
+    """Отрисовать карточку заявки модератору — фото + caption, либо текст.
+
+    Поведение:
+    - Если удалось загрузить фото заявки (``_load_application_photo``)
+      и сообщение пришло как клик с кнопки — старое menu-сообщение
+      удаляется (``delete_source_message``), и шлётся новое сообщение
+      с фото + caption + кнопками (transient: cleanup-middleware
+      подчистит его при следующей навигации).
+    - Если фото нет (LINKS / OTKLONENO / preview не сгенерирован) —
+      обычный ``reply_to_user`` с текстом карточки.
+
+    Args:
+        prefix: дополнительный текст, добавляется перед карточкой —
+            например, статусная плашка «Карусель: 2 из 5».
+    """
+    body = (prefix + _full_card(app)) if prefix else _full_card(app)
+    photo = await _load_application_photo(app)
+    if photo is None:
+        await reply_to_user(message, bot, body, bubbles=bubbles)
+        return
+
+    await delete_source_message(message, bot)
+    await send_photo_transient(
+        message,
+        bot,
+        body=body,
+        photo=photo,
+        bubbles=bubbles,
+    )
 
 
 # =====================================================================
@@ -727,17 +835,23 @@ async def _render_browse(
         )
 
     app = result.items[inner_offset]
-    body = (
+    prefix = (
         f"**Карусель:** {index + 1} из {total}\n"
         f"**Фильтры:** {_filters_summary(filters)}\n\n"
-        + _full_card(app)
     )
 
     bubbles = BubbleMarkup()
     _action_buttons_for_app(bubbles, app)
     _browse_navigation_buttons(bubbles, index=index, total=total)
 
-    await reply_to_user(message, bot, body, bubbles=bubbles)
+    await render_application_card(
+        message, bot, app=app, bubbles=bubbles, prefix=prefix
+    )
 
 
-__all__ = ["collector", "_full_card", "_short_card"]
+__all__ = [
+    "collector",
+    "_full_card",
+    "_short_card",
+    "render_application_card",
+]

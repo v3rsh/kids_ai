@@ -29,12 +29,14 @@ from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 from loguru import logger
+from pybotx import MentionBuilder
 
 from services.access import get_moderation_chat_id
 from utils.bot_utils import resolve_bot_id
 
 if TYPE_CHECKING:
     from pybotx import Bot
+    from pybotx.models.attachments import OutgoingAttachment
 
     from database.models import Application
 
@@ -283,6 +285,7 @@ async def _send_to_moderation_chat(
     *,
     purpose: str,
     bubbles=None,
+    file: "OutgoingAttachment | None" = None,
 ) -> None:
     """Отправить сообщение в чат «Безопасные рисунки — модерация».
 
@@ -293,6 +296,9 @@ async def _send_to_moderation_chat(
 
     Если ``bot_id`` не определяется (``bot_accounts`` пустой) — пишем
     ERROR и no-op: без bot_id pybotx всё равно не сможет отправить.
+
+    Аргумент ``file`` — вложение (``OutgoingAttachment``). Если передан,
+    отправляется одним сообщением вместе с ``body`` (caption).
     """
     chat_uuid = get_moderation_chat_id()
     if chat_uuid is None:
@@ -319,6 +325,8 @@ async def _send_to_moderation_chat(
     }
     if bubbles is not None:
         kwargs["bubbles"] = bubbles
+    if file is not None:
+        kwargs["file"] = file
 
     body_preview = body[:120].replace("\n", " ")
     try:
@@ -327,6 +335,7 @@ async def _send_to_moderation_chat(
             "Отправлено сообщение в чат модерации",
             purpose=purpose,
             chat_id=str(chat_uuid),
+            has_file=file is not None,
         )
     except Exception:
         logger.exception(
@@ -335,6 +344,7 @@ async def _send_to_moderation_chat(
             chat_id=str(chat_uuid),
             bot_id=str(bot_id),
             body_preview=body_preview,
+            has_file=file is not None,
         )
 
 
@@ -448,15 +458,29 @@ async def notify_moderation_chat_new_application(
 ) -> None:
     """Служебное сообщение о новой заявке в чат модерации.
 
+    Поведение:
+    - Поле «Родитель» подставляется как ``MentionBuilder.contact`` —
+      получается кликабельный ``@@ФИО``, открывающий чат с человеком
+      прямо в eXpress.
+    - В режиме ``IntakeMode.FILES`` файлы заявки прикладываются
+      к сообщению: первый файл уходит с полным caption (карточка),
+      остальные — отдельными сообщениями подряд с короткой подписью
+      «📎 BR-ID: filename».
+    - В режиме ``IntakeMode.LINKS`` (или если файлов нет на диске) —
+      отправляется только текстовая карточка со ссылкой/командой.
+
     Если настроен ``EXPRESS_DEEPLINK_TEMPLATE``, добавляем кнопку
-    «🔎 Открыть в боте» с URL-ссылкой на DM с ботом. Команды
-    (``/find BR-XXXX``, ``/files BR-XXXX``) остаются в теле сообщения —
-    deeplink только открывает чат, ввод команды по-прежнему за модератором
-    (у eXpress нет аналога ``?start=payload``).
+    «🔎 Открыть в боте» с URL-ссылкой на DM с ботом.
     """
+    from database.models import IntakeMode
+
+    parent_mention = MentionBuilder.contact(
+        entity_id=app.parent_huid,
+        name=app.parent_full_name,
+    )
     body = NEW_APPLICATION_MODERATION_TEMPLATE.format(
         br_id=app.br_id,
-        parent_full_name=app.parent_full_name,
+        parent_full_name=str(parent_mention),
         child_name=app.child_name,
         child_age=app.child_age,
         age_category=app.age_category.value,
@@ -465,12 +489,46 @@ async def notify_moderation_chat_new_application(
         files_pointer=_format_files_pointer(app),
     )
     bubbles = _moderation_chat_open_in_bot_bubbles(bot)
+
+    attachments: list["OutgoingAttachment"] = []
+    if app.intake_mode is IntakeMode.FILES:
+        try:
+            from services import storage as storage_service
+
+            loaded = await storage_service.get_application_files_for_chat(app)
+            attachments = list(loaded or [])
+        except Exception:
+            logger.exception(
+                "Не удалось загрузить файлы заявки для чата модерации",
+                br_id=app.br_id,
+            )
+            attachments = []
+
+    if not attachments:
+        await _send_to_moderation_chat(
+            bot,
+            body,
+            purpose="moderation_new_application",
+            bubbles=bubbles,
+        )
+        return
+
+    first, *rest = attachments
     await _send_to_moderation_chat(
         bot,
         body,
         purpose="moderation_new_application",
         bubbles=bubbles,
+        file=first,
     )
+    for idx, attachment in enumerate(rest, start=2):
+        caption = f"📎 {app.br_id}: файл {idx} из {len(attachments)} — {attachment.filename}"
+        await _send_to_moderation_chat(
+            bot,
+            caption,
+            purpose="moderation_new_application_extra_file",
+            file=attachment,
+        )
 
 
 def _moderation_chat_open_in_bot_bubbles(bot: "Bot"):

@@ -53,7 +53,7 @@ from config import ATTACHMENTS_DIR, COMPETITION_YEAR
 from database.models import Application, IntakeMode, ModerationStatus
 from fsm import cleanup_middleware, fsm_middleware
 from handlers.common import register_state_handler
-from handlers.moderator_queue import _full_card
+from handlers.moderator_queue import _full_card, render_application_card
 from services.access import moderator_only
 from services.moderation import (
     add_comment,
@@ -207,10 +207,10 @@ async def cmd_find(message: IncomingMessage, bot: Bot) -> None:
             f"Заявка {br_id} не найдена.",
         )
         return
-    await reply_to_user(
+    await render_application_card(
         message,
         bot,
-        _full_card(app),
+        app=app,
         bubbles=_card_action_buttons(app),
     )
 
