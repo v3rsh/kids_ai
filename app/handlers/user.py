@@ -25,7 +25,7 @@
 from loguru import logger
 from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
 
-from config import CONTACTS_TEXT
+from config import build_contacts_text
 from fsm import cleanup_middleware, fsm_middleware
 from keyboards import back_to_main_menu_bubbles
 from services import users as users_service
@@ -132,10 +132,9 @@ EXAMPLES_TEXT = (
     "новая работа."
 )
 
-# Текст «Контакты организаторов» вынесен в env-переменную
-# `CONTACTS_TEXT` (см. `app/config.py` → `CONTACTS_TEXT`). Дефолт совпадает
-# с прежним хардкодом; заказчик может поправить формулировку без диффа в
-# коде, переопределив переменную в `.env`.
+# Текст «Контакты организаторов» собирается в ``build_contacts_text()``
+# (см. ``app/config.py``). Дефолт — список организаторов + mention;
+# полный override через ``CONTACTS_TEXT`` в ``.env``.
 
 
 # =====================================================================
@@ -209,7 +208,7 @@ async def cmd_menu_dates(message: IncomingMessage, bot: Bot) -> None:
 async def cmd_menu_contacts(message: IncomingMessage, bot: Bot) -> None:
     """Экран «Контакты организаторов»."""
     await reply_to_user(
-        message, bot, CONTACTS_TEXT, bubbles=back_to_main_menu_bubbles()
+        message, bot, build_contacts_text(), bubbles=back_to_main_menu_bubbles()
     )
 
 

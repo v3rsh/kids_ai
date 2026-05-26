@@ -5,7 +5,10 @@
 """
 import os
 from pathlib import Path
+from uuid import UUID
+
 from dotenv import load_dotenv
+from pybotx import MentionBuilder
 
 load_dotenv()
 
@@ -132,13 +135,29 @@ COMPETITION_YEAR = int(os.getenv("COMPETITION_YEAR", "2026"))
 # `app/handlers/user.py` в env-переменную, чтобы заказчик мог поправить
 # формулировку без диффа в коде. Многострочный текст в .env передаётся
 # через `\n` (dotenv разворачивает их в реальные переводы строк).
-# Пустая строка / отсутствие переменной → используется дефолтный текст
-# из ``CONTACTS_TEXT_DEFAULT`` ниже.
-CONTACTS_TEXT_DEFAULT = (
+# Пустая строка / отсутствие переменной → ``build_contacts_text()``
+# собирает дефолт с кликабельным mention основного контакта.
+CONTACTS_PRIMARY_HUID = UUID("16bce2de-8ce7-5e40-ad71-2353a1fede07")
+CONTACTS_PRIMARY_NAME = "Винокурова Екатерина Васильевна"
+CONTACTS_TEXT_BODY = (
     "**Контакты организаторов**\n\n"
     "• Организатор конкурса — команда ИБ.\n"
     "• Основной модератор — Екатерина Винокурова.\n"
-    "• Резервный модератор / владелец проекта — Анастасия Иванова.\n\n"
-    "По всем вопросам пишите в чат «Безопасные рисунки — модерация»."
+    "• Резервный модератор / владелец проекта — Анастасия Иванова."
 )
-CONTACTS_TEXT: str = os.getenv("CONTACTS_TEXT") or CONTACTS_TEXT_DEFAULT
+
+
+def build_contacts_text() -> str:
+    """Текст экрана «Контакты организаторов».
+
+    Если ``CONTACTS_TEXT`` задан в env — возвращается как есть (полный override).
+    Иначе — список организаторов + кликабельный ``@@ФИО`` основного контакта.
+    """
+    env_override = os.getenv("CONTACTS_TEXT")
+    if env_override:
+        return env_override
+    mention = MentionBuilder.contact(
+        entity_id=CONTACTS_PRIMARY_HUID,
+        name=CONTACTS_PRIMARY_NAME,
+    )
+    return f"{CONTACTS_TEXT_BODY}\n\nПо всем вопросам писать {mention}."
