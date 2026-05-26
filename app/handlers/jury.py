@@ -22,8 +22,10 @@ from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
 
 from database.db import get_session
 from fsm import cleanup_middleware, fsm_middleware
+from keyboards import jury_menu_bubbles
 from services import discovery, jury as jury_service
 from services.access import is_jury, jury_only
+from states import JuryFlow
 from utils.bot_utils import reply_to_user
 from utils.contracts import JuryTaskDTO, PoolKey
 
@@ -33,17 +35,6 @@ collector = HandlerCollector()
 # =====================================================================
 # Меню жюри
 # =====================================================================
-
-
-def _jury_menu_bubbles() -> BubbleMarkup:
-    """Главное меню жюри: открыть задачи + посмотреть статус."""
-    bubbles = BubbleMarkup()
-    bubbles.add_button(command="/jury_tasks", label="📋 Мои задачи", new_row=True)
-    bubbles.add_button(command="/jury_status", label="📊 Прогресс", new_row=True)
-    bubbles.add_button(
-        command="/start", label="◀ Назад в главное меню", new_row=True
-    )
-    return bubbles
 
 
 _JURY_MENU_TEXT = (
@@ -67,8 +58,9 @@ async def cmd_jury_menu(message: IncomingMessage, bot: Bot) -> None:
     """
     huid = message.sender.huid
     if is_jury(huid):
+        await message.state.fsm.set_state(JuryFlow.jury_menu)
         await reply_to_user(
-            message, bot, _JURY_MENU_TEXT, bubbles=_jury_menu_bubbles()
+            message, bot, _JURY_MENU_TEXT, bubbles=jury_menu_bubbles()
         )
         return
 
@@ -259,7 +251,7 @@ async def cmd_jury_tasks(message: IncomingMessage, bot: Bot) -> None:
             message,
             bot,
             "Произошла ошибка при получении ваших задач. Попробуйте позже.",
-            bubbles=_jury_menu_bubbles(),
+            bubbles=jury_menu_bubbles(),
         )
         return
 

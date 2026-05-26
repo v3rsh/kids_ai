@@ -397,31 +397,85 @@ async def add_moderator_to_chat(bot: "Bot", huid: UUID) -> tuple[bool, str]:
 
 _WELCOME_MODERATOR_TEXT = (
     "👋 **Тебя назначили модератором** конкурса «Безопасные рисунки».\n\n"
-    "Чтобы открыть меню модератора, введи команду /moderator.\n"
-    "Команды по очереди и действиям — в подсказке /m_help."
+    "Меню модератора уже под этим сообщением — выбирай действие "
+    "кнопкой или набери команду вручную. Полный список — /m_help."
 )
 
 _WELCOME_JURY_TEXT = (
     "👋 **Тебя назначили членом жюри** конкурса «Безопасные рисунки».\n\n"
-    "Открой меню жюри командой /jury — там список твоих задач и "
-    "прогресс по голосованию."
+    "Меню жюри уже под этим сообщением — открой список задач или "
+    "посмотри прогресс по голосованию."
 )
 
 
 async def send_welcome_dm_to_moderator(bot: "Bot", huid: UUID) -> bool:
-    """Послать модератору короткое приветственное DM. Возвращает успех."""
+    """Послать модератору приветственное DM с меню роли.
+
+    Параллельно выставляет FSM-состояние ``moderator:menu``, чтобы
+    диспетчер свободного текста (``handlers.common.default_handler``)
+    воспринимал назначенного как находящегося в меню модератора без
+    дополнительного `/moderator`. Возвращает успех отправки DM.
+    """
+    from keyboards import moderator_menu_bubbles
+    from states import ModeratorFlow
+
+    await _set_menu_state(huid, ModeratorFlow.moderator_menu.value)
     return await _send_welcome_dm(
-        bot, huid, _WELCOME_MODERATOR_TEXT, "welcome_moderator"
+        bot,
+        huid,
+        _WELCOME_MODERATOR_TEXT,
+        "welcome_moderator",
+        bubbles=moderator_menu_bubbles(),
     )
 
 
 async def send_welcome_dm_to_jury(bot: "Bot", huid: UUID) -> bool:
-    """Послать судье короткое приветственное DM. Возвращает успех."""
-    return await _send_welcome_dm(bot, huid, _WELCOME_JURY_TEXT, "welcome_jury")
+    """Послать судье приветственное DM с меню роли.
+
+    Аналог ``send_welcome_dm_to_moderator`` для жюри: ставит
+    FSM-состояние ``jury:menu`` и шлёт DM с кнопками меню жюри.
+    """
+    from keyboards import jury_menu_bubbles
+    from states import JuryFlow
+
+    await _set_menu_state(huid, JuryFlow.jury_menu.value)
+    return await _send_welcome_dm(
+        bot,
+        huid,
+        _WELCOME_JURY_TEXT,
+        "welcome_jury",
+        bubbles=jury_menu_bubbles(),
+    )
+
+
+async def _set_menu_state(huid: UUID, state: str) -> None:
+    """Выставить FSM-state роли через Redis-хранилище FSM.
+
+    Делается напрямую через ``RedisFSMStorage`` (а не через
+    ``FSMContext``), потому что вызов идёт из admin-хендлера: у админа
+    свой ``message.state.fsm``, привязанный к его HUID, а нам нужно
+    записать состояние назначаемому пользователю.
+    """
+    from fsm.storage import get_fsm_storage
+
+    try:
+        storage = get_fsm_storage()
+        await storage.set_state(huid, state)
+    except Exception:
+        logger.exception(
+            "Welcome DM: не удалось выставить FSM-state роли",
+            huid=str(huid),
+            state=state,
+        )
 
 
 async def _send_welcome_dm(
-    bot: "Bot", huid: UUID, body: str, purpose: str
+    bot: "Bot",
+    huid: UUID,
+    body: str,
+    purpose: str,
+    *,
+    bubbles: BubbleMarkup | None = None,
 ) -> bool:
     chat_id = await _resolve_user_chat_id(huid)
     if chat_id is None:
@@ -439,6 +493,8 @@ async def _send_welcome_dm(
     }
     if bot_id is not None:
         kwargs["bot_id"] = bot_id
+    if bubbles is not None:
+        kwargs["bubbles"] = bubbles
     try:
         await bot.send_message(**kwargs)
         logger.info(

@@ -86,6 +86,55 @@ def back_to_main_menu_bubbles() -> BubbleMarkup:
 
 
 # =====================================================================
+# Меню роли (модератор / жюри)
+# =====================================================================
+#
+# Конструкторы живут в этом модуле, а не в ``handlers/moderator.py`` /
+# ``handlers/jury.py``, потому что меню роли строит ещё и
+# ``services/discovery.py`` для welcome-DM сразу после одобрения роли
+# админом. Импорт из handlers в services создал бы цикл
+# (handlers → services.discovery → handlers).
+
+
+def moderator_menu_bubbles() -> BubbleMarkup:
+    """Кнопки главного меню модератора."""
+    bubbles = BubbleMarkup()
+    bubbles.add_button(command="/queue", label="📋 Очередь")
+    bubbles.add_button(command="/browse", label="🖼️ Карусель", new_row=True)
+    bubbles.add_button(
+        command="/stats today", label="📈 Статистика — сегодня", new_row=True
+    )
+    bubbles.add_button(
+        command="/stats all", label="📊 Статистика — весь период", new_row=True
+    )
+    bubbles.add_button(command="/export", label="📤 Реестр (XLSX)", new_row=True)
+    bubbles.add_button(
+        command="/export_shortlist", label="🏆 Шорт-лист (XLSX)", new_row=True
+    )
+    bubbles.add_button(
+        command="/jury_state", label="⚖️ Состояние жюри", new_row=True
+    )
+    bubbles.add_button(
+        command="/m_help", label="❔ Справка по командам", new_row=True
+    )
+    bubbles.add_button(
+        command="/start", label="◀ Назад в главное меню", new_row=True
+    )
+    return bubbles
+
+
+def jury_menu_bubbles() -> BubbleMarkup:
+    """Кнопки главного меню жюри."""
+    bubbles = BubbleMarkup()
+    bubbles.add_button(command="/jury_tasks", label="📋 Мои задачи", new_row=True)
+    bubbles.add_button(command="/jury_status", label="📊 Прогресс", new_row=True)
+    bubbles.add_button(
+        command="/start", label="◀ Назад в главное меню", new_row=True
+    )
+    return bubbles
+
+
+# =====================================================================
 # Анкета (используется хендлерами в ``app/handlers/user*.py``)
 # =====================================================================
 
@@ -178,6 +227,8 @@ def final_confirm_bubbles() -> BubbleMarkup:
 __all__ = [
     "main_menu_bubbles",
     "back_to_main_menu_bubbles",
+    "moderator_menu_bubbles",
+    "jury_menu_bubbles",
     "track_selection_bubbles",
     "consents_bubbles",
     "file_upload_bubbles",

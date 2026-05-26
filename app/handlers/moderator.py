@@ -23,14 +23,15 @@ from __future__ import annotations
 from loguru import logger
 from pybotx import (
     Bot,
-    BubbleMarkup,
     HandlerCollector,
     IncomingMessage,
 )
 
 from fsm import cleanup_middleware, fsm_middleware
+from keyboards import moderator_menu_bubbles
 from services import discovery
 from services.access import is_moderator, moderator_only
+from states import ModeratorFlow
 from utils.bot_utils import reply_to_user
 
 
@@ -75,33 +76,6 @@ MODERATOR_HELP_TEXT = (
 
 
 # =====================================================================
-# Клавиатуры
-# =====================================================================
-
-
-def _moderator_menu_bubbles() -> BubbleMarkup:
-    """Кнопки главного меню модератора.
-
-    Отдельный конструктор живёт здесь (не в ``app/keyboards.py``), чтобы
-    не мешать с пользовательскими клавиатурами и чётко отграничить
-    модераторские кнопки от родительских.
-    """
-    bubbles = BubbleMarkup()
-    bubbles.add_button(command="/queue", label="📋 Очередь")
-    bubbles.add_button(command="/browse", label="🖼️ Карусель", new_row=True)
-    bubbles.add_button(command="/stats today", label="📈 Статистика — сегодня", new_row=True)
-    bubbles.add_button(command="/stats all", label="📊 Статистика — весь период", new_row=True)
-    bubbles.add_button(command="/export", label="📤 Реестр (XLSX)", new_row=True)
-    bubbles.add_button(command="/export_shortlist", label="🏆 Шорт-лист (XLSX)", new_row=True)
-    bubbles.add_button(command="/jury_state", label="⚖️ Состояние жюри", new_row=True)
-    bubbles.add_button(command="/m_help", label="❔ Справка по командам", new_row=True)
-    bubbles.add_button(
-        command="/start", label="◀ Назад в главное меню", new_row=True
-    )
-    return bubbles
-
-
-# =====================================================================
 # Хендлеры
 # =====================================================================
 
@@ -127,11 +101,12 @@ async def cmd_moderator_menu(message: IncomingMessage, bot: Bot) -> None:
     huid = message.sender.huid
     if is_moderator(huid):
         logger.info("Модератор открыл меню", huid=str(huid))
+        await message.state.fsm.set_state(ModeratorFlow.moderator_menu)
         await reply_to_user(
             message,
             bot,
             MODERATOR_MENU_TEXT,
-            bubbles=_moderator_menu_bubbles(),
+            bubbles=moderator_menu_bubbles(),
         )
         return
 
@@ -166,7 +141,7 @@ async def cmd_moderator_help(message: IncomingMessage, bot: Bot) -> None:
         message,
         bot,
         MODERATOR_HELP_TEXT,
-        bubbles=_moderator_menu_bubbles(),
+        bubbles=moderator_menu_bubbles(),
     )
 
 

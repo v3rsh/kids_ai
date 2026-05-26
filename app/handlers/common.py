@@ -44,9 +44,10 @@ from pybotx import (
 )
 
 from fsm import cleanup_middleware, fsm_middleware
-from keyboards import main_menu_bubbles
+from keyboards import jury_menu_bubbles, main_menu_bubbles, moderator_menu_bubbles
 from services import discovery
 from services import users as users_service
+from states import JuryFlow, ModeratorFlow
 from utils.bot_utils import reply_to_user
 
 
@@ -162,14 +163,23 @@ async def on_chat_created(event: ChatCreatedEvent, bot: Bot) -> None:
     )
 
 
-@collector.command("/start", description="Главное меню бота")
+@collector.command(
+    "/start",
+    description="Главное меню бота",
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
 async def cmd_start(message: IncomingMessage, bot: Bot) -> None:
     """Точка входа: показывает приветствие + главное меню.
+
+    Сбрасывает FSM-состояние, чтобы возврат в главное меню из любой
+    ветки (анкета, меню роли) гарантированно очищал контекст —
+    «Назад в главное меню» обязан означать выход из текущей ветки.
 
     Параллельно (fire-and-forget) прогревает CTS-кэш профиля юзера —
     к моменту нажатия «Подать работу» в `cmd_apply` мы получим ФИО
     и подразделение из БД без задержки.
     """
+    await message.state.fsm.clear()
     asyncio.create_task(
         users_service.sync_user_from_cts(bot, message.sender.huid)
     )
@@ -260,6 +270,27 @@ async def default_handler(message: IncomingMessage, bot: Bot) -> None:
             handler=handler.__qualname__,
         )
         await handler(message, bot)
+        return
+
+    # Меню роли: свободный текст не выкидывает в главное меню — мы
+    # перерисовываем именно меню роли, чтобы у модератора/судьи под
+    # рукой остались его кнопки. FSM-state не трогаем.
+    if current_state == ModeratorFlow.moderator_menu.value:
+        await reply_to_user(
+            message,
+            bot,
+            DEFAULT_FALLBACK_TEXT,
+            bubbles=moderator_menu_bubbles(),
+        )
+        return
+
+    if current_state == JuryFlow.jury_menu.value:
+        await reply_to_user(
+            message,
+            bot,
+            DEFAULT_FALLBACK_TEXT,
+            bubbles=jury_menu_bubbles(),
+        )
         return
 
     if current_state:

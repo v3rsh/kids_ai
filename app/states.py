@@ -51,6 +51,31 @@ class ModeratorAction(str, Enum):
     moderator_action_fix_note = "moderator:action:fix_note"
 
 
+class ModeratorFlow(str, Enum):
+    """Контекстные состояния ветки модератора.
+
+    ``moderator_menu`` — пользователь находится в главном меню
+    модератора (открыл /moderator или получил welcome-DM после
+    одобрения роли). Свободного текста на этом состоянии нет:
+    диспетчер ``handlers.common.default_handler`` использует его
+    только для того, чтобы перерисовать меню роли вместо главного,
+    если модератор отправил текст вместо кнопки.
+    """
+
+    moderator_menu = "moderator:menu"
+
+
+class JuryFlow(str, Enum):
+    """Контекстные состояния ветки жюри.
+
+    ``jury_menu`` — пользователь находится в главном меню жюри
+    (открыл /jury или получил welcome-DM после одобрения роли).
+    Используется аналогично ``ModeratorFlow.moderator_menu``.
+    """
+
+    jury_menu = "jury:menu"
+
+
 class JuryTaskFlow(str, Enum):
     """Прохождение задачи жюри.
 

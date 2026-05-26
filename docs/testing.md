@@ -63,6 +63,7 @@ python -m pytest tests/test_application_flow.py tests/test_jury_flow.py -q
 | `tests/test_moderation_flow.py` | `services.moderation`: parse_status_group алиасы, _moderation_status_by_value / _voting_status_by_value, _build_queue_where_clauses, DEFAULT_QUEUE_STATUSES | [`architecture.md`](architecture.md) → «applications» (поля статусов) |
 | `tests/test_jury_flow.py` | Расширение `test_jury_algorithm`: размер top_n, above_tie == TOP_N, детерминизм сортировки, `services.pools.all_pools()` = 3×3 = 9 пулов | [`architecture.md`](architecture.md) → «jury_pool_assignments» |
 | `tests/test_registry.py` | `services.registry`: `registry_export_filename`, `transliterate_icao_9303`, `jury_column_header`, `view_command_or_link`, `contact_field`, `jury_outcome` + smoke-рендер XLSX через `_render_registry_workbook` (без БД) | [`registry-spec.md`](registry-spec.md) → §2.2, §2.3.1, §4 |
+| `tests/test_discovery_welcome.py` | `services.discovery`: welcome-DM модератору и жюри несёт меню роли (`/queue`, `/jury_tasks`, …) и параллельно ставит FSM-state `moderator:menu` / `jury:menu`; крайний кейс — нет `users.chat_id` (DM не уходит, но state записывается) | [`architecture.md`](architecture.md) → «Discovery» |
 
 ---
 
