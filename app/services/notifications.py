@@ -58,6 +58,12 @@ ACCEPTED_TEMPLATE = (
 )
 """Участнику: заявка принята и передана на модерацию."""
 
+MODERATION_PASSED_TEMPLATE = (
+    "Ваша работа прошла модерацию и передана членам жюри.\n\n"
+    "Итоги работы жюри объявим **30 июня**."
+)
+"""Участнику: работа допущена модератором (статус «допущено»)."""
+
 REJECTED_TEMPLATE = (
     "Работа не прошла модерацию, потому что не соответствует условиям "
     "конкурса: **{reason}**.\n\n"
@@ -363,7 +369,7 @@ async def _send_to_moderation_chat(
 
 async def notify_participant_accepted(bot: "Bot", app: "Application") -> None:
     """Заявка принята и передана на модерацию."""
-    from keyboards import back_to_main_menu_bubbles
+    from keyboards import participant_dm_bubbles
 
     chat_id = await _resolve_user_chat_id(app.parent_huid)
     await _send_to_user(
@@ -372,7 +378,24 @@ async def notify_participant_accepted(bot: "Bot", app: "Application") -> None:
         chat_id=chat_id,
         body=ACCEPTED_TEMPLATE,
         purpose="participant_accepted",
-        bubbles=back_to_main_menu_bubbles(),
+        bubbles=participant_dm_bubbles(app),
+    )
+
+
+async def notify_participant_moderation_passed(
+    bot: "Bot", app: "Application"
+) -> None:
+    """Работа допущена модератором к участию в жюри."""
+    from keyboards import participant_dm_bubbles
+
+    chat_id = await _resolve_user_chat_id(app.parent_huid)
+    await _send_to_user(
+        bot,
+        huid=app.parent_huid,
+        chat_id=chat_id,
+        body=MODERATION_PASSED_TEMPLATE,
+        purpose="participant_moderation_passed",
+        bubbles=participant_dm_bubbles(app),
     )
 
 
@@ -383,7 +406,7 @@ async def notify_participant_rejected(
 
     ``reason`` берётся из ``/notify_reject`` дословно.
     """
-    from keyboards import back_to_main_menu_bubbles
+    from keyboards import participant_dm_bubbles
 
     chat_id = await _resolve_user_chat_id(app.parent_huid)
     await _send_to_user(
@@ -392,7 +415,7 @@ async def notify_participant_rejected(
         chat_id=chat_id,
         body=REJECTED_TEMPLATE.format(reason=(reason or "").strip()),
         purpose="participant_rejected",
-        bubbles=back_to_main_menu_bubbles(),
+        bubbles=participant_dm_bubbles(app),
     )
 
 
@@ -410,7 +433,7 @@ async def notify_participant_fix_needed(
     body = FIX_NEEDED_TEMPLATE
     if extra and extra.strip():
         body += FIX_NEEDED_EXTRA_TEMPLATE.format(extra=extra.strip())
-    from keyboards import fix_needed_notification_bubbles
+    from keyboards import participant_dm_bubbles
 
     chat_id = await _resolve_user_chat_id(app.parent_huid)
     await _send_to_user(
@@ -419,7 +442,7 @@ async def notify_participant_fix_needed(
         chat_id=chat_id,
         body=body,
         purpose="participant_fix_needed",
-        bubbles=fix_needed_notification_bubbles(),
+        bubbles=participant_dm_bubbles(app),
     )
 
 
@@ -427,7 +450,7 @@ async def notify_participant_shortlist(
     bot: "Bot", app: "Application"
 ) -> None:
     """Работа попала в шорт-лист."""
-    from keyboards import back_to_main_menu_bubbles
+    from keyboards import participant_dm_bubbles
 
     chat_id = await _resolve_user_chat_id(app.parent_huid)
     await _send_to_user(
@@ -436,7 +459,7 @@ async def notify_participant_shortlist(
         chat_id=chat_id,
         body=SHORTLIST_TEMPLATE,
         purpose="participant_shortlist",
-        bubbles=back_to_main_menu_bubbles(),
+        bubbles=participant_dm_bubbles(app),
     )
 
 
@@ -449,7 +472,7 @@ async def notify_participant_jury_result(
         if in_top_10
         else JURY_RESULT_NOT_IN_TOP10_TEMPLATE
     )
-    from keyboards import back_to_main_menu_bubbles
+    from keyboards import participant_dm_bubbles
 
     chat_id = await _resolve_user_chat_id(app.parent_huid)
     await _send_to_user(
@@ -458,7 +481,7 @@ async def notify_participant_jury_result(
         chat_id=chat_id,
         body=body,
         purpose=f"participant_jury_result_{'top10' if in_top_10 else 'out'}",
-        bubbles=back_to_main_menu_bubbles(),
+        bubbles=participant_dm_bubbles(app),
     )
 
 
@@ -844,6 +867,7 @@ async def flush_jury_event_aggregator() -> None:
 __all__ = [
     # Шаблоны участнику
     "ACCEPTED_TEMPLATE",
+    "MODERATION_PASSED_TEMPLATE",
     "REJECTED_TEMPLATE",
     "FIX_NEEDED_TEMPLATE",
     "FIX_NEEDED_EXTRA_TEMPLATE",
@@ -864,6 +888,7 @@ __all__ = [
     "DISK_ALERT_95_TEMPLATE",
     # Функции участнику
     "notify_participant_accepted",
+    "notify_participant_moderation_passed",
     "notify_participant_rejected",
     "notify_participant_fix_needed",
     "notify_participant_shortlist",

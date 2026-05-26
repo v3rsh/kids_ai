@@ -17,6 +17,14 @@ def _extract_button_commands(bubbles) -> list[str]:
     return commands
 
 
+def _participant_dm_commands(br_id: str = "BR-2026-0001") -> list[str]:
+    return [
+        f"/my_app {br_id}",
+        "/menu_contacts",
+        "/start",
+    ]
+
+
 @pytest.fixture
 def fake_bot() -> MagicMock:
     bot = MagicMock()
@@ -39,20 +47,20 @@ def chat_id() -> uuid.UUID:
 
 class TestParticipantNotificationsBubbles:
     @pytest.mark.parametrize(
-        "notify_fn,expected_commands",
+        "notify_fn",
         [
-            (notifications.notify_participant_accepted, ["/start"]),
-            (notifications.notify_participant_rejected, ["/start"]),
-            (notifications.notify_participant_shortlist, ["/start"]),
+            notifications.notify_participant_accepted,
+            notifications.notify_participant_moderation_passed,
+            notifications.notify_participant_rejected,
+            notifications.notify_participant_shortlist,
         ],
     )
-    async def test_simple_notifications_have_start(
+    async def test_simple_notifications_have_participant_dm(
         self,
         fake_bot: MagicMock,
         fake_app: MagicMock,
         chat_id: uuid.UUID,
         notify_fn,
-        expected_commands: list[str],
     ) -> None:
         with patch.object(
             notifications,
@@ -69,9 +77,9 @@ class TestParticipantNotificationsBubbles:
         fake_bot.send_message.assert_awaited_once()
         kwargs = fake_bot.send_message.await_args.kwargs
         assert "bubbles" in kwargs
-        assert _extract_button_commands(kwargs["bubbles"]) == expected_commands
+        assert _extract_button_commands(kwargs["bubbles"]) == _participant_dm_commands()
 
-    async def test_fix_needed_has_contacts_and_start(
+    async def test_fix_needed_has_participant_dm(
         self,
         fake_bot: MagicMock,
         fake_app: MagicMock,
@@ -87,12 +95,9 @@ class TestParticipantNotificationsBubbles:
             await notifications.notify_participant_fix_needed(fake_bot, fake_app)
 
         kwargs = fake_bot.send_message.await_args.kwargs
-        assert _extract_button_commands(kwargs["bubbles"]) == [
-            "/menu_contacts",
-            "/start",
-        ]
+        assert _extract_button_commands(kwargs["bubbles"]) == _participant_dm_commands()
 
-    async def test_jury_result_top10_has_start(
+    async def test_jury_result_top10_has_participant_dm(
         self,
         fake_bot: MagicMock,
         fake_app: MagicMock,
@@ -110,9 +115,9 @@ class TestParticipantNotificationsBubbles:
             )
 
         kwargs = fake_bot.send_message.await_args.kwargs
-        assert _extract_button_commands(kwargs["bubbles"]) == ["/start"]
+        assert _extract_button_commands(kwargs["bubbles"]) == _participant_dm_commands()
 
-    async def test_jury_result_out_has_start(
+    async def test_jury_result_out_has_participant_dm(
         self,
         fake_bot: MagicMock,
         fake_app: MagicMock,
@@ -130,7 +135,7 @@ class TestParticipantNotificationsBubbles:
             )
 
         kwargs = fake_bot.send_message.await_args.kwargs
-        assert _extract_button_commands(kwargs["bubbles"]) == ["/start"]
+        assert _extract_button_commands(kwargs["bubbles"]) == _participant_dm_commands()
 
     async def test_skips_send_when_no_chat_id(
         self, fake_bot: MagicMock, fake_app: MagicMock

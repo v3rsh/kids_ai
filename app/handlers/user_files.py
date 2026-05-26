@@ -421,6 +421,7 @@ async def _process_incoming_file_locked(
             bot,
             (
                 f"Файл принят ({len(files)}/{_TRADITIONAL_MAX_FILES}). "
+                "Для поделки/3D-модели/фотоинсталляции — от 2 до 4 файлов. "
                 "Добавьте ещё файл или завершите загрузку."
             ),
             bubbles=file_upload_bubbles(

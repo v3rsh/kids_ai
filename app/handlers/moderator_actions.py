@@ -208,11 +208,20 @@ def _card_action_buttons(app: Application) -> BubbleMarkup:
     return bubbles
 
 
-def _moderation_action_headline(new_status_value: str) -> str:
+def _moderation_action_headline(
+    new_status_value: str,
+    *,
+    notified_ok: bool = True,
+) -> str:
     """Текст подтверждения по итогу смены статуса модерации."""
     value = (new_status_value or "").strip().casefold()
     if value == ModerationStatus.DOPUSHCHENO.value.casefold():
-        return "✅ **Заявка допущена.** Участник уведомлён."
+        if notified_ok:
+            return "✅ **Заявка допущена.** Участник уведомлён."
+        return (
+            "✅ **Заявка допущена.** ⚠ Не удалось отправить "
+            "уведомление участнику (см. логи)."
+        )
     if value == ModerationStatus.OTKLONENO.value.casefold():
         return "🚫 **Заявка отклонена.**"
     if value == ModerationStatus.NUZHNO_ISPRAVIT.value.casefold():
@@ -400,11 +409,33 @@ async def cmd_status(message: IncomingMessage, bot: Bot) -> None:
         return
 
     if group == "moderation":
+        notified_ok = True
+        if (
+            result.new_value
+            and result.new_value.casefold()
+            == ModerationStatus.DOPUSHCHENO.value.casefold()
+        ):
+            try:
+                from services import notifications
+
+                await notifications.notify_participant_moderation_passed(
+                    bot, app=result.application
+                )
+            except Exception:
+                logger.exception(
+                    "Не удалось отправить участнику уведомление о допуске",
+                    br_id=result.application.br_id,
+                )
+                notified_ok = False
+
         await _show_action_confirmation(
             message,
             bot,
             app=result.application,
-            headline=_moderation_action_headline(result.new_value or ""),
+            headline=_moderation_action_headline(
+                result.new_value or "",
+                notified_ok=notified_ok,
+            ),
         )
         return
 

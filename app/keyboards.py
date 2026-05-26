@@ -277,6 +277,31 @@ def fix_needed_notification_bubbles() -> BubbleMarkup:
     return bubbles
 
 
+def participant_dm_bubbles(app: Application) -> BubbleMarkup:
+    """DM участнику: карточка заявки + контакты + главное меню.
+
+    ``/start`` открывает ``main_menu_bubbles(huid=...)`` с ролевыми
+    кнопками (модератор / жюри), если пользователь в соответствующей роли.
+    """
+    bubbles = BubbleMarkup()
+    bubbles.add_button(
+        command=f"/my_app {app.br_id}",
+        label="📄 Моя заявка",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/menu_contacts",
+        label="📞 Контакты организаторов",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/start",
+        label="◀ Главное меню",
+        new_row=True,
+    )
+    return bubbles
+
+
 # =====================================================================
 # Меню администратора
 # =====================================================================
@@ -707,6 +732,7 @@ __all__ = [
     "back_to_jury_menu_bubbles",
     "back_to_admin_menu_bubbles",
     "fix_needed_notification_bubbles",
+    "participant_dm_bubbles",
     "admin_main_menu_bubbles",
     "admin_confirm_bubbles",
     "admin_roles_menu_bubbles",
