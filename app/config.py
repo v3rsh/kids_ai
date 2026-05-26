@@ -87,11 +87,10 @@ UVICORN_WORKERS = max(1, int(os.getenv("UVICORN_WORKERS", "1")))
 # ``moderators`` / ``jury_members`` (роли).
 
 # Шаблон URL-deeplink на DM с ботом для кнопок в чате модерации.
-# Точный синтаксис зависит от версии eXpress CTS — обычно вида
-# ``express://chat?bot_id={bot_id}`` или ``https://{cts_host}/chats/personal/{bot_id}``.
-# Доступные плейсхолдеры: {bot_id}, {cts_url}. Если переменная пуста,
-# кнопка-ссылка не добавляется — в outbound-уведомлениях остаётся
-# только текстовая команда (``/files BR-XXXX``).
+# Точный синтаксис зависит от версии eXpress CTS — уточняйте у админов.
+# Плейсхолдеры: {bot_id}, {cts_url}; для новой заявки также {br_id},
+# {command} (/find BR-…), {command_encoded} (URL-encoded).
+# Если переменная пуста — кнопка-ссылка не добавляется.
 EXPRESS_DEEPLINK_TEMPLATE: str = os.getenv("EXPRESS_DEEPLINK_TEMPLATE", "")
 
 # Локальное хранилище файлов конкурса.

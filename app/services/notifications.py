@@ -35,7 +35,7 @@ from services.access import get_moderation_chat_id
 from utils.bot_utils import resolve_bot_id
 
 if TYPE_CHECKING:
-    from pybotx import Bot
+    from pybotx import Bot, BubbleMarkup
     from pybotx.models.attachments import OutgoingAttachment
 
     from database.models import Application
@@ -106,7 +106,10 @@ NEW_APPLICATION_MODERATION_TEMPLATE = (
     "**Возрастная категория:** {age_category}\n"
     "**Трек:** {track}\n"
     "**Название работы:** {title}\n"
-    "**Ссылка на папку:** {files_pointer}"
+    "**Ссылка на папку:** {files_pointer}\n\n"
+    "**Быстрые команды:**\n"
+    "/find {br_id} — карточка в очереди\n"
+    "/files {br_id} — файлы в чат"
 )
 """Новая заявка в чат модерации.
 
@@ -212,6 +215,7 @@ async def _send_to_user(
     chat_id: UUID | None,
     body: str,
     purpose: str,
+    bubbles: "BubbleMarkup | None" = None,
 ) -> None:
     """Отправить сообщение участнику.
 
@@ -237,13 +241,17 @@ async def _send_to_user(
         )
         return
 
+    kwargs = {
+        "bot_id": bot_id,
+        "chat_id": chat_id,
+        "body": body,
+        "wait_callback": False,
+    }
+    if bubbles is not None:
+        kwargs["bubbles"] = bubbles
+
     try:
-        await bot.send_message(
-            bot_id=bot_id,
-            chat_id=chat_id,
-            body=body,
-            wait_callback=False,
-        )
+        await bot.send_message(**kwargs)
     except Exception:
         logger.exception(
             "Не удалось отправить сообщение участнику",
@@ -355,6 +363,8 @@ async def _send_to_moderation_chat(
 
 async def notify_participant_accepted(bot: "Bot", app: "Application") -> None:
     """Заявка принята и передана на модерацию."""
+    from keyboards import back_to_main_menu_bubbles
+
     chat_id = await _resolve_user_chat_id(app.parent_huid)
     await _send_to_user(
         bot,
@@ -362,6 +372,7 @@ async def notify_participant_accepted(bot: "Bot", app: "Application") -> None:
         chat_id=chat_id,
         body=ACCEPTED_TEMPLATE,
         purpose="participant_accepted",
+        bubbles=back_to_main_menu_bubbles(),
     )
 
 
@@ -372,6 +383,8 @@ async def notify_participant_rejected(
 
     ``reason`` берётся из ``/notify_reject`` дословно.
     """
+    from keyboards import back_to_main_menu_bubbles
+
     chat_id = await _resolve_user_chat_id(app.parent_huid)
     await _send_to_user(
         bot,
@@ -379,6 +392,7 @@ async def notify_participant_rejected(
         chat_id=chat_id,
         body=REJECTED_TEMPLATE.format(reason=(reason or "").strip()),
         purpose="participant_rejected",
+        bubbles=back_to_main_menu_bubbles(),
     )
 
 
@@ -396,6 +410,8 @@ async def notify_participant_fix_needed(
     body = FIX_NEEDED_TEMPLATE
     if extra and extra.strip():
         body += FIX_NEEDED_EXTRA_TEMPLATE.format(extra=extra.strip())
+    from keyboards import fix_needed_notification_bubbles
+
     chat_id = await _resolve_user_chat_id(app.parent_huid)
     await _send_to_user(
         bot,
@@ -403,6 +419,7 @@ async def notify_participant_fix_needed(
         chat_id=chat_id,
         body=body,
         purpose="participant_fix_needed",
+        bubbles=fix_needed_notification_bubbles(),
     )
 
 
@@ -410,6 +427,8 @@ async def notify_participant_shortlist(
     bot: "Bot", app: "Application"
 ) -> None:
     """Работа попала в шорт-лист."""
+    from keyboards import back_to_main_menu_bubbles
+
     chat_id = await _resolve_user_chat_id(app.parent_huid)
     await _send_to_user(
         bot,
@@ -417,6 +436,7 @@ async def notify_participant_shortlist(
         chat_id=chat_id,
         body=SHORTLIST_TEMPLATE,
         purpose="participant_shortlist",
+        bubbles=back_to_main_menu_bubbles(),
     )
 
 
@@ -429,6 +449,8 @@ async def notify_participant_jury_result(
         if in_top_10
         else JURY_RESULT_NOT_IN_TOP10_TEMPLATE
     )
+    from keyboards import back_to_main_menu_bubbles
+
     chat_id = await _resolve_user_chat_id(app.parent_huid)
     await _send_to_user(
         bot,
@@ -436,6 +458,7 @@ async def notify_participant_jury_result(
         chat_id=chat_id,
         body=body,
         purpose=f"participant_jury_result_{'top10' if in_top_10 else 'out'}",
+        bubbles=back_to_main_menu_bubbles(),
     )
 
 
@@ -469,8 +492,8 @@ async def notify_moderation_chat_new_application(
     - В режиме ``IntakeMode.LINKS`` (или если файлов нет на диске) —
       отправляется только текстовая карточка со ссылкой/командой.
 
-    Если настроен ``EXPRESS_DEEPLINK_TEMPLATE``, добавляем кнопку
-    «🔎 Открыть в боте» с URL-ссылкой на DM с ботом.
+    Кнопки: «📄 Карточка» (``/find``) и «📄 Карточка в очереди»
+    (deeplink с ``/find``, если задан ``EXPRESS_DEEPLINK_TEMPLATE``).
     """
     from database.models import IntakeMode
 
@@ -488,7 +511,7 @@ async def notify_moderation_chat_new_application(
         title=app.title,
         files_pointer=_format_files_pointer(app),
     )
-    bubbles = _moderation_chat_open_in_bot_bubbles(bot)
+    bubbles = _moderation_new_application_bubbles(bot, app)
 
     attachments: list["OutgoingAttachment"] = []
     if app.intake_mode is IntakeMode.FILES:
@@ -531,12 +554,41 @@ async def notify_moderation_chat_new_application(
         )
 
 
+def _moderation_new_application_bubbles(bot: "Bot", app: "Application"):
+    """Кнопки уведомления о новой заявке: карточка и deeplink.
+
+    Всегда добавляет инлайн ``/find`` (работает в чате модерации для
+    модераторов после ``chat_gate``). Кнопка-ссылка — только если
+    настроен ``EXPRESS_DEEPLINK_TEMPLATE`` с ``build_find_deeplink``.
+    """
+    from pybotx import BubbleMarkup
+
+    from utils.deeplink import build_find_deeplink
+
+    find_cmd = f"/find {app.br_id}"
+    bubbles = BubbleMarkup()
+    bubbles.add_button(
+        command=find_cmd,
+        label="📄 Карточка",
+        new_row=True,
+    )
+    bot_id = getattr(bot, "id", None) or resolve_bot_id(bot)
+    link = build_find_deeplink(bot_id, app.br_id)
+    if link:
+        bubbles.add_button(
+            command=find_cmd,
+            label="📄 Карточка в очереди",
+            link=link,
+            new_row=True,
+        )
+    return bubbles
+
+
 def _moderation_chat_open_in_bot_bubbles(bot: "Bot"):
     """``BubbleMarkup`` с одной кнопкой-ссылкой «Открыть в боте».
 
-    Возвращает None, если deeplink не настроен — `_send_to_moderation_chat`
-    тогда просто не добавит поле ``bubbles`` в JSON (см. правило
-    `.cursor/rules/pybotx-bubbles.mdc`).
+    Для служебных уведомлений (диск, жюри) без привязки к заявке.
+    Возвращает None, если deeplink не настроен.
     """
     from pybotx import BubbleMarkup
 

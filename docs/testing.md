@@ -61,6 +61,7 @@ python -m pytest tests/test_application_flow.py tests/test_jury_flow.py -q
 | `tests/test_jury_algorithm.py` | 3 классических кейса алгоритма раунда: 1 раунд без ничьи, ничья на границе, эскалация в раунд 3 | [`architecture.md`](architecture.md) → «Модель данных» (jury_rounds, jury_votes) |
 | `tests/test_application_flow.py` | `services.applications`: normalize_child_name, AgeCategory.from_age, _select_next_br_number (мок-сессия), find_possible_duplicate edge-cases, валидация `intake_mode` | [`architecture.md`](architecture.md) → «applications» |
 | `tests/test_moderation_flow.py` | `services.moderation`: parse_status_group алиасы, _moderation_status_by_value / _voting_status_by_value, _build_queue_where_clauses, DEFAULT_QUEUE_STATUSES | [`architecture.md`](architecture.md) → «applications» (поля статусов) |
+| `tests/test_deeplink.py` | `utils.deeplink`: `build_bot_deeplink`, `build_find_deeplink` (плейсхолдеры, encoding, graceful degradation) | [`architecture.md`](architecture.md) → «Deeplink в чате модерации» |
 | `tests/test_jury_flow.py` | Расширение `test_jury_algorithm`: размер top_n, above_tie == TOP_N, детерминизм сортировки, `services.pools.all_pools()` = 3×3 = 9 пулов | [`architecture.md`](architecture.md) → «jury_pool_assignments» |
 | `tests/test_registry.py` | `services.registry`: `registry_export_filename`, `transliterate_icao_9303`, `jury_column_header`, `view_command_or_link`, `contact_field`, `jury_outcome` + smoke-рендер XLSX через `_render_registry_workbook` (без БД) | [`registry-spec.md`](registry-spec.md) → §2.2, §2.3.1, §4 |
 | `tests/test_discovery_welcome.py` | `services.discovery`: welcome-DM модератору и жюри несёт меню роли (`/queue`, `/jury_tasks`, …) и параллельно ставит FSM-state `moderator:menu` / `jury:menu`; крайний кейс — нет `users.chat_id` (DM не уходит, но state записывается) | [`architecture.md`](architecture.md) → «Discovery» |
@@ -124,6 +125,8 @@ python -m pytest tests/test_application_flow.py tests/test_jury_flow.py -q
    и кнопки (исправление → «Подать исправленную работу»).
 
 **Модератор:**
+5. В чате модерации на новую заявку: «Быстрые команды», кнопка «📄 Карточка»
+   → карточка с фото; при `EXPRESS_DEEPLINK_TEMPLATE` — «📄 Карточка в очереди».
 6. `/queue` (дефолт `на_модерации + нужно_исправить`), затем `/queue all`.
 7. `/find BR-2026-0001` → карточка заявки с инлайн-кнопками.
 8. `/status BR-... модерация допущено`, `/comment BR-... <текст>`.

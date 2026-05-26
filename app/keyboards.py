@@ -231,6 +231,43 @@ def jury_menu_bubbles() -> BubbleMarkup:
     return bubbles
 
 
+def back_to_moderator_menu_bubbles() -> BubbleMarkup:
+    """Одна кнопка возврата в меню модератора."""
+    bubbles = BubbleMarkup()
+    bubbles.add_button(
+        command="/moderator", label="🛡 Меню модератора", new_row=True
+    )
+    return bubbles
+
+
+def back_to_jury_menu_bubbles() -> BubbleMarkup:
+    """Одна кнопка возврата в меню жюри."""
+    bubbles = BubbleMarkup()
+    bubbles.add_button(command="/jury", label="⚖️ Меню жюри", new_row=True)
+    return bubbles
+
+
+def back_to_admin_menu_bubbles() -> BubbleMarkup:
+    """Одна кнопка возврата в панель администратора."""
+    bubbles = BubbleMarkup()
+    bubbles.add_button(command="/admin", label="◀ В админку", new_row=True)
+    return bubbles
+
+
+def fix_needed_notification_bubbles() -> BubbleMarkup:
+    """Клавиатура DM «нужна правка»: контакты + главное меню."""
+    bubbles = BubbleMarkup()
+    bubbles.add_button(
+        command="/menu_contacts",
+        label="📞 Контакты организаторов",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/start", label="◀ Назад в главное меню", new_row=True
+    )
+    return bubbles
+
+
 # =====================================================================
 # Меню администратора
 # =====================================================================
@@ -657,6 +694,10 @@ __all__ = [
     "my_application_detail_bubbles",
     "moderator_menu_bubbles",
     "jury_menu_bubbles",
+    "back_to_moderator_menu_bubbles",
+    "back_to_jury_menu_bubbles",
+    "back_to_admin_menu_bubbles",
+    "fix_needed_notification_bubbles",
     "admin_main_menu_bubbles",
     "admin_confirm_bubbles",
     "admin_roles_menu_bubbles",
