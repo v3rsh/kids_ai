@@ -29,6 +29,7 @@ from .common import collector as common_collector
 
 # Ветка участника: главное меню, анкета, файлы, согласия.
 from .user import collector as user_collector
+from .user_applications import collector as user_applications_collector
 from .user_intake import collector as user_intake_collector
 from .user_files import collector as user_files_collector
 from .user_confirm import collector as user_confirm_collector
@@ -45,11 +46,16 @@ from .jury import collector as jury_collector
 from .jury_tasks import collector as jury_tasks_collector
 from .jury_status import collector as jury_status_collector
 
-# Технические админ-команды: /disk, /intake_mode, /admin_state.
+# Технические админ-команды: /admin, /disk, /intake_mode, /admin_state.
 from .admin import collector as admin_collector
 
 # Админ-роли: discovery-кнопки, выдача/отзыв ролей, чат модерации.
 from .admin_roles import collector as admin_roles_collector
+
+# Разделы админ-меню.
+from .admin_chat import collector as admin_chat_collector
+from .admin_users import collector as admin_users_collector
+from .admin_stats import collector as admin_stats_collector
 
 
 def get_all_collectors() -> list:
@@ -63,6 +69,7 @@ def get_all_collectors() -> list:
         common_collector,
         # Ветка A — родитель/участник
         user_collector,
+        user_applications_collector,
         user_intake_collector,
         user_files_collector,
         user_confirm_collector,
@@ -79,6 +86,9 @@ def get_all_collectors() -> list:
         # Ветка D — админ-команды
         admin_collector,
         admin_roles_collector,
+        admin_chat_collector,
+        admin_users_collector,
+        admin_stats_collector,
     ]
 
 

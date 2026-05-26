@@ -41,15 +41,30 @@ from config import DISK_BLOCK_PCT, DISK_WARN_PCT
 from database.db import get_session
 from database.models import DiskAlert, IntakeMode, JuryMember, Moderator, User
 from fsm import cleanup_middleware, fsm_middleware
+from handlers.common import register_state_handler
+from keyboards import (
+    admin_chat_menu_bubbles,
+    admin_confirm_bubbles,
+    admin_dangerous_menu_bubbles,
+    admin_main_menu_bubbles,
+    admin_moderator_shortcuts_bubbles,
+    admin_roles_menu_bubbles,
+    admin_stats_menu_bubbles,
+    admin_system_menu_bubbles,
+    admin_users_menu_bubbles,
+)
 from services import access
 from services.access import admin_only, moderator_only
+from services.admin import overview_counters
 from services.intake_mode import (
     SYSTEM_HUID,
     get_intake_mode,
     maybe_auto_switch_to_links,
     set_intake_mode,
 )
+from states import AdminAction, AdminFlow
 from services.storage import (
+    cleanup_old_disk_alerts,
     get_disk_usage_bytes,
     get_disk_usage_pct,
 )
@@ -60,6 +75,374 @@ collector = HandlerCollector()
 
 
 _MOSCOW_TZ = timezone(timedelta(hours=3))
+
+ADMIN_MENU_TEXT = (
+    "**Админка** «Безопасные рисунки».\n\n"
+    "Выберите раздел или введите команду вручную. "
+    "Полный список — /admin_help."
+)
+
+ADMIN_HELP_TEXT = (
+    "**Справка администратора**\n\n"
+    "**Главное:**\n"
+    "  /admin — меню админки\n"
+    "  /admin_help — эта справка\n\n"
+    "**Разделы (кнопки):**\n"
+    "  👥 Роли — модераторы и жюри, назначение/отзыв\n"
+    "  💬 Чат модерации — статус, тест, discovery, сброс\n"
+    "  🖥 Система — диск, intake_mode, диагностика, alerts\n"
+    "  🙋 Пользователи — поиск по HUID, resync CTS\n"
+    "  📊 Статистика — расширенная аналитика\n"
+    "  🛡 Меню модератора — шорткаты /queue, /export, …\n"
+    "  ⚠️ Опасные операции — с подтверждением\n\n"
+    "**Технические команды:**\n"
+    "  /disk, /intake_mode, /admin_state\n"
+    "  /admin_roles, /admin_disk_alerts, /admin_jury_flush"
+)
+
+
+def _btn_data(message: IncomingMessage) -> dict:
+    data = getattr(message, "data", None)
+    return data if isinstance(data, dict) else {}
+
+
+async def _show_admin_menu(message: IncomingMessage, bot: Bot) -> None:
+    """Отрисовать главное меню админки."""
+    overview = await overview_counters()
+    await message.state.fsm.set_state(AdminFlow.admin_menu)
+    await reply_to_user(
+        message,
+        bot,
+        ADMIN_MENU_TEXT,
+        bubbles=admin_main_menu_bubbles(
+            moderators_count=overview.moderators_count,
+            jury_count=overview.jury_count,
+            chat_configured=overview.moderation_chat_configured,
+            intake_mode=overview.intake_mode,
+            disk_pct=overview.disk_pct,
+        ),
+    )
+
+
+# =====================================================================
+# /admin — точка входа
+# =====================================================================
+
+
+@collector.command(
+    "/admin",
+    description="Меню администратора",
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@admin_only
+async def cmd_admin_menu(message: IncomingMessage, bot: Bot) -> None:
+    """Главное меню администратора."""
+    logger.info("Админ открыл меню", huid=str(message.sender.huid))
+    await _show_admin_menu(message, bot)
+
+
+@collector.command(
+    "/admin_help",
+    description="Справка по командам администратора",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@admin_only
+async def cmd_admin_help(message: IncomingMessage, bot: Bot) -> None:
+    """Текстовая справка админки."""
+    overview = await overview_counters()
+    await message.state.fsm.set_state(AdminFlow.admin_menu)
+    await reply_to_user(
+        message,
+        bot,
+        ADMIN_HELP_TEXT,
+        bubbles=admin_main_menu_bubbles(
+            moderators_count=overview.moderators_count,
+            jury_count=overview.jury_count,
+            chat_configured=overview.moderation_chat_configured,
+            intake_mode=overview.intake_mode,
+            disk_pct=overview.disk_pct,
+        ),
+    )
+
+
+@collector.command(
+    "/admin_section",
+    description="Раздел админ-меню",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@admin_only
+async def cmd_admin_section(message: IncomingMessage, bot: Bot) -> None:
+    """Диспетчер разделов админ-меню."""
+    section = (_btn_data(message).get("section") or "").strip().lower()
+    await message.state.fsm.set_state(AdminFlow.admin_menu)
+
+    section_map = {
+        "roles": (
+            "**Раздел: роли**\n\n"
+            "Управление модераторами и членами жюри.",
+            admin_roles_menu_bubbles(),
+        ),
+        "chat": (
+            "**Раздел: чат модерации**\n\n"
+            "Настройка и диагностика служебного чата.",
+            admin_chat_menu_bubbles(),
+        ),
+        "system": (
+            "**Раздел: система**\n\n"
+            "Диск, режим приёма, диагностика.",
+            admin_system_menu_bubbles(),
+        ),
+        "users": (
+            "**Раздел: пользователи**\n\n"
+            "Поиск профиля по HUID и resync CTS.",
+            admin_users_menu_bubbles(),
+        ),
+        "stats": (
+            "**Раздел: статистика**\n\n"
+            "Расширенная аналитика конкурса.",
+            admin_stats_menu_bubbles(),
+        ),
+        "moderator": (
+            "**Шорткаты модератора**\n\n"
+            "Быстрый доступ к командам модерации.",
+            admin_moderator_shortcuts_bubbles(),
+        ),
+        "dangerous": (
+            "**⚠️ Опасные операции**\n\n"
+            "Каждое действие требует подтверждения.",
+            admin_dangerous_menu_bubbles(),
+        ),
+    }
+    if section not in section_map:
+        await _show_admin_menu(message, bot)
+        return
+    text, bubbles = section_map[section]
+    await reply_to_user(message, bot, text, bubbles=bubbles)
+
+
+# =====================================================================
+# Опасные операции
+# =====================================================================
+
+_DANGER_LABELS = {
+    "force_links": "принудительный переход в режим LINKS",
+    "cleanup_disk_alerts": "очистка disk_alerts старше 30 дней",
+    "clear_chat": "сброс moderation_chat_id",
+    "flush_jury": "сброс буфера уведомлений жюри",
+}
+
+
+@collector.command(
+    "/admin_danger",
+    description="Запрос опасной операции (admin)",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@admin_only
+async def cmd_admin_danger(message: IncomingMessage, bot: Bot) -> None:
+    """Первый шаг: показать подтверждение опасной операции."""
+    action = (_btn_data(message).get("action") or "").strip()
+    label = _DANGER_LABELS.get(action)
+    if not label:
+        await reply_to_user(
+            message,
+            bot,
+            "Неизвестная операция.",
+            bubbles=admin_dangerous_menu_bubbles(),
+        )
+        return
+    await reply_to_user(
+        message,
+        bot,
+        f"⚠️ Подтвердите: **{label}**?",
+        bubbles=admin_confirm_bubbles(action=action),
+    )
+
+
+@collector.command(
+    "/admin_confirm",
+    description="Подтверждение опасной операции (admin)",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@admin_only
+async def cmd_admin_confirm(message: IncomingMessage, bot: Bot) -> None:
+    """Второй шаг: выполнить или отменить опасную операцию."""
+    data = _btn_data(message)
+    action = (data.get("action") or "").strip()
+    confirm = (data.get("confirm") or "").strip().lower()
+
+    if confirm != "yes":
+        await reply_to_user(
+            message,
+            bot,
+            "❌ Операция отменена.",
+            bubbles=admin_dangerous_menu_bubbles(),
+        )
+        return
+
+    body = ""
+    try:
+        if action == "force_links":
+            current = await get_intake_mode()
+            if current is IntakeMode.LINKS:
+                body = "ℹ️ Режим уже **LINKS**."
+            else:
+                await set_intake_mode(
+                    IntakeMode.LINKS,
+                    by_huid=message.sender.huid,
+                    reason="admin forced switch via /admin_danger",
+                )
+                body = f"✅ Режим переключён: **{current.value.upper()} → LINKS**."
+        elif action == "cleanup_disk_alerts":
+            deleted = await cleanup_old_disk_alerts(days=30)
+            body = f"✅ Удалено записей disk_alerts: **{deleted}**."
+        elif action == "clear_chat":
+            changed = await access.clear_moderation_chat()
+            body = (
+                "✅ Чат модерации сброшен."
+                if changed
+                else "ℹ️ Чат модерации и так не был настроен."
+            )
+        elif action == "flush_jury":
+            from services.notifications import flush_jury_event_aggregator
+
+            await flush_jury_event_aggregator()
+            body = "✅ Буфер уведомлений жюри сброшен."
+        else:
+            body = "❌ Неизвестная операция."
+    except Exception:
+        logger.exception("Ошибка опасной операции админа", action=action)
+        body = f"❌ Не удалось выполнить «{action}». См. логи."
+
+    await reply_to_user(
+        message,
+        bot,
+        body,
+        bubbles=admin_dangerous_menu_bubbles(),
+    )
+
+
+@collector.command(
+    "/admin_disk_alerts",
+    description="История disk_alerts (admin)",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@admin_only
+async def cmd_admin_disk_alerts(message: IncomingMessage, bot: Bot) -> None:
+    """Последние 20 записей disk_alerts."""
+    async with get_session()() as session:
+        result = await session.execute(
+            select(DiskAlert.threshold_pct, DiskAlert.created_at)
+            .order_by(DiskAlert.created_at.desc())
+            .limit(20)
+        )
+        rows = result.all()
+
+    if not rows:
+        body = "📜 Записей disk_alerts пока нет."
+    else:
+        lines = ["📜 **Последние disk_alerts:**", ""]
+        for threshold, when in rows:
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            local = when.astimezone(_MOSCOW_TZ).strftime("%Y-%m-%d %H:%M")
+            lines.append(f"• {threshold} % — {local} (Europe/Moscow)")
+        body = "\n".join(lines)
+
+    await reply_to_user(
+        message,
+        bot,
+        body,
+        bubbles=admin_system_menu_bubbles(),
+    )
+
+
+@collector.command(
+    "/admin_jury_flush",
+    description="Сброс буфера уведомлений жюри (admin)",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@admin_only
+async def cmd_admin_jury_flush(message: IncomingMessage, bot: Bot) -> None:
+    """Немедленный flush агрегатора уведомлений жюри."""
+    from services.notifications import flush_jury_event_aggregator
+
+    try:
+        await flush_jury_event_aggregator()
+        body = "✅ Буфер уведомлений жюри сброшен."
+    except Exception:
+        logger.exception("admin_jury_flush упал")
+        body = "❌ Не удалось сбросить буфер. См. логи."
+    await reply_to_user(
+        message,
+        bot,
+        body,
+        bubbles=admin_system_menu_bubbles(),
+    )
+
+
+@collector.command(
+    "/admin_shortcut_find",
+    description="Найти заявку по BR-ID (admin shortcut)",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@admin_only
+async def cmd_admin_shortcut_find(message: IncomingMessage, bot: Bot) -> None:
+    """FSM: ввод BR-ID для вызова /find."""
+    await message.state.fsm.set_state(AdminAction.admin_action_shortcut_find_brid)
+    await reply_to_user(
+        message,
+        bot,
+        "Введите ID заявки (например, BR-2026-0001) следующим сообщением.",
+        bubbles=BubbleMarkup(),
+    )
+
+
+async def _state_handle_shortcut_find_brid(
+    message: IncomingMessage, bot: Bot
+) -> None:
+    """FSM: карточка заявки по BR-ID."""
+    from handlers.moderator_actions import _card_action_buttons
+    from handlers.moderator_queue import _full_card
+    from services.moderation import find_by_br_id
+
+    br_id = (message.body or "").strip().upper()
+    await message.state.fsm.clear()
+    if not br_id:
+        await reply_to_user(
+            message,
+            bot,
+            "ID не указан.",
+            bubbles=admin_moderator_shortcuts_bubbles(),
+        )
+        return
+    app = await find_by_br_id(br_id)
+    if app is None:
+        await reply_to_user(
+            message,
+            bot,
+            f"Заявка {br_id} не найдена.",
+            bubbles=admin_moderator_shortcuts_bubbles(),
+        )
+        return
+    await reply_to_user(
+        message,
+        bot,
+        _full_card(app),
+        bubbles=_card_action_buttons(app),
+    )
+
+
+register_state_handler(
+    AdminAction.admin_action_shortcut_find_brid.value,
+    _state_handle_shortcut_find_brid,
+)
 
 
 # =====================================================================

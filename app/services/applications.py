@@ -434,11 +434,100 @@ async def mark_as_actual_version(
     )
 
 
+@dataclass(frozen=True)
+class ParentApplicationsPage:
+    """Страница списка заявок родителя для «Мои заявки».
+
+    ``items`` — заявки текущей страницы без eager-load файлов
+    (участнику файлы не показываем). ``total`` — общее число заявок
+    родителя по ``parent_huid``.
+    """
+
+    items: list[Application]
+    total: int
+    page: int
+    page_size: int
+
+    @property
+    def total_pages(self) -> int:
+        if self.page_size <= 0:
+            return 0
+        return max(1, (self.total + self.page_size - 1) // self.page_size)
+
+
+async def list_by_parent_huid(
+    parent_huid: UUID,
+    *,
+    page: int = 1,
+    page_size: int = 6,
+) -> ParentApplicationsPage:
+    """Список заявок родителя для экрана «Мои заявки».
+
+    Один COUNT + один SELECT с ``ORDER BY created_at DESC``. Файлы
+    не подгружаются — участнику они не нужны.
+    """
+    page = max(page, 1)
+    page_size = max(page_size, 1)
+    offset = (page - 1) * page_size
+
+    async with get_session()() as session:
+        total = (
+            await session.execute(
+                select(func.count())
+                .select_from(Application)
+                .where(Application.parent_huid == parent_huid)
+            )
+        ).scalar_one()
+
+        result = await session.execute(
+            select(Application)
+            .where(Application.parent_huid == parent_huid)
+            .order_by(Application.created_at.desc(), Application.id.desc())
+            .offset(offset)
+            .limit(page_size)
+        )
+        items = list(result.scalars().all())
+
+    return ParentApplicationsPage(
+        items=items,
+        total=int(total),
+        page=page,
+        page_size=page_size,
+    )
+
+
+async def get_for_participant(
+    br_id: str,
+    parent_huid: UUID,
+) -> Application | None:
+    """Заявка по ``br_id``, доступная только её автору.
+
+    Возвращает ``None``, если заявка не найдена или принадлежит другому
+    родителю — без утечки факта существования чужой заявки.
+    """
+    needle = (br_id or "").strip().upper()
+    if not needle:
+        return None
+
+    async with get_session()() as session:
+        app = (
+            await session.execute(
+                select(Application).where(Application.br_id == needle)
+            )
+        ).scalar_one_or_none()
+        if app is None or app.parent_huid != parent_huid:
+            return None
+        return app
+
+
 __all__ = [
     "ApplicationFileSpec",
+    "ParentApplicationsPage",
     "create_application",
     "assign_br_id",
     "find_possible_duplicate",
+    "get_for_participant",
+    "list_by_parent_huid",
     "mark_as_actual_version",
     "normalize_child_name",
     "register_application_files",

@@ -309,3 +309,4 @@ async def cmd_apply(message: IncomingMessage, bot: Bot) -> None:
 from handlers import user_intake as _user_intake  # noqa: E402, F401
 from handlers import user_files as _user_files  # noqa: E402, F401
 from handlers import user_confirm as _user_confirm  # noqa: E402, F401
+from handlers import user_applications as _user_applications  # noqa: E402, F401

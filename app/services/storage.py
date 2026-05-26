@@ -510,6 +510,36 @@ async def write_reason_txt(
     return path
 
 
+async def read_rejection_reason(app: Application) -> str | None:
+    """Прочитать причину отклонения из ``reason.txt`` в ``99_rejected/``.
+
+    Используется как fallback для заявок, отклонённых до сохранения
+    причины в ``Application.moderator_comment``. Ищет файл по
+    ``br_id`` рекурсивно под ``get_rejected_root()``.
+    """
+    root = get_rejected_root()
+    br_id = app.br_id
+    reason_prefix = "Причина отклонения: "
+
+    def _find_and_parse() -> str | None:
+        if not root.is_dir():
+            return None
+        for reason_path in root.rglob(REASON_TXT):
+            try:
+                text = reason_path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if br_id not in text:
+                continue
+            for line in text.splitlines():
+                if line.startswith(reason_prefix):
+                    value = line[len(reason_prefix) :].strip()
+                    return value or None
+        return None
+
+    return await asyncio.to_thread(_find_and_parse)
+
+
 # =====================================================================
 # Отклонение: физическое удаление + перенос метаданных
 # =====================================================================
@@ -1015,6 +1045,25 @@ async def get_application_files_for_chat(
     return attachments
 
 
+async def cleanup_old_disk_alerts(*, days: int = 30) -> int:
+    """Удалить записи ``disk_alerts`` старше ``days`` дней.
+
+    Returns:
+        Число удалённых строк.
+    """
+    from sqlalchemy import delete
+
+    from database.db import get_session
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    async with get_session()() as session:
+        result = await session.execute(
+            delete(DiskAlert).where(DiskAlert.created_at < cutoff)
+        )
+        await session.commit()
+        return int(result.rowcount or 0)
+
+
 __all__ = [
     "REJECTED_FOLDER_NAME",
     "PREVIEW_FILENAME",
@@ -1034,6 +1083,7 @@ __all__ = [
     "write_description_txt",
     "write_meta_txt",
     "write_reason_txt",
+    "read_rejection_reason",
     "move_to_rejected",
     "delete_application_files",
     # Disk
@@ -1043,6 +1093,7 @@ __all__ = [
     "estimate_hours_left",
     "check_and_alert_disk",
     "start_disk_monitor_task",
+    "cleanup_old_disk_alerts",
     # Preview / files
     "get_preview_path",
     "get_application_files_for_chat",

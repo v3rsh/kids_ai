@@ -44,10 +44,16 @@ from pybotx import (
 )
 
 from fsm import cleanup_middleware, fsm_middleware
-from keyboards import jury_menu_bubbles, main_menu_bubbles, moderator_menu_bubbles
+from keyboards import (
+    admin_main_menu_bubbles,
+    jury_menu_bubbles,
+    main_menu_bubbles,
+    moderator_menu_bubbles,
+)
 from services import discovery
 from services import users as users_service
-from states import JuryFlow, ModeratorFlow
+from services.admin import overview_counters
+from states import AdminFlow, JuryFlow, ModeratorFlow
 from utils.bot_utils import reply_to_user
 
 
@@ -290,6 +296,22 @@ async def default_handler(message: IncomingMessage, bot: Bot) -> None:
             bot,
             DEFAULT_FALLBACK_TEXT,
             bubbles=jury_menu_bubbles(),
+        )
+        return
+
+    if current_state == AdminFlow.admin_menu.value:
+        overview = await overview_counters()
+        await reply_to_user(
+            message,
+            bot,
+            DEFAULT_FALLBACK_TEXT,
+            bubbles=admin_main_menu_bubbles(
+                moderators_count=overview.moderators_count,
+                jury_count=overview.jury_count,
+                chat_configured=overview.moderation_chat_configured,
+                intake_mode=overview.intake_mode,
+                disk_pct=overview.disk_pct,
+            ),
         )
         return
 

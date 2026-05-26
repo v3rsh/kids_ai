@@ -76,6 +76,28 @@ class JuryFlow(str, Enum):
     jury_menu = "jury:menu"
 
 
+class AdminFlow(str, Enum):
+    """Контекстные состояния ветки администратора.
+
+    ``admin_menu`` — пользователь находится в главном меню админки
+    (открыл /admin). Свободный текст перерисовывает меню админа.
+    """
+
+    admin_menu = "admin:menu"
+
+
+class AdminAction(str, Enum):
+    """Диалоговые шаги админки (ввод HUID, текста, подтверждения)."""
+
+    admin_action_add_role_role = "admin:action:add_role_role"
+    admin_action_add_role_huid = "admin:action:add_role_huid"
+    admin_action_find_user_huid = "admin:action:find_user_huid"
+    admin_action_chat_test_text = "admin:action:chat_test_text"
+    admin_action_shortcut_find_brid = "admin:action:shortcut_find_brid"
+    admin_action_resend_welcome_role = "admin:action:resend_welcome_role"
+    admin_action_resend_welcome_huid = "admin:action:resend_welcome_huid"
+
+
 class JuryTaskFlow(str, Enum):
     """Прохождение задачи жюри.
 

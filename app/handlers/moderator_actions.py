@@ -564,6 +564,13 @@ async def _send_notify_fix(
             by_huid=message.sender.huid,
         )
 
+    if extra and extra.strip():
+        await add_comment(
+            br_id=app.br_id,
+            text=extra.strip(),
+            by_huid=message.sender.huid,
+        )
+
     try:
         from services import notifications  # runtime-импорт (ветка D)
 
@@ -709,6 +716,12 @@ async def _apply_reject(
     if not status_result.ok:
         error_lines.append(
             f"Не удалось обновить статус: {status_result.error}"
+        )
+    elif reason.strip():
+        await add_comment(
+            br_id=br_id,
+            text=reason.strip(),
+            by_huid=message.sender.huid,
         )
 
     try:
