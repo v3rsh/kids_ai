@@ -10,7 +10,7 @@
 """
 import asyncio
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from uuid import UUID
 
 import aiofiles
@@ -19,6 +19,9 @@ from pybotx import Bot, BubbleMarkup, IncomingMessage
 from pybotx.models.attachments import OutgoingAttachment
 
 from utils.message_tracking import track_transient_message
+
+if TYPE_CHECKING:
+    from database.models import Application
 
 
 def resolve_bot_id(bot: Bot) -> UUID | None:
@@ -329,3 +332,69 @@ def format_numbered_file_caption(
 ) -> str:
     """Подпись к N-му файлу заявки (2..total) в цепочке вложений."""
     return f"📎 {br_id}: файл {index} из {total} — {filename}"
+
+
+def format_anonymous_file_caption(index: int, total: int) -> str:
+    """Подпись к N-му файлу без идентификаторов (экран жюри)."""
+    return f"📎 Файл {index} из {total}"
+
+
+async def send_application_files_with_card(
+    message: IncomingMessage,
+    bot: Bot,
+    *,
+    app: "Application",
+    body: str,
+    bubbles: Optional[BubbleMarkup] = None,
+    anonymous_extra_captions: bool = False,
+) -> bool:
+    """Отправить все файлы заявки: первый с карточкой, остальные — с подписью.
+
+    Returns:
+        True, если хотя бы один файл отправлен; False — fallback на текст.
+    """
+    try:
+        from services import storage as storage_service
+    except ImportError:
+        logger.exception(
+            "Не удалось импортировать storage для отправки файлов заявки",
+            br_id=app.br_id,
+        )
+        return False
+
+    try:
+        attachments = await storage_service.get_application_files_for_chat(app)
+    except Exception:
+        logger.exception(
+            "Не удалось загрузить файлы заявки",
+            br_id=app.br_id,
+        )
+        attachments = None
+
+    if not attachments:
+        return False
+
+    await delete_source_message(message, bot)
+    first, *rest = attachments
+    total = len(attachments)
+    await send_photo_transient(
+        message,
+        bot,
+        body=body,
+        photo=first,
+        bubbles=bubbles,
+    )
+    for idx, attachment in enumerate(rest, start=2):
+        if anonymous_extra_captions:
+            caption = format_anonymous_file_caption(idx, total)
+        else:
+            caption = format_numbered_file_caption(
+                app.br_id, idx, total, attachment.filename
+            )
+        await send_photo_transient(
+            message,
+            bot,
+            body=caption,
+            photo=attachment,
+        )
+    return True

@@ -2,8 +2,8 @@
 Handlers экрана задачи жюри.
 
 Реализует UX оценки одного раунда судьёй:
-- карусель работ одного пула в одном раунде (одно сообщение с превью,
-  заголовком и описанием, анонимность через локальный номер 1..N);
+- карусель работ одного пула в одном раунде (файлы работы + текст
+  и кнопки на первом фото, анонимность через локальный номер 1..N);
 - кнопки ``Да`` / ``Нет`` (черновик), помечаются эмодзи после выбора;
 - навигация ``← Предыдущая`` / ``Следующая →``;
 - ``📋 В меню задач`` — выход к списку задач (черновики сохраняются);
@@ -17,7 +17,6 @@ Handlers экрана задачи жюри.
 """
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Mapping, Optional
 from uuid import UUID
 
@@ -32,11 +31,9 @@ from services import jury as jury_service
 from services.access import jury_only
 from states import JuryTaskFlow
 from utils.bot_utils import (
-    delete_source_message,
-    load_user_photo,
     reply_to_user,
     safe_answer_transient,
-    send_photo_transient,
+    send_application_files_with_card,
 )
 from utils.contracts import PoolKey
 
@@ -187,36 +184,6 @@ def _render_task_text(
     return "\n".join(lines)
 
 
-async def _resolve_preview_path(app_id: UUID) -> Optional[Path]:
-    """Ленивый вызов ``services.storage.get_preview_path``.
-
-    Контракт ``StorageService`` (utils/contracts.py) этой функции пока
-    не описывает — она добавляется опционально на стороне storage.
-    Поэтому импортируем лениво и тихо игнорируем отсутствие.
-    """
-    try:
-        from services import storage as _storage
-    except ImportError:
-        return None
-    fn = getattr(_storage, "get_preview_path", None)
-    if fn is None or not callable(fn):
-        return None
-    try:
-        value = fn(app_id)
-        if hasattr(value, "__await__"):
-            value = await value
-        if value is None:
-            return None
-        path = Path(value)
-        return path if path.exists() else None
-    except Exception:
-        logger.exception(
-            "get_preview_path: ошибка обращения к services.storage",
-            application_id=str(app_id),
-        )
-        return None
-
-
 def _compute_submit_eligibility(
     drafts: Mapping[UUID, JuryVoteValue],
     candidates: list[Application],
@@ -325,16 +292,16 @@ async def _render_current_view(
         can_submit=can_submit,
     )
 
-    preview_path = await _resolve_preview_path(current_app.id)
-    if preview_path is not None:
-        photo = await load_user_photo(str(preview_path))
-        if photo is not None:
-            await delete_source_message(message, bot)
-            await send_photo_transient(
-                message, bot, body=text, photo=photo, bubbles=bubbles
-            )
-            return
-    await reply_to_user(message, bot, text, bubbles=bubbles)
+    sent = await send_application_files_with_card(
+        message,
+        bot,
+        app=current_app,
+        body=text,
+        bubbles=bubbles,
+        anonymous_extra_captions=True,
+    )
+    if not sent:
+        await reply_to_user(message, bot, text, bubbles=bubbles)
 
 
 def _back_to_tasks_bubbles() -> BubbleMarkup:

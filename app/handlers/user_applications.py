@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from loguru import logger
 from pybotx import Bot, HandlerCollector, IncomingMessage
-from pybotx.models.attachments import OutgoingAttachment
 
 from database.models import Application, IntakeMode
 from fsm import cleanup_middleware, fsm_middleware
@@ -24,11 +23,9 @@ from keyboards import (
 from services import applications as applications_service
 from services.user_application_views import format_application_detail, format_list_item
 from utils.bot_utils import (
-    delete_source_message,
-    load_user_photo,
     reply_to_user,
     safe_answer_transient,
-    send_photo_transient,
+    send_application_files_with_card,
 )
 
 collector = HandlerCollector()
@@ -101,50 +98,23 @@ async def _resolve_participant_app(
     return app
 
 
-async def _load_application_preview(app: Application) -> OutgoingAttachment | None:
-    """Превью работы для карточки участника."""
-    if app.intake_mode is IntakeMode.LINKS:
-        return None
-    try:
-        from services import storage as storage_service
-    except ImportError:
-        return None
-
-    try:
-        preview_path = await storage_service.get_preview_path(app)
-    except Exception:
-        logger.exception(
-            "Не удалось получить путь к preview.webp",
-            br_id=app.br_id,
-        )
-        return None
-    if preview_path is None:
-        return None
-    return await load_user_photo(str(preview_path))
-
-
 async def _render_application_detail(
     message: IncomingMessage,
     bot: Bot,
     *,
     app: Application,
 ) -> None:
-    """Карточка заявки — превью + caption или текстовый fallback."""
+    """Карточка заявки — все файлы работы или текстовый fallback."""
     body = await format_application_detail(app)
     bubbles = my_application_detail_bubbles(app)
-    photo = await _load_application_preview(app)
-    if photo is None:
+    if app.intake_mode is IntakeMode.LINKS:
         await reply_to_user(message, bot, body, bubbles=bubbles)
         return
-
-    await delete_source_message(message, bot)
-    await send_photo_transient(
-        message,
-        bot,
-        body=body,
-        photo=photo,
-        bubbles=bubbles,
+    sent = await send_application_files_with_card(
+        message, bot, app=app, body=body, bubbles=bubbles
     )
+    if not sent:
+        await reply_to_user(message, bot, body, bubbles=bubbles)
 
 
 async def _render_list(

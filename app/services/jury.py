@@ -895,10 +895,7 @@ async def get_open_tasks_for_jury(
     ``draft_vote`` — текущее значение черновика, чтобы handler мог
     отрисовать эмодзи на кнопке ``Да``/``Нет``.
 
-    Превью изображения и ``cloud_link`` подставляются ленивым
-    обращением к ``services.storage.get_preview_path``. Если функция
-    не найдена — в DTO будет ``preview_path=None`` и
-    ``cloud_link``=значение ``Application.cloud_link``.
+    ``cloud_link`` — публичная ссылка на папку (в режиме ``links``).
     """
     open_rounds_stmt = (
         select(JuryRound)
@@ -954,8 +951,6 @@ async def get_open_tasks_for_jury(
                 pool_assignments_cache[pool] = ids
             return jury_huid in ids
 
-        get_preview_path = _resolve_storage_preview_path()
-
         result: list[JuryTaskDTO] = []
         for round_obj in relevant_rounds:
             pool = PoolKey(
@@ -967,18 +962,6 @@ async def get_open_tasks_for_jury(
             candidates = await _get_round_candidates(round_obj, session=s)
             drafts_for_round = draft_by_round.get(round_obj.id, {})
             for local_no, app in enumerate(candidates, start=1):
-                preview_path = None
-                if get_preview_path is not None:
-                    try:
-                        preview_path = await _maybe_await(
-                            get_preview_path(app.id)
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Не удалось получить превью для заявки",
-                            application_id=str(app.id),
-                        )
-                        preview_path = None
                 result.append(
                     JuryTaskDTO(
                         round_id=round_obj.id,
@@ -988,38 +971,11 @@ async def get_open_tasks_for_jury(
                         local_no=local_no,
                         title=app.title,
                         description=app.description,
-                        preview_path=preview_path,
                         cloud_link=app.cloud_link,
                         draft_vote=drafts_for_round.get(app.id),
                     )
                 )
         return result
-
-
-def _resolve_storage_preview_path():
-    """Ленивая проверка наличия функции ``get_preview_path`` в services.storage.
-
-    Контракт ``StorageService`` пока её не описывает — функция
-    подключается опционально. Если функции нет — DTO отдаются
-    без превью (``preview_path=None``), handler покажет
-    «превью недоступно» в режиме files либо ``cloud_link``
-    в режиме links.
-    """
-    try:
-        from services import storage as _storage
-    except ImportError:
-        return None
-    fn = getattr(_storage, "get_preview_path", None)
-    return fn if callable(fn) else None
-
-
-async def _maybe_await(value):
-    """Поддержка как async, так и sync ``get_preview_path``."""
-    import inspect
-
-    if inspect.isawaitable(value):
-        return await value
-    return value
 
 
 # =====================================================================

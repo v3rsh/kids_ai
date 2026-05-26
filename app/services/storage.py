@@ -7,7 +7,6 @@
   ``BR_ID-ParentName-ChildName-Track-AgeCategory[-Nx].ext``;
 - генерацию текстовых метаданных (description.txt, meta.txt, reason.txt);
 - физическое удаление файлов работы при отклонении;
-- генерацию превью для жюри;
 - мониторинг занятого места и автопредупреждения по порогам WARN/BLOCK;
 - сбор файлов заявки для модератора (`/files`).
 
@@ -27,7 +26,6 @@ ATTACHMENTS_DIR/
           BR-2026-NNNN_original.jpg
           description.txt
           meta.txt
-          preview.webp
     02_ai/
     03_refine/
   99_rejected/                   # отклонённые (только метаданные)
@@ -42,7 +40,7 @@ Async-стратегия:
 - I/O-операции (`open`, `read`, `write`) выполняются через ``aiofiles``;
 - mkdir/rename/unlink выполняются через ``asyncio.to_thread``, потому что
   стандартные ``os.*`` функции синхронные и блокируют event loop;
-- ``shutil.disk_usage`` и Pillow.thumbnail — тоже через ``asyncio.to_thread``;
+- ``shutil.disk_usage`` — тоже через ``asyncio.to_thread``;
 - работа с БД (``DiskAlert``) — через ``get_session()``-фабрику.
 """
 from __future__ import annotations
@@ -85,9 +83,8 @@ if TYPE_CHECKING:
 #: Папка для отклонённых заявок.
 REJECTED_FOLDER_NAME = "99_rejected"
 
-#: Имя файла превью для жюри.
+#: Legacy-имя сгенерированного превью (исключается из выдачи файлов).
 PREVIEW_FILENAME = "preview.webp"
-PREVIEW_MAX_SIDE_PX = 1280
 
 #: Имена служебных txt-файлов внутри папки заявки.
 DESCRIPTION_TXT = "description.txt"
@@ -549,8 +546,8 @@ async def delete_application_files(app: Application) -> int:
     """Физически удалить все файлы работы заявки.
 
     Удаляются файлы вида ``BR-XXXX_original.*``, ``BR-XXXX_angle-N.*``,
-    ``BR-XXXX_ai-image.*``, ``BR-XXXX_diptych.*`` **и** превью
-    ``preview.webp``. Метаданные (``description.txt``, ``meta.txt``,
+    ``BR-XXXX_ai-image.*``, ``BR-XXXX_diptych.*``.
+    Метаданные (``description.txt``, ``meta.txt``,
     ``reason.txt``) НЕ трогаются.
 
     Returns:
@@ -881,97 +878,6 @@ async def check_and_alert_disk(bot=None) -> None:
 
 
 # =====================================================================
-# Превью для жюри
-# =====================================================================
-
-
-def _find_source_image_for_preview(folder: Path) -> Path | None:
-    """Выбрать исходник, из которого построить превью.
-
-    Приоритет: ``*_original.*`` > ``*_diptych.*`` > ``*_ai-image.*`` >
-    ``*_angle-1.*`` (затем 2, 3, 4). Если ничего из этих имён нет —
-    None (жюри в этом случае получит текстовую ссылку при ``LINKS``
-    или модератор увидит ошибку при ``FILES``).
-    """
-    if not folder.exists():
-        return None
-
-    candidates: list[tuple[int, Path]] = []
-    for entry in folder.iterdir():
-        if not entry.is_file():
-            continue
-        name = entry.name.lower()
-        if "_original." in name:
-            candidates.append((0, entry))
-        elif "_diptych." in name:
-            candidates.append((1, entry))
-        elif "_ai-image." in name:
-            candidates.append((2, entry))
-        elif "_angle-" in name:
-            # angle-1 → 10, angle-2 → 11 и т.д.
-            try:
-                angle = int(name.split("_angle-")[1].split(".")[0])
-            except (IndexError, ValueError):
-                angle = 99
-            candidates.append((10 + angle, entry))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda x: x[0])
-    return candidates[0][1]
-
-
-def _generate_preview_sync(source: Path, dst: Path) -> Path | None:
-    """Синхронная генерация превью (запускается через ``to_thread``).
-
-    Pillow не умеет async; HEIC требует ``pillow-heif`` (не входит в
-    зависимости MVP). При ошибке открытия — возвращает None.
-    """
-    try:
-        from PIL import Image  # noqa: WPS433 — namespaced thirdparty
-    except ImportError:
-        logger.error("Pillow не установлен; превью не сгенерировано")
-        return None
-
-    try:
-        with Image.open(source) as img:
-            img = img.convert("RGB")
-            img.thumbnail(
-                (PREVIEW_MAX_SIDE_PX, PREVIEW_MAX_SIDE_PX),
-                Image.Resampling.LANCZOS,
-            )
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            img.save(dst, format="WEBP", quality=85, method=6)
-    except Exception as exc:
-        logger.warning(
-            "Не удалось сгенерировать превью",
-            source=str(source),
-            error=str(exc),
-        )
-        return None
-    return dst
-
-
-async def get_preview_path(app: Application) -> Path | None:
-    """Путь к ``preview.webp`` для жюри.
-
-    Если файла нет — генерируется лениво из исходника. Возвращает
-    None, если исходника для превью нет (например, в режиме ``LINKS``
-    или папка пуста).
-    """
-    folder = get_application_folder(app)
-    preview = folder / PREVIEW_FILENAME
-
-    if preview.exists():
-        return preview
-
-    source = await asyncio.to_thread(_find_source_image_for_preview, folder)
-    if source is None:
-        return None
-
-    return await asyncio.to_thread(_generate_preview_sync, source, preview)
-
-
-# =====================================================================
 # Команда /files модератора
 # =====================================================================
 
@@ -1067,7 +973,6 @@ async def cleanup_old_disk_alerts(*, days: int = 30) -> int:
 __all__ = [
     "REJECTED_FOLDER_NAME",
     "PREVIEW_FILENAME",
-    "PREVIEW_MAX_SIDE_PX",
     "DESCRIPTION_TXT",
     "META_TXT",
     "REASON_TXT",
@@ -1095,6 +1000,5 @@ __all__ = [
     "start_disk_monitor_task",
     "cleanup_old_disk_alerts",
     # Preview / files
-    "get_preview_path",
     "get_application_files_for_chat",
 ]

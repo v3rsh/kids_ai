@@ -47,10 +47,8 @@ from services.moderation import (
     list_queue,
 )
 from utils.bot_utils import (
-    delete_source_message,
-    format_numbered_file_caption,
     reply_to_user,
-    send_photo_transient,
+    send_application_files_with_card,
 )
 
 
@@ -255,60 +253,6 @@ def _filters_summary(filters: QueueFilters) -> str:
 # =====================================================================
 
 
-async def _send_application_files_with_card(
-    message: IncomingMessage,
-    bot: Bot,
-    *,
-    app: Application,
-    body: str,
-    bubbles: BubbleMarkup,
-) -> None:
-    """Отправить все файлы заявки: первый с полной карточкой и кнопками."""
-    try:
-        from services import storage as storage_service
-    except ImportError:
-        logger.exception(
-            "Не удалось импортировать storage для карточки модератора",
-            br_id=app.br_id,
-        )
-        await reply_to_user(message, bot, body, bubbles=bubbles)
-        return
-
-    try:
-        attachments = await storage_service.get_application_files_for_chat(app)
-    except Exception:
-        logger.exception(
-            "Не удалось загрузить файлы заявки для карточки модератора",
-            br_id=app.br_id,
-        )
-        attachments = None
-
-    if not attachments:
-        await reply_to_user(message, bot, body, bubbles=bubbles)
-        return
-
-    await delete_source_message(message, bot)
-    first, *rest = attachments
-    total = len(attachments)
-    await send_photo_transient(
-        message,
-        bot,
-        body=body,
-        photo=first,
-        bubbles=bubbles,
-    )
-    for idx, attachment in enumerate(rest, start=2):
-        caption = format_numbered_file_caption(
-            app.br_id, idx, total, attachment.filename
-        )
-        await send_photo_transient(
-            message,
-            bot,
-            body=caption,
-            photo=attachment,
-        )
-
-
 async def render_application_card(
     message: IncomingMessage,
     bot: Bot,
@@ -335,9 +279,11 @@ async def render_application_card(
     if app.intake_mode is IntakeMode.LINKS:
         await reply_to_user(message, bot, body, bubbles=bubbles)
         return
-    await _send_application_files_with_card(
+    sent = await send_application_files_with_card(
         message, bot, app=app, body=body, bubbles=bubbles
     )
+    if not sent:
+        await reply_to_user(message, bot, body, bubbles=bubbles)
 
 
 # =====================================================================

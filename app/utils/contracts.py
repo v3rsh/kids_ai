@@ -136,9 +136,7 @@ class JuryTaskDTO:
     единый для всех судей; ID заявки судье **не показывается**
     ради анонимности.
 
-    ``preview_path`` — путь к превью 1280 px (в режиме ``files``);
     ``cloud_link`` — публичная ссылка на папку (в режиме ``links``).
-    Заполнено ровно одно из двух полей.
 
     ``draft_vote`` — текущее значение черновика (``YES``/``NO``/``None``),
     нужно для отрисовки эмодзи на кнопке.
@@ -151,7 +149,6 @@ class JuryTaskDTO:
     local_no: int
     title: str
     description: str
-    preview_path: Path | None
     cloud_link: str | None
     draft_vote: "JuryVoteValue | None"
 
