@@ -13,10 +13,14 @@
 - ``/notify_reject <ID> <причина>`` — уведомление об отклонении
   + перенос метаданных в ``99_rejected/<дата_модерации>/`` +
   физическое удаление файлов работы (через ``services.storage``);
-- ``/notify_shortlist <ID>`` — уведомление о попадании в шорт-лист;
 - ``/files <ID>`` — отдать модератору файлы в чат
   (в режиме ``files`` — вложениями, в режиме ``links`` — ссылку
   на папку участника).
+
+Команда ``/notify_shortlist`` удалена: попадание работы в шорт-лист
+теперь определяется автоматически по результатам жюри-сценария.
+Функция ``services.notifications.notify_participant_shortlist``
+остаётся живой и вызывается из ``services.jury``.
 
 Если команда вызвана **с инлайн-кнопки карточки** без обязательного
 аргумента (``/notify_reject``, ``/comment``) или с пустым опциональным
@@ -133,8 +137,28 @@ def _normalize_br_id(token: str) -> str:
 
 
 def _card_action_buttons(app: Application) -> BubbleMarkup:
-    """Полный набор инлайн-кнопок карточки заявки."""
+    """Полный набор инлайн-кнопок активной карточки заявки.
+
+    Состав зависит от статуса модерации:
+    - Для отклонённой заявки (``OTKLONENO``) кнопки действий (Допустить,
+      На исправление, Отклонить, Файлы) скрыты — файлы удалены с диска,
+      работать с такой заявкой моделирующее действие нельзя.
+    - Для активных статусов отображаются все стандартные действия.
+    """
     bubbles = BubbleMarkup()
+    if app.moderation_status is ModerationStatus.OTKLONENO:
+        bubbles.add_button(
+            command=f"/comment {app.br_id}",
+            label="💬 Комментарий",
+            new_row=True,
+        )
+        bubbles.add_button(
+            command="/queue",
+            label="📋 К очереди",
+            new_row=True,
+        )
+        return bubbles
+
     bubbles.add_button(
         command=f"/files {app.br_id}",
         label="📂 Файлы",
@@ -158,13 +182,92 @@ def _card_action_buttons(app: Application) -> BubbleMarkup:
         label="💬 Комментарий",
     )
     bubbles.add_button(
-        command=f"/notify_shortlist {app.br_id}",
-        label="🏆 В шорт-лист",
+        command="/queue",
+        label="📋 К очереди",
+        new_row=True,
+    )
+    return bubbles
+
+
+def _moderation_action_headline(new_status_value: str) -> str:
+    """Текст подтверждения по итогу смены статуса модерации."""
+    value = (new_status_value or "").strip().casefold()
+    if value == ModerationStatus.DOPUSHCHENO.value.casefold():
+        return "✅ **Заявка допущена.** Участник уведомлён."
+    if value == ModerationStatus.OTKLONENO.value.casefold():
+        return "🚫 **Заявка отклонена.**"
+    if value == ModerationStatus.NUZHNO_ISPRAVIT.value.casefold():
+        return "✏️ **Запрошены исправления.** Участник уведомлён."
+    if value == ModerationStatus.NA_MODERATSII.value.casefold():
+        return "↩ **Заявка возвращена на модерацию.**"
+    if value == ModerationStatus.PRINYATO.value.casefold():
+        return "🟢 **Заявка принята.**"
+    return f"**Статус модерации обновлён:** «{new_status_value or '—'}»."
+
+
+async def _show_action_confirmation(
+    message: IncomingMessage,
+    bot: Bot,
+    *,
+    app: Application,
+    headline: str,
+    extra: str | None = None,
+) -> None:
+    """Показать единое подтверждение действия модератора.
+
+    Состав сообщения:
+    - явный заголовок-плашка (что именно сделано);
+    - короткая сводка по заявке (BR-ID + название + ребёнок);
+    - опциональная строка ``extra`` (например, причина отклонения);
+    - клавиатура ``_post_action_bubbles`` (без кнопок действий — они
+      уже выполнены, осталась только навигация).
+    """
+    lines = [
+        headline,
+        "",
+        f"**ID:** {app.br_id}",
+        f"**Работа:** «{app.title}»",
+        f"**Ребёнок:** {app.child_name}, {app.child_age}",
+        f"**Трек:** {app.track.value} · {app.age_category.value}",
+        f"**Статус модерации:** {app.moderation_status.value}",
+    ]
+    if extra:
+        lines.append("")
+        lines.append(extra)
+    await reply_to_user(
+        message,
+        bot,
+        "\n".join(lines),
+        bubbles=_post_action_bubbles(app),
+    )
+
+
+def _post_action_bubbles(app: Application) -> BubbleMarkup:
+    """Клавиатура после успешного действия модератора.
+
+    Действия (допустить / отклонить / на исправление) исключают заявку
+    из активной очереди, поэтому кнопки этих действий мы убираем и
+    показываем нав-кнопки: «следующая в очереди», «к очереди»,
+    «карточка», «меню модератора».
+    """
+    bubbles = BubbleMarkup()
+    bubbles.add_button(
+        command="/queue_next",
+        label="▶ Следующая заявка",
         new_row=True,
     )
     bubbles.add_button(
         command="/queue",
         label="📋 К очереди",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command=f"/find {app.br_id}",
+        label="📄 Карточка заявки",
+    )
+    bubbles.add_button(
+        command="/moderator",
+        label="◀ В меню модератора",
         new_row=True,
     )
     return bubbles
@@ -275,6 +378,15 @@ async def cmd_status(message: IncomingMessage, bot: Bot) -> None:
     )
     if not result.ok:
         await reply_to_user(message, bot, f"❌ {result.error}")
+        return
+
+    if group == "moderation":
+        await _show_action_confirmation(
+            message,
+            bot,
+            app=result.application,
+            headline=_moderation_action_headline(result.new_value or ""),
+        )
         return
 
     body = (
@@ -485,18 +597,18 @@ async def _send_notify_fix(
         return
 
     refreshed = await find_by_br_id(app.br_id) or app
-    body = (
-        deadline_warning
-        + f"✏️ **Участнику отправлено сообщение** «требуется исправление» "
-        f"по {app.br_id}."
-    )
+    extra_block: str | None = None
+    if deadline_warning:
+        extra_block = deadline_warning.strip()
     if extra:
-        body += f"\n\n**Уточнение:** {extra}"
-    await reply_to_user(
+        extra_line = f"**Уточнение:** {extra}"
+        extra_block = f"{extra_block}\n\n{extra_line}" if extra_block else extra_line
+    await _show_action_confirmation(
         message,
         bot,
-        body + "\n\n" + _full_card(refreshed),
-        bubbles=_card_action_buttons(refreshed),
+        app=refreshed,
+        headline="✏️ **Запрошены исправления.** Участник уведомлён.",
+        extra=extra_block,
     )
 
 
@@ -619,28 +731,23 @@ async def _apply_reject(
         error_lines.append("Не удалось отправить участнику сообщение.")
 
     refreshed = status_result.application or app
-    head = "**Заявка отклонена.**"
     if storage_done and notify_done and not error_lines:
-        head = (
-            "**Заявка отклонена.** Файлы удалены, участник уведомлён."
-        )
+        headline = "🚫 **Заявка отклонена.** Файлы удалены, участник уведомлён."
+    else:
+        headline = "🚫 **Заявка отклонена.**"
 
-    body_lines = [
-        f"🚫 {head}",
-        "",
-        f"**ID:** {refreshed.br_id}",
-        f"**Причина:** {reason}",
-    ]
+    extra_lines: list[str] = [f"**Причина:** {reason}"]
     if error_lines:
-        body_lines.append("")
-        body_lines.append("**Замечания:**")
-        body_lines.extend(f"• {line}" for line in error_lines)
+        extra_lines.append("")
+        extra_lines.append("**Замечания:**")
+        extra_lines.extend(f"• {line}" for line in error_lines)
 
-    await reply_to_user(
+    await _show_action_confirmation(
         message,
         bot,
-        "\n".join(body_lines) + "\n\n" + _full_card(refreshed),
-        bubbles=_card_action_buttons(refreshed),
+        app=refreshed,
+        headline=headline,
+        extra="\n".join(extra_lines),
     )
 
 
@@ -697,71 +804,14 @@ async def _state_handle_fix_note(
 
 
 # =====================================================================
-# /notify_shortlist <ID>
-# =====================================================================
-
-
-@collector.command(
-    "/notify_shortlist",
-    description="Сообщение участнику: попадание в шорт-лист",
-    visible=False,
-    middlewares=[fsm_middleware, cleanup_middleware],
-)
-@moderator_only
-async def cmd_notify_shortlist(message: IncomingMessage, bot: Bot) -> None:
-    """Уведомление участнику: «Работа попала в шорт-лист»."""
-    arg = _split_command_argument(message)
-    br_id_token, _ = _split_id_and_rest(arg)
-    br_id = _normalize_br_id(br_id_token)
-    if not br_id:
-        await reply_to_user(
-            message,
-            bot,
-            "Команда: /notify_shortlist BR-2026-XXXX",
-        )
-        return
-    app = await find_by_br_id(br_id)
-    if app is None:
-        await reply_to_user(message, bot, f"Заявка {br_id} не найдена.")
-        return
-
-    try:
-        from services import notifications  # runtime-импорт (ветка D)
-
-        await notifications.notify_participant_shortlist(bot, app=app)
-    except NotImplementedError:
-        await reply_to_user(
-            message,
-            bot,
-            f"⏳ Сервис уведомлений ещё не реализован. "
-            f"{br_id} остался без сообщения о шорт-листе.",
-        )
-        return
-    except Exception:
-        logger.exception(
-            "Не удалось отправить участнику сообщение о шорт-листе",
-            br_id=br_id,
-        )
-        await reply_to_user(
-            message,
-            bot,
-            f"❌ Не удалось отправить сообщение по заявке {br_id}.",
-        )
-        return
-
-    await reply_to_user(
-        message,
-        bot,
-        f"🏆 **Участнику отправлено сообщение** «работа в шорт-листе» "
-        f"по {br_id}.\n\n"
-        + _full_card(app),
-        bubbles=_card_action_buttons(app),
-    )
-
-
-# =====================================================================
 # /files <ID>
 # =====================================================================
+#
+# Команда «🏆 В шорт-лист» (`/notify_shortlist`) удалена из ветки
+# модератора: попадание в шорт-лист теперь определяется автоматически
+# из жюри-сценария (см. services.jury). Сама нотификация
+# `notify_participant_shortlist` остаётся в services.notifications и
+# вызывается жюри-сервисом при формировании шорт-листа.
 
 
 @collector.command(
