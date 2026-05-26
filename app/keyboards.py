@@ -714,10 +714,10 @@ def file_upload_bubbles(*, can_add_more: bool, can_finish: bool) -> BubbleMarkup
 def final_confirm_bubbles() -> BubbleMarkup:
     """Финальное подтверждение заявки."""
     bubbles = BubbleMarkup()
-    bubbles.add_button(command="/intake_submit", label="Отправить заявку")
     bubbles.add_button(
         command="/intake_restart", label="Заполнить заново", new_row=True
     )
+    bubbles.add_button(command="/intake_submit", label="Отправить заявку")
     return bubbles
 
 
