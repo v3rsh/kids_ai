@@ -30,7 +30,7 @@
 |---|---|---|
 | `pgdata` | Данные PostgreSQL | переживает `docker compose down/up`, перезагрузку хоста |
 | `redisdata` | AOF Redis (FSM-анкеты, трекинг transient-сообщений) | то же; `--appendfsync everysec` гарантирует потерю не более 1 сек данных при kill -9 |
-| `attachments_volume` | Файлы заявок (`/app/data/attachments`) | то же |
+| bind-mount `./data` | Файлы заявок (`/app/data/attachments`), плюс прочие данные приложения; **не named volume**, доступно с хоста под обычным пользователем |
 
 Тома стираются только при `docker compose down -v` или явном `docker volume rm`.
 
@@ -116,7 +116,7 @@
 
 | Переменная | Описание | По умолчанию |
 |-----------|----------|-------------|
-| `ATTACHMENTS_DIR` | Корень файлового хранилища заявок; в контейнере — том `attachments_volume` (`/app/data/attachments`) | `data/attachments` |
+| `ATTACHMENTS_DIR` | Корень файлового хранилища заявок; в контейнере — bind-mount `./data/attachments` хоста → `/app/data/attachments`. Структура: `<YYYY-MM-DD>/<01_traditional|02_ai|03_refine>/<возраст>/BR-...`, отклонённые — `99_rejected/<YYYY-MM-DD>/...` | `data/attachments` |
 | `MAX_FILE_SIZE_MB` | Лимит размера одного файла, присылаемого участником | `10` |
 | `DISK_WARN_PCT` | Порог предупреждения в чат модерации | `80` |
 | `DISK_BLOCK_PCT` | Порог блокировки приёма + автопереключение в режим LINKS | `95` |

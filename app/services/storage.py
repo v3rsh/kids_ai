@@ -11,11 +11,32 @@
 - мониторинг занятого места и автопредупреждения по порогам WARN/BLOCK;
 - сбор файлов заявки для модератора (`/files`).
 
-Все пути относительны ``config.ATTACHMENTS_DIR``. В контейнере — именованный
-том ``attachments_volume`` (см. ``docker-compose.yml``). Файлы внутри тома
-хранятся под русскими именами треков (рекомендуемая структура);
-запасной вариант латинских имён имеется на случай ФС, где кириллица
-в путях нестабильна — на ext4 он не нужен.
+Все пути относительны ``config.ATTACHMENTS_DIR``. В контейнере путь
+монтируется как bind-mount ``./data/attachments`` → ``/app/data/attachments``
+(см. ``docker-compose.yml``). Все имена каталогов латинские
+(``01_traditional``/``02_ai``/``03_refine``, ``99_rejected``); имена папок
+заявок содержат фамилию/имя родителя и ребёнка — это нормально на ext4.
+
+Структура (после миграции `scripts/migrate_attachments_paths.py`):
+```
+ATTACHMENTS_DIR/
+  <YYYY-MM-DD>/                  # дата подачи
+    01_traditional/              # трек
+      7-12/                      # возрастная категория
+        BR-2026-NNNN_Фамилия_Имя_Ребёнок/
+          BR-2026-NNNN_original.jpg
+          description.txt
+          meta.txt
+          preview.webp
+    02_ai/
+    03_refine/
+  99_rejected/                   # отклонённые (только метаданные)
+    <YYYY-MM-DD>/                # дата модерации
+      BR-2026-NNNN_.../
+        description.txt
+        meta.txt
+        reason.txt
+```
 
 Async-стратегия:
 - I/O-операции (`open`, `read`, `write`) выполняются через ``aiofiles``;
@@ -61,11 +82,8 @@ if TYPE_CHECKING:
 # Константы структуры хранилища
 # =====================================================================
 
-#: Корень всех заявок (название папки видно администраторам через NextCloud).
-ROOT_FOLDER_NAME = "Безопасные рисунки"
-
 #: Папка для отклонённых заявок.
-REJECTED_FOLDER_NAME = "99_Отклонено"
+REJECTED_FOLDER_NAME = "99_rejected"
 
 #: Имя файла превью для жюри.
 PREVIEW_FILENAME = "preview.webp"
@@ -81,17 +99,10 @@ META_FILENAMES: frozenset[str] = frozenset(
     {DESCRIPTION_TXT, META_TXT, REASON_TXT}
 )
 
-#: Префиксы треков для имён папок.
+#: Префиксы треков для имён папок (латиница — стабильно работает на любых ФС
+#: и не требует кавычек в shell-командах). Человеко-читаемые названия треков
+#: для UI/реестра берутся из ``Track.value``.
 _TRACK_FOLDER_PREFIX: dict[Track, str] = {
-    Track.TRADITIONAL: "01_Традиционное_рисование",
-    Track.AI: "02_ИИ_рисунок",
-    Track.HANDMADE_TO_AI: "03_От_руки_к_ИИ",
-}
-
-#: Латинский fallback для запасного варианта имён треков.
-#: Используется только если ``ATTACHMENTS_USE_LATIN_TRACKS`` (env)
-#: переключён в ``true`` — на ext4 не нужен, но оставлен для NextCloud-сценария.
-_TRACK_FOLDER_PREFIX_LATIN: dict[Track, str] = {
     Track.TRADITIONAL: "01_traditional",
     Track.AI: "02_ai",
     Track.HANDMADE_TO_AI: "03_refine",
@@ -123,10 +134,9 @@ def _sanitize_segment(value: str) -> str:
     return cleaned
 
 
-def _format_track_folder(track: Track, *, use_latin: bool = False) -> str:
-    """Имя папки трека (русский по умолчанию или латинский fallback)."""
-    mapping = _TRACK_FOLDER_PREFIX_LATIN if use_latin else _TRACK_FOLDER_PREFIX
-    return mapping[track]
+def _format_track_folder(track: Track) -> str:
+    """Имя папки трека (латиница — `01_traditional`/`02_ai`/`03_refine`)."""
+    return _TRACK_FOLDER_PREFIX[track]
 
 
 def _format_age_folder(age_category: AgeCategory) -> str:
@@ -192,12 +202,12 @@ def _application_date_folder(app: Application) -> str:
 
 
 def get_root_dir() -> Path:
-    """Корень хранилища ``ATTACHMENTS_DIR/Безопасные рисунки``."""
-    return ATTACHMENTS_DIR / ROOT_FOLDER_NAME
+    """Корень хранилища — сам ``ATTACHMENTS_DIR`` (без вложенного раздела)."""
+    return ATTACHMENTS_DIR
 
 
 def get_rejected_root() -> Path:
-    """Корень папки отклонённых ``ATTACHMENTS_DIR/Безопасные рисунки/99_Отклонено``."""
+    """Корень папки отклонённых ``ATTACHMENTS_DIR/99_rejected``."""
     return get_root_dir() / REJECTED_FOLDER_NAME
 
 
@@ -467,7 +477,7 @@ async def write_reason_txt(
             московское время).
         base_folder: куда писать reason.txt. По умолчанию — папка
             заявки в активном дереве; при ``move_to_rejected`` передаётся
-            путь в ``99_Отклонено/...``.
+            путь в ``99_rejected/...``.
     """
     md = moderation_date or datetime.now(_MOSCOW_TZ)
     if md.tzinfo is None:
@@ -561,10 +571,10 @@ async def move_to_rejected(
     moderator_full_name: str | None = None,
     moderation_date: datetime | None = None,
 ) -> Path:
-    """Переместить метаданные заявки в ``99_Отклонено/``.
+    """Переместить метаданные заявки в ``99_rejected/``.
 
     Порядок (атомарность относительно БД):
-    1. Создаём папку назначения в ``99_Отклонено/<дата_модерации>/<имя>/``.
+    1. Создаём папку назначения в ``99_rejected/<дата_модерации>/<имя>/``.
     2. Пишем туда ``reason.txt`` (с дословным текстом ``reason``, если
        передан; иначе шапка без причины — её должен поставить вызывающий).
     3. Переносим ``description.txt`` и ``meta.txt`` из активной папки
@@ -576,7 +586,7 @@ async def move_to_rejected(
     код коммитит только **после** успешного завершения этого метода.
 
     Returns:
-        Путь к папке заявки внутри ``99_Отклонено/...``.
+        Путь к папке заявки внутри ``99_rejected/...``.
 
     Notes:
         Метод толерантен к повторным вызовам: если папка отклонённых
@@ -641,7 +651,7 @@ async def move_to_rejected(
     await asyncio.to_thread(_try_remove_empty_src)
 
     logger.info(
-        "Заявка перенесена в 99_Отклонено",
+        "Заявка перенесена в 99_rejected",
         br_id=app.br_id,
         rejected_folder=str(dst_folder.relative_to(ATTACHMENTS_DIR)),
     )
@@ -1006,7 +1016,6 @@ async def get_application_files_for_chat(
 
 
 __all__ = [
-    "ROOT_FOLDER_NAME",
     "REJECTED_FOLDER_NAME",
     "PREVIEW_FILENAME",
     "PREVIEW_MAX_SIDE_PX",

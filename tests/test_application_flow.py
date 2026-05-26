@@ -218,7 +218,7 @@ class TestRegisterApplicationFiles:
             angle_no=None,
             original_filename="моя_работа.jpg",
             stored_filename="BR-2026-0001_original.jpg",
-            relative_path="Безопасные рисунки/2026-05-24/.../BR-2026-0001_original.jpg",
+            relative_path="2026-05-24/01_traditional/7-12/BR-2026-0001_Иванова_Анна_Маша/BR-2026-0001_original.jpg",
             size_bytes=12345,
             mime_type="image/jpeg",
         )

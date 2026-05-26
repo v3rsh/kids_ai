@@ -64,7 +64,7 @@ nano .env   # или vi .env
 
 | Переменная | Обязательно | Описание |
 |---|---|---|
-| `ATTACHMENTS_DIR` | нет | Путь до каталога файлов внутри контейнера. По умолчанию `/app/data/attachments` смонтирован на named-volume `attachments_volume` (см. `docker-compose.yml`). |
+| `ATTACHMENTS_DIR` | нет | Путь до каталога файлов внутри контейнера. По умолчанию `/app/data/attachments` — bind-mount `./data/attachments` хоста (см. `docker-compose.yml`). Структура: `<YYYY-MM-DD>/<01_traditional|02_ai|03_refine>/<возраст>/BR-...`, отклонённые в `99_rejected/`. |
 | `MAX_FILE_SIZE_MB` | нет | Лимит размера одного файла, по умолчанию `10`. |
 | `DISK_WARN_PCT` | нет | Порог предупреждения в чат модерации, по умолчанию `80`. |
 | `DISK_BLOCK_PCT` | нет | Порог блокировки и авто-перехода в LINKS, по умолчанию `95`. |
@@ -106,7 +106,7 @@ docker compose up -d
 |---|---|---|
 | `pgdata` | Данные PostgreSQL: заявки, статусы, голоса жюри | named volume; переживает `docker compose down/up` и перезагрузку хоста |
 | `redisdata` | AOF-файл Redis: FSM-состояния анкет, трекинг transient-сообщений | named volume + `--appendonly yes --appendfsync everysec`; данные сохраняются раз в секунду на диск |
-| `attachments_volume` | Файлы заявок в `/app/data/attachments` (§21, §33.1) | named volume; не пересоздаётся при обновлении бота |
+| bind-mount `./data` | Файлы заявок в `/app/data/attachments` (§21, §33.1), плюс прочие данные | bind-mount хоста; не пересоздаётся при обновлении бота, доступен напрямую с диска |
 
 Безопасные команды (данные сохраняются):
 
@@ -156,7 +156,7 @@ curl http://localhost:8000/healthz
 
 ```bash
 docker compose down              # остановит bot + redis + postgres (данные на volumes сохранятся)
-docker compose down -v           # ОПАСНО: удалит pgdata/redisdata/attachments_volume
+docker compose down -v           # ОПАСНО: удалит named volumes pgdata/redisdata (файлы заявок в ./data/attachments — НЕ затрагиваются)
 ```
 
 ## Обновление
@@ -213,7 +213,7 @@ docker compose logs --tail=400 bot | grep -E "scheduler|disk monitor|роли|co
 - [ ] Файл вложением валидируется по расширению и размеру (`MAX_FILE_SIZE_MB`); дубль второго файла в треках AI / Handmade-to-AI отвергается.
 - [ ] После submit пользователь получает «Заявка принята» и `BR-2026-NNNN`.
 - [ ] В БД (`SELECT * FROM applications ORDER BY created_at DESC LIMIT 1`) есть запись с актуальным `intake_mode`.
-- [ ] В `attachments_volume` появилась папка `BR-2026-NNNN_<…>` с файлами + `meta.txt` + `description.txt`.
+- [ ] В `./data/attachments/<YYYY-MM-DD>/01_traditional|02_ai|03_refine/<возраст>/` появилась папка `BR-2026-NNNN_<…>` с файлами + `meta.txt` + `description.txt`.
 
 ### Шаг 3. Модератор
 
@@ -246,7 +246,7 @@ docker compose logs --tail=400 bot | grep -E "scheduler|disk monitor|роли|co
 
 ### Шаг 6. Диск-монитор
 
-- [ ] При искусственном заполнении тома `attachments_volume` свыше `DISK_WARN_PCT` — в чат модерации приходит первое предупреждение, дедуп `1×24h` на порог.
+- [ ] При искусственном заполнении `./data/attachments` свыше `DISK_WARN_PCT` — в чат модерации приходит первое предупреждение, дедуп `1×24h` на порог.
 - [ ] При превышении `DISK_BLOCK_PCT` — авто-переход `INTAKE_MODE = LINKS` (`app_settings.intake_mode = 'links'`); в чат модерации приходит уведомление об автопереключении.
 
 > Если все 6 шагов зелёные — бот готов к открытию приёма заявок. Перед открытием не забудьте сообщить участникам контакты модераторов и URL чата.

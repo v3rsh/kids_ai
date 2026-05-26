@@ -95,7 +95,7 @@ UVICORN_WORKERS = max(1, int(os.getenv("UVICORN_WORKERS", "1")))
 EXPRESS_DEEPLINK_TEMPLATE: str = os.getenv("EXPRESS_DEEPLINK_TEMPLATE", "")
 
 # Локальное хранилище файлов конкурса.
-# В контейнере — именованный том attachments_volume (см. docker-compose.yml).
+# В контейнере — bind-mount ./data/attachments хоста (см. docker-compose.yml).
 ATTACHMENTS_DIR = Path(
     os.getenv("ATTACHMENTS_DIR", str(DATA_DIR / "attachments"))
 )

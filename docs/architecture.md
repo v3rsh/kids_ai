@@ -550,17 +550,34 @@ logger.info("Сообщение", key=value)
 
 ### Файлы заявок
 
-Файлы конкурса хранятся в именованном Docker-томе `attachments_volume`,
-смонтированном в `/app/data/attachments`. Корневой путь в коде —
-`config.ATTACHMENTS_DIR`. Структура папок — `<дата-подачи>/<трек>/
-<возрастная-категория>/<папка-заявки>/`; имена файлов формируются по
-шаблону `BR-{YEAR}-NNNN_{kind}[N].{ext}` (`original`, `angle-N`,
-`ai-image`, `diptych` — см. перечисление `FileKind` в
-`app/database/models.py`).
+Файлы конкурса хранятся в bind-mount `./data/attachments` (хост) →
+`/app/data/attachments` (контейнер). Корневой путь в коде —
+`config.ATTACHMENTS_DIR`. Структура папок:
+
+```
+ATTACHMENTS_DIR/
+  <YYYY-MM-DD>/                  # дата подачи (Europe/Moscow)
+    01_traditional/              # трек
+      7-12/                      # возрастная категория
+        BR-2026-NNNN_Фамилия_Имя_Ребёнок/
+    02_ai/
+    03_refine/
+  99_rejected/                   # отклонённые (только метаданные)
+    <YYYY-MM-DD>/                # дата модерации
+      BR-2026-NNNN_.../
+```
+
+Имена файлов внутри папки заявки формируются по шаблону
+`BR-{YEAR}-NNNN_{kind}[N].{ext}` (`original`, `angle-N`, `ai-image`,
+`diptych` — см. перечисление `FileKind` в `app/database/models.py`).
 
 При отклонении заявки физические файлы работы удаляются (`rm`), а в
-`99_Отклонено/<дата_модерации>/<папка-заявки>/` остаются только
+`99_rejected/<дата_модерации>/<папка-заявки>/` остаются только
 метаданные — `description.txt`, `meta.txt`, `reason.txt`.
+
+> Историческая структура с корневой папкой «Безопасные рисунки/» и
+> русскими именами треков (`01_Традиционное_рисование` и т. п.) была
+> мигрирована скриптом `app/scripts/migrate_attachments_paths.py`.
 
 ### Реестр
 
