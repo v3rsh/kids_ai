@@ -32,7 +32,7 @@ from loguru import logger
 from pybotx import MentionBuilder
 
 from services.access import get_moderation_chat_id
-from utils.bot_utils import resolve_bot_id
+from utils.bot_utils import format_numbered_file_caption, resolve_bot_id
 
 if TYPE_CHECKING:
     from pybotx import Bot, BubbleMarkup
@@ -541,7 +541,9 @@ async def notify_moderation_chat_new_application(
         file=first,
     )
     for idx, attachment in enumerate(rest, start=2):
-        caption = f"📎 {app.br_id}: файл {idx} из {len(attachments)} — {attachment.filename}"
+        caption = format_numbered_file_caption(
+            app.br_id, idx, len(attachments), attachment.filename
+        )
         await _send_to_moderation_chat(
             bot,
             caption,

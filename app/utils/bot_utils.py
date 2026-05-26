@@ -319,3 +319,13 @@ async def send_with_retry(
                     retries, exc,
                 )
     return False
+
+
+def format_numbered_file_caption(
+    br_id: str,
+    index: int,
+    total: int,
+    filename: str,
+) -> str:
+    """Подпись к N-му файлу заявки (2..total) в цепочке вложений."""
+    return f"📎 {br_id}: файл {index} из {total} — {filename}"

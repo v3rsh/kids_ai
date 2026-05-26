@@ -37,9 +37,6 @@ from pybotx import (
     MentionBuilder,
 )
 
-import aiofiles
-from pybotx.models.attachments import OutgoingAttachment
-
 from database.models import AgeCategory, Application, IntakeMode, ModerationStatus, Track
 from fsm import cleanup_middleware, fsm_middleware
 from services.access import moderator_only
@@ -51,6 +48,7 @@ from services.moderation import (
 )
 from utils.bot_utils import (
     delete_source_message,
+    format_numbered_file_caption,
     reply_to_user,
     send_photo_transient,
 )
@@ -253,55 +251,62 @@ def _filters_summary(filters: QueueFilters) -> str:
 
 
 # =====================================================================
-# Загрузка фото-карточки заявки
+# Карточка заявки с файлами
 # =====================================================================
 
 
-async def _load_application_photo(app: Application) -> OutgoingAttachment | None:
-    """Загрузить главное фото заявки для карточки модератора.
-
-    Приоритет:
-    1. ``preview.webp`` (через ``storage.get_preview_path``) — лёгкий
-       вариант, генерируется лениво и подходит для большинства треков.
-    2. Если превью не получилось (нет исходника, HEIC без plugin'а,
-       режим ``LINKS``, отклонённая заявка с удалёнными файлами) —
-       возвращает ``None``, и вызывающий код переходит на текстовую
-       карточку.
-
-    Returns:
-        OutgoingAttachment | None — None означает «фото нет, рендерим
-        обычной карточкой».
-    """
-    if app.intake_mode is IntakeMode.LINKS:
-        return None
+async def _send_application_files_with_card(
+    message: IncomingMessage,
+    bot: Bot,
+    *,
+    app: Application,
+    body: str,
+    bubbles: BubbleMarkup,
+) -> None:
+    """Отправить все файлы заявки: первый с полной карточкой и кнопками."""
     try:
         from services import storage as storage_service
     except ImportError:
-        return None
+        logger.exception(
+            "Не удалось импортировать storage для карточки модератора",
+            br_id=app.br_id,
+        )
+        await reply_to_user(message, bot, body, bubbles=bubbles)
+        return
 
     try:
-        preview_path = await storage_service.get_preview_path(app)
+        attachments = await storage_service.get_application_files_for_chat(app)
     except Exception:
         logger.exception(
-            "Не удалось получить путь к preview.webp",
+            "Не удалось загрузить файлы заявки для карточки модератора",
             br_id=app.br_id,
         )
-        return None
-    if preview_path is None or not preview_path.exists():
-        return None
+        attachments = None
 
-    try:
-        async with aiofiles.open(preview_path, "rb") as fp:
-            content = await fp.read()
-    except OSError:
-        logger.exception(
-            "Не удалось прочитать preview.webp",
-            br_id=app.br_id,
-            path=str(preview_path),
+    if not attachments:
+        await reply_to_user(message, bot, body, bubbles=bubbles)
+        return
+
+    await delete_source_message(message, bot)
+    first, *rest = attachments
+    total = len(attachments)
+    await send_photo_transient(
+        message,
+        bot,
+        body=body,
+        photo=first,
+        bubbles=bubbles,
+    )
+    for idx, attachment in enumerate(rest, start=2):
+        caption = format_numbered_file_caption(
+            app.br_id, idx, total, attachment.filename
         )
-        return None
-
-    return OutgoingAttachment(content=content, filename=preview_path.name)
+        await send_photo_transient(
+            message,
+            bot,
+            body=caption,
+            photo=attachment,
+        )
 
 
 async def render_application_card(
@@ -312,34 +317,26 @@ async def render_application_card(
     bubbles: BubbleMarkup,
     prefix: str = "",
 ) -> None:
-    """Отрисовать карточку заявки модератору — фото + caption, либо текст.
+    """Отрисовать карточку заявки модератору с файлами работы.
 
     Поведение:
-    - Если удалось загрузить фото заявки (``_load_application_photo``)
-      и сообщение пришло как клик с кнопки — старое menu-сообщение
-      удаляется (``delete_source_message``), и шлётся новое сообщение
-      с фото + caption + кнопками (transient: cleanup-middleware
-      подчистит его при следующей навигации).
-    - Если фото нет (LINKS / OTKLONENO / preview не сгенерирован) —
-      обычный ``reply_to_user`` с текстом карточки.
+    - ``IntakeMode.FILES`` — все файлы заявки сразу: первый с полной
+      карточкой (``_full_card`` + ``prefix``) и кнопками действий,
+      остальные — с нумерованной подписью. Сообщения transient,
+      cleanup-middleware удалит их при следующей навигации.
+    - ``IntakeMode.LINKS`` или отсутствие файлов на диске — текстовая
+      карточка через ``reply_to_user``.
 
     Args:
         prefix: дополнительный текст, добавляется перед карточкой —
             например, статусная плашка «Карусель: 2 из 5».
     """
     body = (prefix + _full_card(app)) if prefix else _full_card(app)
-    photo = await _load_application_photo(app)
-    if photo is None:
+    if app.intake_mode is IntakeMode.LINKS:
         await reply_to_user(message, bot, body, bubbles=bubbles)
         return
-
-    await delete_source_message(message, bot)
-    await send_photo_transient(
-        message,
-        bot,
-        body=body,
-        photo=photo,
-        bubbles=bubbles,
+    await _send_application_files_with_card(
+        message, bot, app=app, body=body, bubbles=bubbles
     )
 
 
