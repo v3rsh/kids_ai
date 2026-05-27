@@ -10,69 +10,48 @@
 [`deployment.md`](deployment.md), [`testing.md`](testing.md)) — это
 единственный источник правды по требованиям.
 
-## LINKS-UX — пользовательский UX режима LINKS
+## Done
 
-**Контекст.** В БД режим приёма `intake_mode` уже корректно
-прокидывается из `services.intake_mode.get_intake_mode()` в
-`create_application`. Реестр (см. [`registry-spec.md`](registry-spec.md)
-§2.2.2 — поле №13) различает FILES и LINKS через helper
-`view_command_or_link` в `app/services/registry.py`. Что осталось — это
-пользовательский поток: при `intake_mode = LINKS` бот должен запрашивать
-ссылку на облачную папку вместо файла.
+### LINKS-UX — пользовательский UX режима LINKS — ✅ выполнено
 
-**Текущее поведение.**
+Реализовано по варианту C (submit → BR-ID в БД → инструкция со ссылкой).
+См. [`architecture.md`](architecture.md) → «Резервный сценарий приёма
+по ссылкам» и `app/handlers/user_links.py`.
 
-- `app/handlers/user_files.py` всегда работает в FILES-режиме: спрашивает
-  файл вложением, валидирует расширение/размер, кладёт во временный
-  каталог.
-- `app/handlers/user_confirm.py` материализует файлы через
-  `services.storage.rename_and_save_file` независимо от режима.
-- При `intake_mode = LINKS` (после ручного `/intake_mode links` или
-  автоматического переключения по заполнению диска) пользователь всё
-  равно видит UI «загрузите файл», а его заявка попадёт в БД с пустым
-  `cloud_link` — то есть в реестре поле №13 будет пустым.
+Состав изменений (для исторического контекста):
 
-**Что нужно сделать.**
+- FSM `UserIntake.user_intake_link_collect` (`app/states.py`); развилка
+  в `user_intake._handle_description`: при `intake_mode = LINKS` шаг
+  загрузки файлов пропускается и сразу показываются согласия.
+- `user_confirm.cmd_submit` в LINKS-ветке создаёт заявку с
+  `cloud_link=None`, не материализует файлы, не шлёт уведомления и
+  переводит FSM в `user_intake_link_collect`.
+- Новый модуль `app/handlers/user_links.py`: инструкция по §33.6.2 ТЗ
+  с реальным BR-ID и именем папки (на основе ФИО+имени ребёнка),
+  валидация URL через `app/utils/cloud_link.parse_cloud_link`, UPDATE
+  через `applications.set_application_cloud_link`, отложенный
+  `write_meta_txt` и нотификации только после получения URL.
+- Resume-кнопка «🔗 Прислать ссылку на папку» в карточке заявки
+  (`keyboards.my_application_detail_bubbles`) — для случая, когда FSM
+  потерян после рестарта Redis. Аналогичный индикатор «Ожидает ссылку»
+  в `services.user_application_views`.
+- Карточка модератора (`moderator_queue._full_card`,
+  `moderator_actions.cmd_files`) показывает «⏳ Ожидает ссылку от
+  участника» вместо «Ссылка на папку: —».
+- Тесты: `tests/test_user_links.py` (валидатор URL, форматирование
+  инструкции), `tests/test_application_flow.TestSetApplicationCloudLink`.
 
-1. **`app/handlers/user_files.py`** — после установки FSM-state
-   `user_intake_files_collect` спросить `get_intake_mode()`:
-   - если FILES — старое поведение (приём файла вложением);
-   - если LINKS — показать новый prompt «пришлите ссылку на облачную
-     папку» и валидировать URL (https/http, длина, базовая sanity).
-2. **Новый FSM-state** для приёма ссылки в `app/states.py`
-   (например, `UserIntake.user_intake_link_collect`) — чтобы не
-   смешивать парсер ссылки с приёмом файла.
-3. **`app/handlers/user_confirm.py` → `cmd_submit`**:
-   - в LINKS-режиме передавать `cloud_link=<введённый URL>` в
-     `applications_service.create_application` (поле уже есть в API).
-   - пропускать материализацию файлов (`_materialize_files` не
-     вызывается для LINKS) — диск не нужен.
-4. **Тексты согласий, резюме и уведомления участнику**: формулировки
-   про «файлы» заменить на «ссылку», когда режим LINKS, чтобы UI не
-   путал родителя.
-5. **Тесты:**
-   - `tests/test_application_flow.py` — параметризованный кейс: подача
-     заявки в LINKS-режиме, ожидаемый `cloud_link != None` в БД.
-   - smoke-тест на сценарий «при `LINKS` файл вложением отвергается с
-     просьбой прислать ссылку».
-   - проверка реестра: при `intake_mode = LINKS` поле №13 = URL
-     (`view_command_or_link` уже это умеет, но нужен e2e-тест с
-     реальным `Application.cloud_link`).
+### Что не вошло (follow-up при необходимости)
 
-**Связанные документы.**
-
-- [`architecture.md`](architecture.md) → «applications» (поле
-  `intake_mode`, `cloud_link`) и «Хранилище файлов и реестр»
-  (автопереключение в LINKS на пороге `DISK_BLOCK_PCT`).
-- [`registry-spec.md`](registry-spec.md) §2.2.2 — поле №13 «Команда/
-  ссылка просмотра файлов» (FILES vs LINKS).
-
-**Не блокирует релиз.** До выкатки LINKS-UX модератор/админ оставляет
-`INTAKE_MODE_DEFAULT=files`. При заполнении диска авто-переход в LINKS
-приведёт к мгновенной деградации UX (родителю всё равно покажут
-«загрузите файл»), поэтому реальный сценарий до релиза LINKS-UX —
-держать диск ниже `DISK_BLOCK_PCT` или ставить `intake_mode=links`
-вручную и сообщать заявителям о ссылочном режиме другим каналом.
-
-**Оценка.** ~0.5–1 день: 2 хендлера, 1 state, обновление текстов,
-2–3 теста. Развязок с другими ветками нет.
+1. **История ссылок при исправлениях** (§33.6.4). Сейчас
+   `set_application_cloud_link` устроена под перезапись (логирует
+   старый/новый URL), но отдельной таблицы истории нет. Если заказчик
+   захочет видеть все версии — добавить `application_cloud_link_history`
+   с `(br_id, url, set_at, set_by_huid)` и писать INSERT перед UPDATE.
+2. **Cleanup-команда для abandoned-заявок** (`intake_mode=LINKS AND
+   cloud_link IS NULL` старше N часов). На текущей шкале (десятки
+   заявок) — лечится точечно админом, не масштабная проблема.
+3. **Жёсткий запрет двух параллельных LINKS-черновиков у одного
+   родителя**. Сейчас `/apply` сбрасывает FSM, а первая заявка остаётся
+   в БД (видна через «Мои заявки» с кнопкой «Прислать ссылку»).
+   Если будут жалобы — добавить guard в `cmd_apply`.

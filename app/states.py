@@ -21,8 +21,15 @@ class UserIntake(str, Enum):
     (``services.users.ensure_user_profile_loaded``) при старте анкеты в
     ``handlers.user.cmd_apply``. Если CTS не дал какое-то поле — анкета
     включает один fallback-шаг под него (``*_fb``-состояния ниже).
-    Стандартный «горячий» путь: contact → child_name → child_age →
-    track → title → description → files_collect → consents → review.
+
+    Стандартный «горячий» путь зависит от глобального ``intake_mode``:
+
+    - ``FILES`` (основной): contact → child_name → child_age →
+      track → title → description → **files_collect** → consents → review.
+    - ``LINKS`` (резервный, §33.6 ТЗ): contact → child_name → child_age →
+      track → title → description → consents → review → submit →
+      **link_collect** (после INSERT заявки бот выдаёт BR-ID и просит
+      ссылку на облачную папку).
     """
 
     # Контакт для связи: email или телефон, автоопределение по '@'.
@@ -35,6 +42,8 @@ class UserIntake(str, Enum):
     user_intake_files_collect = "user:intake:files_collect"
     user_intake_consents = "user:intake:consents"
     user_intake_review = "user:intake:review"
+    # Резервный сценарий §33.6: приём URL на облачную папку после submit.
+    user_intake_link_collect = "user:intake:link_collect"
 
     # Fallback-шаги: включаются, только если соответствующее поле не
     # пришло из CTS. На горячем пути не используются.

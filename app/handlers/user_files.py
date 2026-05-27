@@ -31,13 +31,11 @@
   ``services.storage.rename_and_save_file`` уже в ``user_confirm.py``
   на submit (когда заявка имеет ``br_id``).
 
-Backlog: пользовательский UX режима LINKS (бот запрашивает ссылку на
-облачную папку вместо файла) — отдельная отложенная задача, см.
-``docs/backlog.md`` → раздел ``LINKS-UX``. На текущем этапе данный
-модуль всегда работает как FILES; в реестре поле «Команда/ссылка
-просмотра файлов» уже учитывает оба режима через
-``services.registry.view_command_or_link``, а ``intake_mode_value``
-корректно прокидывается в БД через ``user_confirm.cmd_submit``.
+Этот модуль активен только в режиме ``intake_mode = FILES``. В режиме
+``LINKS`` (§33.6 ТЗ) ``user_intake._handle_description`` пропускает
+шаг файлов и сразу переводит в согласия — сбор URL делает
+``handlers/user_links.py`` уже после ``submit``. См.
+``docs/architecture.md`` → «Резервный сценарий приёма по ссылкам».
 """
 import asyncio
 import shutil

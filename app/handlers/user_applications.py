@@ -236,14 +236,22 @@ async def cmd_my_app_files(message: IncomingMessage, bot: Bot) -> None:
     bubbles = my_application_detail_bubbles(app)
 
     if app.intake_mode is IntakeMode.LINKS:
-        link = app.cloud_link or "—"
+        if app.cloud_link:
+            text = (
+                f"🔗 Заявка {app.br_id} — режим приёма «links».\n"
+                f"Ссылка на папку: {app.cloud_link}"
+            )
+        else:
+            text = (
+                f"⏳ Заявка {app.br_id}: ссылка на работу ещё не "
+                "прислана.\n\n"
+                "Откройте карточку заявки и нажмите «Прислать ссылку "
+                "на папку», чтобы дослать URL."
+            )
         await safe_answer_transient(
             message,
             bot,
-            (
-                f"🔗 Заявка {app.br_id} — режим приёма «links».\n"
-                f"Ссылка на папку участника: {link}"
-            ),
+            text,
             bubbles=bubbles,
         )
         return

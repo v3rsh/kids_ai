@@ -203,6 +203,14 @@ def _full_card(app: Application) -> str:
     intake_line = ""
     if app.cloud_link:
         intake_line = f"\n\n🔗 **Ссылка на папку:** {app.cloud_link}"
+    elif app.intake_mode is IntakeMode.LINKS:
+        # Резервный режим (§33.6): заявка создана, но участник ещё
+        # не прислал ссылку. Модератор не должен «принимать решение»
+        # по такой заявке — материалы появятся, когда придёт URL.
+        intake_line = (
+            "\n\n⏳ **Ожидает ссылку от участника** "
+            "(резервный режим, §33.6)"
+        )
     return (
         f"📄 **{app.br_id}**\n\n"
         f"**Подана:** {_format_dt(app.created_at)}\n\n"

@@ -7,7 +7,10 @@
 - ``user_intake_review`` — финальное резюме: кнопки
   «Отправить заявку» / «Заполнить заново».
 
-При нажатии «Отправить заявку»:
+При нажатии «Отправить заявку» поведение зависит от текущего
+``intake_mode``:
+
+**FILES (основной)**:
 1. ``services.applications.create_application`` — создаёт строку в БД,
    присваивает ``br_id``, проверяет возможный дубль по
    ``(parent_huid, title)``.
@@ -23,24 +26,30 @@
    ``services.notifications.notify_moderation_chat_new_application``.
 6. Очистка FSM + временного каталога анкеты.
 
-Все этапы 2–4 обёрнуты в общий try/except: на случай, если
-зависимости storage/notifications недоступны (например, поломка диска
-или чата модерации), запись в БД остаётся целой — пользователь видит
-понятное сообщение об ошибке, никаких частичных эффектов не остаётся.
+**LINKS (резервный, §33.6 ТЗ)**:
+1. ``create_application`` — создаёт строку с ``cloud_link=None``,
+   выдаёт реальный ``br_id``.
+2. Материализация файлов **пропускается** (файлов нет — они лежат у
+   участника в облаке).
+3. Уведомления участнику / в чат модерации **отложены**: иначе
+   модератор получил бы карточку без ссылки. Уйдут в момент, когда
+   участник пришлёт URL.
+4. FSM переводится в ``user_intake_link_collect``: ``user_links``
+   показывает инструкцию по §33.6.2 с реальным BR-ID, принимает URL,
+   делает UPDATE ``cloud_link``, ``write_meta_txt`` и шлёт
+   уведомления.
 
-Актуальный режим приёма прокидывается из
-``services.intake_mode.get_intake_mode()`` в ``create_application``,
-чтобы заявка корректно записалась с тем режимом, который активен на
-момент submit — реестр различает FILES/LINKS по полю «Команда/ссылка
-просмотра файлов». Сам ссылочный UX (запрос URL вместо файла) —
-отдельная задача, см. ``docs/backlog.md`` → «LINKS-UX».
+Все этапы FILES-материализации обёрнуты в общий try/except: на случай,
+если зависимости storage/notifications недоступны, запись в БД
+остаётся целой — пользователь видит понятное сообщение об ошибке,
+никаких частичных эффектов не остаётся.
 """
 from typing import Iterable
 
 from loguru import logger
 from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
 
-from database.models import AgeCategory, FileKind, Track
+from database.models import AgeCategory, FileKind, IntakeMode, Track
 from fsm import cleanup_middleware, fsm_middleware
 from handlers.common import register_state_handler
 from keyboards import consents_bubbles, final_confirm_bubbles, main_menu_bubbles
@@ -176,8 +185,13 @@ async def cmd_consents_confirm(
 # =====================================================================
 
 
-def _build_review_text(data: dict) -> str:
-    """Сформировать текст финального резюме перед отправкой заявки."""
+def _build_review_text(data: dict, *, mode: IntakeMode) -> str:
+    """Сформировать текст финального резюме перед отправкой заявки.
+
+    В режиме ``FILES`` отображает количество загруженных файлов; в
+    ``LINKS`` — поясняет, что ссылка на облачную папку будет запрошена
+    после подтверждения (BR-ID выдаётся в момент submit).
+    """
     try:
         track = Track[data["track"]]
     except (KeyError, TypeError):
@@ -193,7 +207,15 @@ def _build_review_text(data: dict) -> str:
     except (ValueError, TypeError):
         age_category_label = "?"
 
-    files = data.get("files") or []
+    if mode is IntakeMode.LINKS:
+        upload_line = (
+            "**Работа:** будет загружена ссылкой на облачную папку — "
+            "инструкцию бот пришлёт сразу после подтверждения."
+        )
+    else:
+        files = data.get("files") or []
+        upload_line = f"**Файлы:** {len(files)}"
+
     return (
         "**Проверьте данные заявки:**\n\n"
         f"**Родитель:** {data.get('parent_full_name', '?')}\n"
@@ -205,7 +227,7 @@ def _build_review_text(data: dict) -> str:
         f"**Название работы:** {data.get('title', '?')}\n"
         f"**Трек:** {track_label}\n"
         f"**Описание:** {data.get('description', '?')}\n\n"
-        f"**Файлы:** {len(files)}\n\n"
+        f"{upload_line}\n\n"
         "Если всё верно, нажмите «Отправить заявку»."
     )
 
@@ -213,10 +235,11 @@ def _build_review_text(data: dict) -> str:
 async def _show_review(message: IncomingMessage, bot: Bot) -> None:
     fsm = message.state.fsm
     data = await fsm.get_data()
+    mode = await intake_mode_service.get_intake_mode()
     await reply_to_user(
         message,
         bot,
-        _build_review_text(data),
+        _build_review_text(data, mode=mode),
         bubbles=final_confirm_bubbles(),
     )
 
@@ -258,15 +281,6 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
         )
         return
 
-    files_meta: list[dict] = data.get("files") or []
-    if not files_meta:
-        await safe_answer_transient(
-            message,
-            bot,
-            _REJECTED_TECH_TEMPLATE.format(reason="не загружен файл"),
-        )
-        return
-
     try:
         track = Track[data["track"]]
     except (KeyError, TypeError):
@@ -277,24 +291,36 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
         )
         return
 
-    from handlers.user_files import validate_files_count_for_track
-
-    files_count_error = validate_files_count_for_track(track, len(files_meta))
-    if files_count_error:
-        await safe_answer_transient(
-            message,
-            bot,
-            _REJECTED_TECH_TEMPLATE.format(reason=files_count_error),
-        )
-        return
-
-    # ----- Шаг 1: создание заявки в БД -----
     # Актуальный режим приёма читаем непосредственно перед submit:
     # модератор/админ/диск-монитор могли переключить FILES↔LINKS, пока
-    # пользователь шёл по анкете. Сам UX сбора файла vs ссылки — пока
-    # только FILES (см. backlog «LINKS-UX»), но в БД запись должна
-    # отражать реальный режим, в котором заявка зафиксирована.
+    # пользователь шёл по анкете. От режима зависит требование к
+    # «материалам» заявки и порядок дальнейших шагов.
     current_intake_mode = await intake_mode_service.get_intake_mode()
+
+    files_meta: list[dict] = data.get("files") or []
+    if current_intake_mode is IntakeMode.FILES:
+        if not files_meta:
+            await safe_answer_transient(
+                message,
+                bot,
+                _REJECTED_TECH_TEMPLATE.format(reason="не загружен файл"),
+            )
+            return
+
+        from handlers.user_files import validate_files_count_for_track
+
+        files_count_error = validate_files_count_for_track(
+            track, len(files_meta)
+        )
+        if files_count_error:
+            await safe_answer_transient(
+                message,
+                bot,
+                _REJECTED_TECH_TEMPLATE.format(reason=files_count_error),
+            )
+            return
+
+    # ----- Шаг 1: создание заявки в БД (для LINKS — без cloud_link) -----
     try:
         application = await applications_service.create_application(
             parent_huid=parent_huid,
@@ -340,22 +366,42 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
         return
 
     br_id = application.br_id
+
+    # ----- Ветка LINKS: запросить ссылку у участника -----
+    if current_intake_mode is IntakeMode.LINKS:
+        logger.info(
+            "Заявка LINKS зарегистрирована, переходим к сбору ссылки",
+            br_id=br_id,
+            parent_huid=str(parent_huid),
+        )
+        await fsm.set_state(UserIntake.user_intake_link_collect)
+        await fsm.update_data(br_id=br_id)
+
+        from handlers.user_links import prompt_for_cloud_link
+
+        await prompt_for_cloud_link(
+            message,
+            bot,
+            application=application,
+            data=data,
+            track=track,
+        )
+        return
+
+    # ----- Ветка FILES: материализация + уведомления (как раньше) -----
     logger.info(
-        "Заявка зарегистрирована, начинаем материализацию",
+        "Заявка FILES зарегистрирована, начинаем материализацию",
         br_id=br_id,
         parent_huid=str(parent_huid),
         files=len(files_meta),
     )
 
-    # ----- Шаг 2: материализация файлов через services.storage -----
     storage_ok, application = await _materialize_files(
         application, files_meta, data
     )
 
-    # ----- Шаг 3: уведомления участнику и в чат модерации -----
     await _send_notifications(bot, application, storage_ok)
 
-    # ----- Шаг 4: финал — главное меню -----
     from handlers.user_files import _cleanup_intake_temp_dir
 
     _cleanup_intake_temp_dir(parent_huid)

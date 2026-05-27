@@ -150,6 +150,19 @@ def my_application_detail_bubbles(app: Application) -> BubbleMarkup:
             label="📂 Все файлы",
             new_row=True,
         )
+    # Резервный режим §33.6: если заявка LINKS без сохранённой ссылки —
+    # даём возможность дослать URL (FSM мог сгореть после рестарта).
+    if (
+        app.intake_mode is IntakeMode.LINKS
+        and not app.cloud_link
+        and app.moderation_status is not ModerationStatus.OTKLONENO
+    ):
+        bubbles.add_button(
+            command="/resume_link",
+            label="🔗 Прислать ссылку на папку",
+            data={"br_id": app.br_id},
+            new_row=True,
+        )
     bubbles.add_button(
         command="/my_apps_back",
         label="◀ К списку заявок",

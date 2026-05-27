@@ -32,6 +32,7 @@ from .user import collector as user_collector
 from .user_applications import collector as user_applications_collector
 from .user_intake import collector as user_intake_collector
 from .user_files import collector as user_files_collector
+from .user_links import collector as user_links_collector
 from .user_confirm import collector as user_confirm_collector
 
 # Ветка модератора: меню, очередь, действия, экспорт, jury-admin.
@@ -72,6 +73,7 @@ def get_all_collectors() -> list:
         user_applications_collector,
         user_intake_collector,
         user_files_collector,
+        user_links_collector,
         user_confirm_collector,
         # Ветка B — модератор
         moderator_collector,

@@ -668,6 +668,58 @@ ATTACHMENTS_DIR/
 автопредупреждений — в таблице `disk_alerts` (дедупликация: одно
 сообщение на порог в сутки, а не раз в 30 минут).
 
+### Резервный сценарий приёма по ссылкам (§33.6 ТЗ)
+
+Когда `intake_mode = LINKS` (ручное переключение `/intake_mode links`
+или авто-переход по диску), пользовательский поток отличается от
+основного — файлы остаются у участника в облаке, бот хранит только URL.
+
+Цепочка (вариант C — submit раньше URL):
+
+1. Шаги 1–6 анкеты в `app/handlers/user_intake.py` — без изменений.
+2. После шага «Описание» `_handle_description` читает
+   `intake_mode_service.get_intake_mode()`:
+   - `FILES` → как раньше, переход в `user_intake_files_collect`;
+   - `LINKS` → шаг файлов **пропускается**, FSM сразу переводится в
+     `user_intake_consents` (`show_consents`).
+3. `user_confirm.cmd_submit`:
+   - **FILES**: `create_application` → `_materialize_files` →
+     `notify_*` (как раньше).
+   - **LINKS**: `create_application(cloud_link=None)` — BR-ID
+     выдаётся атомарно advisory-lock'ом, заявка появляется в БД.
+     Материализация файлов и уведомления **пропускаются**: модератору
+     нет смысла показывать карточку без ссылки. FSM переводится в
+     `UserIntake.user_intake_link_collect`, `br_id` сохраняется в FSM-data.
+4. `app/handlers/user_links.py`:
+   - `prompt_for_cloud_link` показывает инструкцию по §33.6.2 ТЗ с
+     уже известным BR-ID и именем папки (через
+     `services.storage._format_application_folder_name` — тот же
+     шаблон, что для локального дерева, чтобы модератор узнавал имя).
+   - State-handler принимает текст, валидирует через
+     `utils.cloud_link.parse_cloud_link` (формальная sanity: http/https,
+     длина, без пробелов; HTTP-запросы не делаем — у бота нет
+     интернета, §33.6.4).
+   - На валидном URL: `applications.set_application_cloud_link` (UPDATE
+     + reload с `selectinload(files)`), `storage.write_meta_txt(app,
+     files=[])` (теперь в meta.txt есть `cloud_link`), затем
+     `notify_participant_accepted` + `notify_moderation_chat_new_application`.
+     Только сейчас модератор получает карточку — уже с URL.
+
+**Видимость «незавершённых» заявок** (`intake_mode=LINKS AND cloud_link
+IS NULL`):
+
+- В карточке модератора (`moderator_queue._full_card`, `cmd_files`) —
+  явный индикатор «⏳ Ожидает ссылку от участника».
+- В «Мои заявки» у участника — статус «Ожидает ссылку» и кнопка
+  «🔗 Прислать ссылку на папку» (`/resume_link`), которая восстанавливает
+  шаг сбора URL даже если FSM-снепшот в Redis был потерян (рестарт бота).
+- Реестр (`registry.view_command_or_link`) пишет пустую строку — уже
+  было предусмотрено.
+
+`set_application_cloud_link` допускает перезапись (логирует
+старый/новый URL) — это закладка под «история ссылок при исправлениях»
+(§33.6.4), пока не реализована.
+
 ---
 
 ## 10. Контракты сервисов (`app/utils/contracts.py`)

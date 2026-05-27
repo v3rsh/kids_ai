@@ -13,6 +13,7 @@ from datetime import datetime
 
 from database.models import (
     Application,
+    IntakeMode,
     JuryStatus,
     ModerationStatus,
     VotingStatus,
@@ -42,6 +43,18 @@ def short_status_label(app: Application) -> str:
     """Краткий статус для строки списка «Мои заявки»."""
     mod = app.moderation_status
     jury = app.jury_status
+
+    # Резервный режим §33.6: заявка зафиксирована, но ссылка ещё не
+    # пришла — модерация фактически не началась. Показываем чёткий
+    # маркер «требуется ваше действие», чтобы участник понимал, почему
+    # ничего не происходит, и нажал «Прислать ссылку на папку».
+    if (
+        getattr(app, "intake_mode", None) is IntakeMode.LINKS
+        and not getattr(app, "cloud_link", None)
+        and mod
+        not in {ModerationStatus.OTKLONENO, ModerationStatus.PRINYATO}
+    ):
+        return "Ожидает ссылку"
 
     if mod == ModerationStatus.NA_MODERATSII:
         return "На модерации"
@@ -97,6 +110,17 @@ def _status_section_pending() -> str:
     return (
         "\n\n**Статус:** заявка на проверке модератором.\n\n"
         "Мы сообщим вам, когда проверка завершится."
+    )
+
+
+def _status_section_awaiting_link() -> str:
+    """Подсказка для LINKS-заявок без присланной ссылки (§33.6)."""
+    return (
+        "\n\n**Статус:** ожидается ссылка на облачную папку.\n\n"
+        "Сервер конкурса временно не принимает файлы — мы попросили "
+        "вас прислать публичную ссылку на папку с работой. Нажмите "
+        "«Прислать ссылку на папку» под этой карточкой, и бот покажет "
+        "инструкцию."
     )
 
 
@@ -235,6 +259,16 @@ async def format_application_detail(app: Application) -> str:
     body += _duplicate_hint(app)
 
     mod = app.moderation_status
+    awaiting_link = (
+        getattr(app, "intake_mode", None) is IntakeMode.LINKS
+        and not getattr(app, "cloud_link", None)
+        and mod
+        not in {ModerationStatus.OTKLONENO, ModerationStatus.PRINYATO}
+    )
+    if awaiting_link:
+        body += _status_section_awaiting_link()
+        return body
+
     if mod == ModerationStatus.NA_MODERATSII:
         body += _status_section_pending()
     elif mod == ModerationStatus.NUZHNO_ISPRAVIT:

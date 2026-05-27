@@ -35,10 +35,11 @@ from typing import Tuple
 from loguru import logger
 from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
 
-from database.models import Track
+from database.models import IntakeMode, Track
 from fsm import cleanup_middleware, fsm_middleware
 from handlers.common import register_state_handler
 from keyboards import track_selection_bubbles
+from services import intake_mode as intake_mode_service
 from states import UserIntake
 from utils.bot_utils import reply_to_user, safe_answer, safe_answer_transient
 
@@ -506,10 +507,16 @@ async def _handle_title(message: IncomingMessage, bot: Bot) -> None:
 async def _handle_description(message: IncomingMessage, bot: Bot) -> None:
     """Шаг 6: описание работы (обязательно).
 
-    После сохранения описания состояние переходит в
-    ``user_intake_files_collect`` и управление передаётся в
-    ``user_files.prompt_for_files`` — там формулируется инструкция по
-    загрузке файлов в зависимости от трека.
+    После сохранения описания развилка по текущему ``intake_mode``:
+
+    - ``FILES``: переход в ``user_intake_files_collect`` и передача
+      управления в ``user_files.prompt_for_files`` (инструкция по
+      загрузке файлов в зависимости от трека).
+    - ``LINKS`` (§33.6 ТЗ): шаг загрузки файлов **пропускается** —
+      сразу переход к согласиям через
+      ``user_confirm.show_consents``. Ссылка на облачную папку будет
+      запрошена после ``submit`` (бот выдаст реальный BR-ID и
+      инструкцию в ``user_intake_link_collect``).
     """
     body = (message.body or "").strip()
     if (
@@ -541,11 +548,6 @@ async def _handle_description(message: IncomingMessage, bot: Bot) -> None:
         )
         return
 
-    await fsm.update_data(description=body)
-    await fsm.set_state(UserIntake.user_intake_files_collect)
-
-    from handlers.user_files import prompt_for_files
-
     try:
         track = Track[track_name]
     except KeyError:
@@ -555,6 +557,24 @@ async def _handle_description(message: IncomingMessage, bot: Bot) -> None:
             message, bot, _PROMPT_TRACK, bubbles=track_selection_bubbles()
         )
         return
+
+    await fsm.update_data(description=body)
+
+    mode = await intake_mode_service.get_intake_mode()
+    if mode is IntakeMode.LINKS:
+        logger.info(
+            "intake_description: режим LINKS — пропускаем шаг файлов",
+            parent_huid=str(message.sender.huid),
+        )
+        await fsm.set_state(UserIntake.user_intake_consents)
+        from handlers.user_confirm import show_consents
+
+        await show_consents(message, bot)
+        return
+
+    await fsm.set_state(UserIntake.user_intake_files_collect)
+
+    from handlers.user_files import prompt_for_files
 
     await prompt_for_files(message, bot, track)
 

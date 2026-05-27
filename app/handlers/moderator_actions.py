@@ -908,11 +908,19 @@ async def cmd_files(message: IncomingMessage, bot: Bot) -> None:
         return
 
     if app.intake_mode == IntakeMode.LINKS:
-        link = app.cloud_link or "—"
-        body = (
-            f"🔗 Заявка {app.br_id} — режим приёма «links».\n"
-            f"Ссылка на папку участника: {link}"
-        )
+        if app.cloud_link:
+            body = (
+                f"🔗 Заявка {app.br_id} — режим приёма «links».\n"
+                f"Ссылка на папку участника: {app.cloud_link}"
+            )
+        else:
+            body = (
+                f"⏳ Заявка {app.br_id} — режим приёма «links».\n\n"
+                "Участник ещё не прислал ссылку на облачную папку. "
+                "Заявка зафиксирована в БД, но материалы пока "
+                "недоступны. Дождитесь, пока участник дошлёт ссылку, "
+                "или свяжитесь с ним по контактам из карточки."
+            )
         await reply_to_user(message, bot, body, bubbles=_card_action_buttons(app))
         return
 

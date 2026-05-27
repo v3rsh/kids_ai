@@ -368,6 +368,78 @@ async def register_application_files(
     return reloaded
 
 
+async def set_application_cloud_link(
+    *,
+    br_id: str,
+    url: str,
+) -> "Application":
+    """Установить/обновить ``cloud_link`` заявки и вернуть свежий объект.
+
+    Используется в режиме ``LINKS`` (§33.6 ТЗ): после ``cmd_submit``
+    заявка лежит в БД с ``cloud_link=NULL``, и как только участник
+    присылает URL — вызывается эта функция, после чего бот пишет
+    ``meta.txt`` и шлёт уведомления.
+
+    Reload идёт с ``selectinload(Application.files)`` — даже если
+    коллекция пустая (LINKS-режим), это нужно, чтобы последующий
+    ``write_meta_txt`` / ``notify_*`` могли спокойно обратиться к
+    ``app.files`` на уже отвязанном от сессии объекте.
+
+    Повторный вызов разрешён (например, участник прислал «более
+    правильную» ссылку до того, как модератор успел открыть карточку) —
+    логируем замену и пишем новый URL поверх.
+
+    Args:
+        br_id: ID заявки (``BR-2026-XXXX``).
+        url: публичный URL на облачную папку участника.
+
+    Returns:
+        ``Application`` с подгруженной коллекцией ``files``.
+
+    Raises:
+        ValueError: если заявка с указанным ``br_id`` не найдена.
+    """
+    needle = (br_id or "").strip().upper()
+    cleaned_url = (url or "").strip()
+    if not needle:
+        raise ValueError("br_id обязателен")
+    if not cleaned_url:
+        raise ValueError("url обязателен")
+
+    async with get_session()() as session:
+        result = await session.execute(
+            select(Application).where(Application.br_id == needle)
+        )
+        app: "Application | None" = result.scalar_one_or_none()
+        if app is None:
+            raise ValueError(f"Заявка не найдена: {needle}")
+
+        previous = app.cloud_link
+        app.cloud_link = cleaned_url
+        await session.commit()
+
+        reload_stmt = (
+            select(Application)
+            .where(Application.br_id == needle)
+            .options(selectinload(Application.files))
+            .execution_options(populate_existing=True)
+        )
+        reloaded = (await session.execute(reload_stmt)).scalar_one()
+        _ = list(reloaded.files)
+        session.expunge(reloaded)
+
+    if previous and previous != cleaned_url:
+        logger.info(
+            "cloud_link заявки перезаписан",
+            br_id=needle,
+            old=previous,
+            new=cleaned_url,
+        )
+    else:
+        logger.info("cloud_link заявки установлен", br_id=needle)
+    return reloaded
+
+
 async def mark_as_actual_version(
     *,
     br_id: str,
@@ -531,4 +603,5 @@ __all__ = [
     "mark_as_actual_version",
     "normalize_child_name",
     "register_application_files",
+    "set_application_cloud_link",
 ]

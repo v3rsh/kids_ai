@@ -29,6 +29,7 @@ from services.applications import (
     find_possible_duplicate,
     normalize_child_name,
     register_application_files,
+    set_application_cloud_link,
 )
 from database.models import AgeCategory, FileKind, IntakeMode
 from services.storage import _format_files_block
@@ -263,3 +264,113 @@ class TestRegisterApplicationFiles:
         session.add_all.assert_not_called()
         session.commit.assert_not_awaited()
         assert session.execute.await_count == 2
+
+
+class TestSetApplicationCloudLink:
+    """``set_application_cloud_link`` — UPDATE cloud_link для LINKS (§33.6)."""
+
+    @staticmethod
+    def _session_with_app(app):
+        first_result = MagicMock()
+        first_result.scalar_one_or_none.return_value = app
+        reload_result = MagicMock()
+        reload_result.scalar_one.return_value = app
+
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.execute = AsyncMock(side_effect=[first_result, reload_result])
+        session.commit = AsyncMock()
+        session.expunge = MagicMock()
+        return session
+
+    async def test_sets_link_on_empty(self):
+        """Заявка без cloud_link → cloud_link выставлен + 2 SELECT + commit."""
+        app = SimpleNamespace(
+            id=uuid.uuid4(),
+            br_id="BR-2026-0001",
+            cloud_link=None,
+            files=[],
+        )
+        session = self._session_with_app(app)
+        session_factory = MagicMock(return_value=session)
+        get_session_fn = MagicMock(return_value=session_factory)
+
+        url = "https://disk.yandex.ru/d/abc"
+        with patch("services.applications.get_session", get_session_fn):
+            result = await set_application_cloud_link(
+                br_id="BR-2026-0001", url=url
+            )
+
+        assert result is app
+        assert app.cloud_link == url
+        session.commit.assert_awaited_once()
+        assert session.execute.await_count == 2
+
+    async def test_normalizes_br_id_and_url(self):
+        """``br_id`` приводится к upper, URL — strip."""
+        app = SimpleNamespace(
+            id=uuid.uuid4(),
+            br_id="BR-2026-0001",
+            cloud_link=None,
+            files=[],
+        )
+        session = self._session_with_app(app)
+        session_factory = MagicMock(return_value=session)
+        get_session_fn = MagicMock(return_value=session_factory)
+
+        with patch("services.applications.get_session", get_session_fn):
+            await set_application_cloud_link(
+                br_id="  br-2026-0001  ",
+                url="  https://cloud.example/folder  ",
+            )
+
+        assert app.cloud_link == "https://cloud.example/folder"
+
+    async def test_overwrites_existing_link(self):
+        """Повторный вызов перезаписывает старый URL (правка после рестарта)."""
+        app = SimpleNamespace(
+            id=uuid.uuid4(),
+            br_id="BR-2026-0001",
+            cloud_link="https://old.example/folder",
+            files=[],
+        )
+        session = self._session_with_app(app)
+        session_factory = MagicMock(return_value=session)
+        get_session_fn = MagicMock(return_value=session_factory)
+
+        new_url = "https://new.example/folder"
+        with patch("services.applications.get_session", get_session_fn):
+            await set_application_cloud_link(
+                br_id="BR-2026-0001", url=new_url
+            )
+
+        assert app.cloud_link == new_url
+        session.commit.assert_awaited_once()
+
+    async def test_missing_br_id_raises(self):
+        """Несуществующая заявка → ValueError."""
+        first_result = MagicMock()
+        first_result.scalar_one_or_none.return_value = None
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.execute = AsyncMock(return_value=first_result)
+        session.commit = AsyncMock()
+
+        session_factory = MagicMock(return_value=session)
+        get_session_fn = MagicMock(return_value=session_factory)
+
+        with patch("services.applications.get_session", get_session_fn):
+            with pytest.raises(ValueError):
+                await set_application_cloud_link(
+                    br_id="BR-2026-9999",
+                    url="https://disk.example/d/abc",
+                )
+
+    async def test_empty_inputs_raise(self):
+        """Пустой br_id или url → ValueError без обращения к БД."""
+        with pytest.raises(ValueError):
+            await set_application_cloud_link(br_id="", url="https://x.y/z")
+        with pytest.raises(ValueError):
+            await set_application_cloud_link(br_id="BR-2026-0001", url="   ")
