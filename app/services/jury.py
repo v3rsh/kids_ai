@@ -2,8 +2,13 @@
 Сервис жюри-голосования.
 
 Реализует:
-- алгоритм отбора по раундам 1→2→3 + жребий на повторной ничье
-  (см. ``docs/architecture.md`` → «Сервис жюри»);
+- алгоритм отбора по раундам с **инкрементальной фиксацией** топ-N
+  (см. ``docs/architecture.md`` → «Сервис жюри»): после каждого
+  закрытого раунда above_tie сразу попадает в ``jury_status=V_TOP_10``,
+  а в следующий раунд уходит только зона ничьи как новая задача;
+- runtime-настройку числа раундов и тумблер автоматического жребия
+  через ``services.jury_settings`` (хранится в ``app_settings``,
+  переживает рестарт);
 - формирование шорт-листа по итогам всех пулов;
 - синхронизацию полей реестра, относящихся к раундам жюри, и
   «Статуса жюри»;
@@ -32,12 +37,13 @@ from loguru import logger
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import JURY_ROUND_DEADLINE_HOURS, JURY_ROUNDS, TOP_N
+from config import JURY_ROUND_DEADLINE_HOURS, TOP_N
 from database.db import get_session
 from database.models import (
     AgeCategory,
     Application,
     JuryRound,
+    JuryRoundAggregate,
     JuryRoundStatus,
     JuryStatus,
     JuryVote,
@@ -46,6 +52,7 @@ from database.models import (
     ModerationStatus,
     Track,
 )
+from services.jury_settings import get_jury_auto_lot, get_jury_max_round
 from services.pools import (
     all_pools,
     get_jury_for_pool,
@@ -63,10 +70,10 @@ from utils.contracts import JuryTaskDTO, PoolKey, RoundResult
 class _RoundOutcome:
     """Результат прогона алгоритма отбора для одного раунда.
 
-    ``is_tied=False`` — топ-N сформирован (``top_ids`` финальные).
-    ``is_tied=True`` — ничья на границе TOP_N: ``above_tie_ids``
-    выше зоны ничьи, ``tie_ids`` — сама зона, кандидаты следующего
-    раунда = их объединение.
+    ``is_tied=False`` — все ``top_ids`` фиксируются как ``V_TOP_10``.
+    ``is_tied=True`` — ничья на границе оставшихся вакансий:
+    ``above_tie_ids`` фиксируется сразу, ``tie_ids`` уходит в
+    следующий раунд (или закрывается жребием — см. ``close_round``).
     """
 
     counts: dict[UUID, int]
@@ -144,6 +151,21 @@ async def _count_yes_per_app(
     return {row[0]: int(row[1]) for row in rows}
 
 
+async def _count_fixed_top_in_pool(
+    *,
+    track: Track,
+    age_category: AgeCategory,
+    session: AsyncSession,
+) -> int:
+    """Сколько мест в топ-N пула уже зафиксировано (``jury_status=V_TOP_10``)."""
+    stmt = select(func.count(Application.id)).where(
+        Application.track == track,
+        Application.age_category == age_category,
+        Application.jury_status == JuryStatus.V_TOP_10,
+    )
+    return int((await session.execute(stmt)).scalar() or 0)
+
+
 async def _get_round_candidates(
     round_obj: JuryRound,
     *,
@@ -153,14 +175,18 @@ async def _get_round_candidates(
 
     - Раунд 1: все ``ДОПУЩЕНО``-заявки пула, созданные не позже
       ``round_obj.opened_at`` (фиксированный снапшот на момент открытия).
-    - Раунды 2/3: above_tie ∪ tie_zone предыдущего раунда. Рекурсивно
-      вычисляется детерминированно из ``SUBMITTED``-голосов прошлого
-      раунда — никаких отдельных «таблиц кандидатов» не нужно.
+    - Раунды 2+: заявки пула со статусом ``НА_ГОЛОСОВАНИИ`` (то есть
+      ещё не зафиксированные ни как ``V_TOP_10``, ни как
+      ``NE_VOSHLO_V_TOP_10``), которые **участвовали в предыдущем
+      раунде** (есть запись в ``jury_round_aggregates`` для round N-1).
+      Сортировка ``(created_at ASC, id ASC)``.
+
+    Этот метод **детерминирован**: повторный вызов даёт тот же список
+    при тех же данных в БД.
     """
-    pool = PoolKey(track=round_obj.track, age_category=round_obj.age_category)
     if round_obj.round_no == 1:
         apps = await get_pool_applications(
-            pool,
+            PoolKey(track=round_obj.track, age_category=round_obj.age_category),
             session=session,
             status_filter=ModerationStatus.DOPUSHCHENO,
         )
@@ -179,15 +205,22 @@ async def _get_round_candidates(
             round_no=round_obj.round_no,
         )
         return []
-    prior_outcome = await _compute_round_outcome(prior, session=session)
-    next_ids = list(prior_outcome.above_tie_ids) + list(prior_outcome.tie_ids)
-    if not next_ids:
-        return []
-    result = await session.execute(
-        select(Application).where(Application.id.in_(next_ids))
+
+    stmt = (
+        select(Application)
+        .join(
+            JuryRoundAggregate,
+            JuryRoundAggregate.application_id == Application.id,
+        )
+        .where(
+            Application.track == round_obj.track,
+            Application.age_category == round_obj.age_category,
+            Application.jury_status == JuryStatus.NA_GOLOSOVANII,
+            JuryRoundAggregate.round_id == prior.id,
+        )
+        .order_by(Application.created_at.asc(), Application.id.asc())
     )
-    apps_by_id = {a.id: a for a in result.scalars().all()}
-    return [apps_by_id[i] for i in next_ids if i in apps_by_id]
+    return list((await session.execute(stmt)).scalars().all())
 
 
 def _compute_outcome_from_data(
@@ -200,12 +233,26 @@ def _compute_outcome_from_data(
 
     Выделена для unit-тестов (см. tests/test_jury_algorithm.py).
     Сортировка по голосам ``YES`` DESC, тай-брейк — ``(created_at, id)`` ASC.
+
+    ``top_n`` — число свободных вакансий в шорт-листе пула на момент
+    раунда (для раундов 2+ оно меньше ``TOP_N``, т.к. часть мест уже
+    зафиксирована above_tie прошлых раундов).
     """
     sorted_apps = sorted(
         candidates,
         key=lambda a: (-counts.get(a.id, 0), a.created_at, a.id),
     )
     sorted_ids = [a.id for a in sorted_apps]
+
+    if top_n <= 0:
+        return _RoundOutcome(
+            counts=dict(counts),
+            sorted_app_ids=sorted_ids,
+            top_ids=[],
+            above_tie_ids=[],
+            tie_ids=[],
+            is_tied=False,
+        )
 
     if len(sorted_apps) <= top_n:
         return _RoundOutcome(
@@ -247,14 +294,151 @@ async def _compute_round_outcome(
     round_obj: JuryRound,
     *,
     session: AsyncSession,
+    top_n_override: Optional[int] = None,
 ) -> _RoundOutcome:
     """Применить алгоритм отбора к раунду: вернуть отсортированный результат + tie-зону.
 
     Тонкая I/O-обёртка над ``_compute_outcome_from_data``.
+
+    ``top_n_override`` — если передан, используется как число вакансий;
+    иначе считается автоматически: ``TOP_N - count(V_TOP_10 в пуле)``.
     """
     candidates = await _get_round_candidates(round_obj, session=session)
     counts = await _count_yes_per_app(round_obj.id, session=session)
-    return _compute_outcome_from_data(candidates, counts)
+
+    if top_n_override is not None:
+        top_n = top_n_override
+    else:
+        fixed = await _count_fixed_top_in_pool(
+            track=round_obj.track,
+            age_category=round_obj.age_category,
+            session=session,
+        )
+        top_n = TOP_N - fixed
+
+    return _compute_outcome_from_data(candidates, counts, top_n=top_n)
+
+
+async def _upsert_round_aggregates(
+    round_obj: JuryRound,
+    counts: Mapping[UUID, int],
+    candidates: list[Application],
+    *,
+    session: AsyncSession,
+) -> None:
+    """Записать ``yes_count`` каждой работы раунда в ``jury_round_aggregates``.
+
+    Идемпотентно: повторный вызов перезаписывает существующие записи.
+    Включает **все** кандидаты раунда (в том числе с 0 ``YES`` — это
+    важно для Excel-реестра, чтобы отличать «0 голосов» от «не
+    участвовала в раунде»).
+    """
+    existing_rows = (
+        await session.execute(
+            select(JuryRoundAggregate).where(
+                JuryRoundAggregate.round_id == round_obj.id
+            )
+        )
+    ).scalars().all()
+    existing_by_app = {r.application_id: r for r in existing_rows}
+
+    for app in candidates:
+        yes = int(counts.get(app.id, 0))
+        row = existing_by_app.get(app.id)
+        if row is None:
+            session.add(
+                JuryRoundAggregate(
+                    round_id=round_obj.id,
+                    application_id=app.id,
+                    yes_count=yes,
+                )
+            )
+        else:
+            row.yes_count = yes
+
+
+async def _fix_above_tie_in_top(
+    *,
+    track: Track,
+    age_category: AgeCategory,
+    above_tie_ids: list[UUID],
+    sorted_app_ids: list[UUID],
+    round_no: int,
+    decided_by_lot_ids: Optional[set[UUID]] = None,
+    session: AsyncSession,
+) -> None:
+    """Зафиксировать выбранные заявки в ``V_TOP_10`` инкрементально.
+
+    Позиции (``pool_position``) считаются с продолжением: первая
+    «новая» заявка получает номер ``current_max_pool_position + 1``,
+    дальше — в порядке ``sorted_app_ids`` (отфильтрованном до
+    ``above_tie_ids``).
+    """
+    if not above_tie_ids:
+        return
+
+    decided_by_lot_ids = decided_by_lot_ids or set()
+
+    max_pos = await session.execute(
+        select(func.coalesce(func.max(Application.pool_position), 0)).where(
+            Application.track == track,
+            Application.age_category == age_category,
+            Application.pool_position.is_not(None),
+        )
+    )
+    next_position = int(max_pos.scalar() or 0) + 1
+
+    above_set = set(above_tie_ids)
+    ordered = [aid for aid in sorted_app_ids if aid in above_set]
+    # Fallback: если sorted_app_ids не покрыл (например, при жребии
+    # tie_zone не отсортирован по голосам) — добавим остальные в
+    # детерминированном порядке UUID.
+    ordered += sorted([aid for aid in above_tie_ids if aid not in set(ordered)])
+
+    for app_id in ordered:
+        await session.execute(
+            update(Application)
+            .where(Application.id == app_id)
+            .values(
+                jury_status=JuryStatus.V_TOP_10,
+                jury_final_round=round_no,
+                jury_decided_by_lot=app_id in decided_by_lot_ids,
+                pool_position=next_position,
+            )
+        )
+        next_position += 1
+
+
+async def _fix_losers_in_round(
+    *,
+    track: Track,
+    age_category: AgeCategory,
+    candidates: list[Application],
+    survivors: set[UUID],
+    round_no: int,
+    session: AsyncSession,
+) -> int:
+    """Заявки раунда, не выжившие в этом раунде → ``NE_VOSHLO_V_TOP_10``.
+
+    Выживший = в ``above_tie_ids`` (зафиксирован) **или** в
+    ``tie_ids`` (уйдёт в следующий раунд / жребий). Все прочие
+    кандидаты раунда — проиграли.
+
+    Возвращает число помеченных как «не вошло».
+    """
+    losers = [a.id for a in candidates if a.id not in survivors]
+    if not losers:
+        return 0
+
+    result = await session.execute(
+        update(Application)
+        .where(Application.id.in_(losers))
+        .values(
+            jury_status=JuryStatus.NE_VOSHLO_V_TOP_10,
+            jury_final_round=round_no,
+        )
+    )
+    return int(result.rowcount or len(losers))
 
 
 # =====================================================================
@@ -280,9 +464,9 @@ async def open_round(
 
     ``candidates`` для раунда 1 игнорируется (берётся всё из
     ``get_pool_applications`` на момент открытия — единый снапшот
-    через ``opened_at``); для раундов 2/3 список нужен **только**
+    через ``opened_at``); для раундов 2+ список нужен **только**
     в логе/sanity-check — кандидаты пересчитываются детерминированно
-    из ``compute_round_outcome`` предыдущего раунда. Это сделано
+    из ``_get_round_candidates`` по предыдущему раунду. Это сделано
     специально: даже если caller передаст устаревший список, бот
     использует консистентные данные из БД.
 
@@ -528,21 +712,28 @@ async def close_round(
 ) -> RoundResult:
     """Закрыть раунд по триггеру (полнота / дедлайн / команда модератора).
 
-    Алгоритм:
+    Алгоритм (инкрементальная фиксация):
+
     1. UPDATE ... SET status=CLOSED WHERE id=:id AND status=OPEN —
        идемпотентно: если кто-то уже закрыл, ничего не делаем.
-    2. Подсчёт SUBMITTED-голосов, агрегация в
-       ``Application.jury_round{N}_yes``.
-    3. Прогон ``_compute_round_outcome`` — определение topN или зоны ничьи.
-    4. Если ничья и ``round_no < JURY_ROUNDS`` — открываем следующий
-       раунд (без жребия).
-    5. Если ничья и это последний раунд — отметим, что нужен жребий
-       (``apply_lot_if_needed`` вызывается отдельно: либо в этом же
-       вызове, либо модератором/планировщиком).
+    2. Подсчёт SUBMITTED-голосов + UPSERT в ``JuryRoundAggregate``.
+    3. Прогон ``_compute_round_outcome`` с ``top_n = TOP_N - fixed`` —
+       определение above_tie, tie-зоны и проигравших.
+    4. **Сразу фиксировать** above_tie как ``V_TOP_10`` (инкремент:
+       часть мест в шорт-листе занята уже сейчас).
+    5. Проигравших раунда — ``NE_VOSHLO_V_TOP_10``.
+    6. Решение, что дальше:
+       - нет ничьи и все вакансии закрыты → пул завершён;
+       - есть ничья + ``round_no >= max_round`` + ``auto_lot=True``
+         → ``apply_lot_if_needed``;
+       - есть ничья (иначе) → открыть ``round_no + 1`` с tie-зоной
+         как новой задачей всем судьям.
 
-    Возвращает ``RoundResult`` с агрегатами для логирования и для
-    интеграции с уведомлениями.
+    Возвращает ``RoundResult`` для логирования / нотификаций.
     """
+    max_round = await get_jury_max_round()
+    auto_lot = await get_jury_auto_lot()
+
     async with _open_session_ctx(session) as s:
         round_obj = await _get_round(round_id, session=s)
         if round_obj is None:
@@ -563,35 +754,66 @@ async def close_round(
                 round_id=str(round_id),
                 status=round_obj.status.name,
             )
-            outcome = await _compute_round_outcome(round_obj, session=s)
+            fixed_now = await _count_fixed_top_in_pool(
+                track=round_obj.track,
+                age_category=round_obj.age_category,
+                session=s,
+            )
+            outcome = await _compute_round_outcome(
+                round_obj,
+                session=s,
+                top_n_override=TOP_N - fixed_now,
+            )
             return RoundResult(
                 pool=PoolKey(track=round_obj.track, age_category=round_obj.age_category),
                 round_no=round_obj.round_no,
                 top_ids=tuple(outcome.top_ids),
                 tie_ids=tuple(outcome.tie_ids),
                 decided_by_lot=(),
-                needs_next_round=outcome.is_tied
-                and round_obj.round_no < JURY_ROUNDS,
+                needs_next_round=outcome.is_tied,
                 closed_at=round_obj.closed_at or now,
             )
 
         await s.refresh(round_obj)
-        outcome = await _compute_round_outcome(round_obj, session=s)
 
-        round_field = {
-            1: Application.jury_round1_yes,
-            2: Application.jury_round2_yes,
-            3: Application.jury_round3_yes,
-        }.get(round_obj.round_no)
-        if round_field is not None:
-            for app_id, yes_count in outcome.counts.items():
-                await s.execute(
-                    update(Application)
-                    .where(Application.id == app_id)
-                    .values({round_field: yes_count})
-                )
+        fixed_before = await _count_fixed_top_in_pool(
+            track=round_obj.track,
+            age_category=round_obj.age_category,
+            session=s,
+        )
+        remaining = TOP_N - fixed_before
+        candidates = await _get_round_candidates(round_obj, session=s)
+        counts = await _count_yes_per_app(round_obj.id, session=s)
+        outcome = _compute_outcome_from_data(candidates, counts, top_n=remaining)
 
-        needs_next = outcome.is_tied and round_obj.round_no < JURY_ROUNDS
+        await _upsert_round_aggregates(
+            round_obj, counts, candidates, session=s
+        )
+
+        survivors_in_round = set(outcome.above_tie_ids) | set(outcome.tie_ids)
+        await _fix_above_tie_in_top(
+            track=round_obj.track,
+            age_category=round_obj.age_category,
+            above_tie_ids=list(outcome.above_tie_ids),
+            sorted_app_ids=list(outcome.sorted_app_ids),
+            round_no=round_obj.round_no,
+            session=s,
+        )
+        losers_count = await _fix_losers_in_round(
+            track=round_obj.track,
+            age_category=round_obj.age_category,
+            candidates=candidates,
+            survivors=survivors_in_round,
+            round_no=round_obj.round_no,
+            session=s,
+        )
+
+        needs_next = outcome.is_tied
+        will_apply_lot = (
+            outcome.is_tied
+            and auto_lot
+            and round_obj.round_no >= max_round
+        )
 
         if session is None:
             await s.commit()
@@ -603,34 +825,35 @@ async def close_round(
             track=round_obj.track.name,
             age_category=round_obj.age_category.name,
             is_tied=outcome.is_tied,
-            needs_next_round=needs_next,
-            top_count=len(outcome.top_ids),
-            tie_count=len(outcome.tie_ids),
             above_tie_count=len(outcome.above_tie_ids),
+            tie_count=len(outcome.tie_ids),
+            losers_count=losers_count,
+            remaining_before=remaining,
+            max_round=max_round,
+            auto_lot=auto_lot,
+            will_apply_lot=will_apply_lot,
         )
 
         result_dto = RoundResult(
             pool=PoolKey(track=round_obj.track, age_category=round_obj.age_category),
             round_no=round_obj.round_no,
-            top_ids=tuple(outcome.top_ids),
+            top_ids=tuple(outcome.above_tie_ids),
             tie_ids=tuple(outcome.tie_ids),
             decided_by_lot=(),
-            needs_next_round=needs_next,
+            needs_next_round=needs_next and not will_apply_lot,
             closed_at=now,
         )
 
+    if will_apply_lot:
+        await apply_lot_if_needed(round_id, session=session)
+        return result_dto
+
     if needs_next:
-        next_candidate_ids = list(outcome.above_tie_ids) + list(outcome.tie_ids)
-        async with _open_session_ctx(session) as s2:
-            result_apps = await s2.execute(
-                select(Application).where(Application.id.in_(next_candidate_ids))
-            )
-            next_candidates = list(result_apps.scalars().all())
         await open_round(
             track=result_dto.pool.track,
             age_category=result_dto.pool.age_category,
             round_no=round_obj.round_no + 1,
-            candidates=next_candidates,
+            candidates=[],
             session=session,
         )
 
@@ -644,18 +867,17 @@ async def compute_top_n(
 ) -> list[Application]:
     """Сформировать топ-N для уже закрытого раунда.
 
-    Если ``is_tied=False`` — возвращает заявки топ-N.
-    Если ``is_tied=True`` — возвращает кандидатов на следующий
-    раунд (``above_tie ∪ tie_zone``), готовых для ``open_round(N+1)``.
-    Caller отличает случаи по тому, что во втором случае размер
-    больше TOP_N (или ровно столько, сколько кандидатов в зоне ничьи).
+    Используется в основном для совместимости с тестами / диагностики.
+    В новой инкрементальной модели «топ» хранится прямо в
+    ``Application.jury_status == V_TOP_10`` — там самый честный
+    источник. Этот метод возвращает above_tie последнего расчёта.
     """
     async with _open_session_ctx(session) as s:
         round_obj = await _get_round(round_id, session=s)
         if round_obj is None:
             raise LookupError(f"Раунд {round_id} не найден")
         outcome = await _compute_round_outcome(round_obj, session=s)
-        ids = outcome.top_ids if not outcome.is_tied else (
+        ids = outcome.above_tie_ids if not outcome.is_tied else (
             list(outcome.above_tie_ids) + list(outcome.tie_ids)
         )
         if not ids:
@@ -672,42 +894,78 @@ async def apply_lot_if_needed(
     *,
     session: Optional[AsyncSession] = None,
 ) -> list[Application]:
-    """Автоматический жребий в финальном раунде.
+    """Автоматический жребий на оставшиеся вакансии пула.
 
-    Срабатывает, если последний раунд закрыт с ничьёй на границе
-    топ-N. Случайно выбирает нужное число работ из зоны ничьи,
-    помечает им ``jury_decided_by_lot=True``, переводит раунд в
-    статус ``DRAWN_BY_LOT``.
+    Срабатывает, если раунд закрыт с ничьёй на границе оставшихся
+    вакансий (``remaining = TOP_N - count(V_TOP_10 в пуле)``).
+    Случайно выбирает нужное число работ из tie-зоны текущего раунда,
+    помечает их ``jury_status=V_TOP_10`` с ``jury_decided_by_lot=True``,
+    переводит раунд в статус ``DRAWN_BY_LOT``. Остальные tie-апы
+    помечаются ``NE_VOSHLO_V_TOP_10`` — пул финализируется.
 
-    Возвращает список заявок, попавших в топ-N **по жребию**
-    (без already-confirmed-частью above_tie). Если жребий не
-    нужен — возвращает пустой список.
+    В инкрементальной модели above_tie прошлых раундов уже зафиксирован,
+    поэтому ``remaining`` считается из БД, а не из ``outcome.above_tie``.
+
+    Возвращает заявки, попавшие в топ по жребию. Если жребий не нужен —
+    пустой список.
     """
     async with _open_session_ctx(session) as s:
         round_obj = await _get_round(round_id, session=s)
         if round_obj is None:
             raise LookupError(f"Раунд {round_id} не найден")
-        outcome = await _compute_round_outcome(round_obj, session=s)
-        if not outcome.is_tied:
-            return []
-        remaining = TOP_N - len(outcome.above_tie_ids)
+
+        fixed = await _count_fixed_top_in_pool(
+            track=round_obj.track,
+            age_category=round_obj.age_category,
+            session=s,
+        )
+        remaining = TOP_N - fixed
         if remaining <= 0:
             logger.info(
-                "Жребий: above_tie уже покрывает топ-N — жребий не нужен",
+                "Жребий: вакансий не осталось — пропускаем",
                 round_id=str(round_id),
             )
             return []
+
+        outcome = await _compute_round_outcome(
+            round_obj, session=s, top_n_override=remaining
+        )
+        if not outcome.is_tied:
+            logger.info(
+                "Жребий: ничьи нет — пропускаем",
+                round_id=str(round_id),
+            )
+            return []
+        if not outcome.tie_ids:
+            return []
+
         if remaining >= len(outcome.tie_ids):
             chosen_ids = list(outcome.tie_ids)
         else:
             chosen_ids = random.sample(outcome.tie_ids, remaining)
 
-        for app_id in chosen_ids:
+        chosen_set = set(chosen_ids)
+        await _fix_above_tie_in_top(
+            track=round_obj.track,
+            age_category=round_obj.age_category,
+            above_tie_ids=chosen_ids,
+            sorted_app_ids=list(outcome.sorted_app_ids),
+            round_no=round_obj.round_no,
+            decided_by_lot_ids=chosen_set,
+            session=s,
+        )
+
+        lot_losers = [aid for aid in outcome.tie_ids if aid not in chosen_set]
+        if lot_losers:
             await s.execute(
                 update(Application)
-                .where(Application.id == app_id)
-                .values(jury_decided_by_lot=True)
+                .where(Application.id.in_(lot_losers))
+                .values(
+                    jury_status=JuryStatus.NE_VOSHLO_V_TOP_10,
+                    jury_final_round=round_obj.round_no,
+                )
             )
+
         await s.execute(
             update(JuryRound)
             .where(JuryRound.id == round_id)
@@ -727,6 +985,7 @@ async def apply_lot_if_needed(
             round_id=str(round_id),
             chosen_count=len(chosen_ids),
             tie_zone_size=len(outcome.tie_ids),
+            lot_losers=len(lot_losers),
         )
         return chosen
 
@@ -741,8 +1000,20 @@ async def _finalize_pool(
     *,
     session: AsyncSession,
 ) -> list[Application]:
-    """Зафиксировать результаты пула: проставить ``jury_status``,
-    ``jury_final_round``, ``pool_position``. Возвращает работы топ-N.
+    """Аварийная финализация пула (для ``/jury_finalize``).
+
+    В обычном потоке пул финализируется инкрементально в ``close_round``:
+    above_tie каждого раунда сразу попадает в ``V_TOP_10``. Эта функция
+    нужна только когда модератор хочет принудительно остановить процесс:
+
+    - если есть открытый раунд — закрываем его (``close_round`` сам
+      сделает инкрементальную фиксацию и решит, нужен ли жребий);
+    - если ``auto_lot=False`` и в последнем раунде осталась ничья —
+      оставляем вакансии **пустыми**, помечая tie-зону как
+      ``NE_VOSHLO_V_TOP_10``. Этот сценарий = «не дожали 10 работ,
+      админ сознательно зафиксировал частичный шорт-лист».
+
+    Возвращает текущие ``V_TOP_10``-заявки пула.
     """
     rounds = (
         await session.execute(
@@ -754,71 +1025,60 @@ async def _finalize_pool(
             .order_by(JuryRound.round_no.desc())
         )
     ).scalars().all()
-    if not rounds:
-        return []
-    final_round = rounds[0]
-    if final_round.status == JuryRoundStatus.OPEN:
-        return []
 
-    outcome = await _compute_round_outcome(final_round, session=session)
+    if rounds:
+        last_round = rounds[0]
+        if last_round.status == JuryRoundStatus.OPEN:
+            # close_round внутри: инкрементальная фиксация + (возможно) жребий.
+            await close_round(last_round.id, session=session)
+            # перечитаем после закрытия
+            await session.flush()
 
-    if outcome.is_tied:
-        lot_apps = await apply_lot_if_needed(final_round.id, session=session)
-        lot_ids = {a.id for a in lot_apps}
-        top_ids = list(outcome.above_tie_ids) + list(lot_ids)
-    else:
-        top_ids = list(outcome.top_ids)
-        lot_ids = set()
-
-    top_set = set(top_ids)
-    all_pool_apps = await get_pool_applications(
-        pool,
-        session=session,
-        status_filter=None,
-    )
-
-    position_by_id = {
-        app_id: idx + 1 for idx, app_id in enumerate(outcome.sorted_app_ids)
-    }
-    next_pos = len(position_by_id) + 1
-
-    for app in all_pool_apps:
-        if app.id in top_set:
-            new_status = JuryStatus.V_TOP_10
-            jury_final = final_round.round_no
-            decided_by_lot = app.id in lot_ids
-        elif app.jury_status in (
-            JuryStatus.NE_PEREDANO_ZHYURI,
-            JuryStatus.NA_GOLOSOVANII,
-        ):
-            if app.moderation_status != ModerationStatus.DOPUSHCHENO:
-                continue
-            new_status = JuryStatus.NE_VOSHLO_V_TOP_10
-            jury_final = final_round.round_no
-            decided_by_lot = False
-        else:
-            continue
-
-        pos = position_by_id.get(app.id)
-        if pos is None:
-            pos = next_pos
-            next_pos += 1
-
-        await session.execute(
-            update(Application)
-            .where(Application.id == app.id)
-            .values(
-                jury_status=new_status,
-                jury_final_round=jury_final,
-                jury_decided_by_lot=decided_by_lot
-                if app.id in top_set
-                else app.jury_decided_by_lot,
-                pool_position=pos,
-            )
-        )
+        auto_lot = await get_jury_auto_lot()
+        if not auto_lot:
+            # Если жребий запрещён и в последнем CLOSED раунде осталась
+            # ничья — tie-зону отправляем в проигравшие, пул фиксируется
+            # «частичным» (вакансии остаются пустыми).
+            fresh_last = (
+                await session.execute(
+                    select(JuryRound).where(JuryRound.id == last_round.id)
+                )
+            ).scalar_one()
+            if fresh_last.status == JuryRoundStatus.CLOSED:
+                fixed = await _count_fixed_top_in_pool(
+                    track=pool.track,
+                    age_category=pool.age_category,
+                    session=session,
+                )
+                if fixed < TOP_N:
+                    outcome = await _compute_round_outcome(
+                        fresh_last,
+                        session=session,
+                        top_n_override=TOP_N - fixed,
+                    )
+                    if outcome.is_tied and outcome.tie_ids:
+                        await session.execute(
+                            update(Application)
+                            .where(Application.id.in_(list(outcome.tie_ids)))
+                            .values(
+                                jury_status=JuryStatus.NE_VOSHLO_V_TOP_10,
+                                jury_final_round=fresh_last.round_no,
+                            )
+                        )
+                        logger.info(
+                            "Аварийная финализация без жребия — tie-зона помечена как «не вошло»",
+                            pool=pool.as_label(),
+                            tie_count=len(outcome.tie_ids),
+                        )
 
     result_apps = await session.execute(
-        select(Application).where(Application.id.in_(top_set))
+        select(Application)
+        .where(
+            Application.track == pool.track,
+            Application.age_category == pool.age_category,
+            Application.jury_status == JuryStatus.V_TOP_10,
+        )
+        .order_by(Application.pool_position.asc())
     )
     return list(result_apps.scalars().all())
 
@@ -827,26 +1087,20 @@ async def build_shortlist(
     *,
     session: Optional[AsyncSession] = None,
 ) -> list[Application]:
-    """Сформировать шорт-лист по итогам всех пулов.
+    """Собрать шорт-лист по всем пулам.
 
-    Число пулов = ``len(services.pools.all_pools())`` (на текущей
-    конфигурации это 9: 3 трека × 3 возрастные категории). Хардкода
-    числа в коде нет — функция перестраивается под текущий состав
-    Track × AgeCategory.
+    В новой инкрементальной модели шорт-лист уже **накапливается** в
+    ``Application.jury_status == V_TOP_10`` по мере закрытия раундов.
+    Эта функция:
 
-    Должна вызываться, когда все пулы имеют закрытый финальный
-    раунд (CLOSED или DRAWN_BY_LOT). Алгоритм:
-
-    1. По каждому пулу — взять последний раунд, прогнать жребий
-       (если нужно).
-    2. Проставить ``Application.jury_status``, ``jury_final_round``,
-       ``pool_position``, ``jury_decided_by_lot`` для каждой заявки
-       пула (синхронизация полей реестра, относящихся к раундам жюри).
-    3. Вернуть плоский список заявок топ-N всех пулов (для дальнейшей
-       Excel-выгрузки шорт-листа через ``/export_shortlist``).
+    1. Прогоняет ``_finalize_pool`` для каждого пула — для пулов с
+       открытыми раундами или незавершёнными ничьями (актуально, если
+       вызвана через ``/jury_finalize``).
+    2. Возвращает плоский список ``V_TOP_10``-заявок всех пулов в
+       порядке ``(track, age_category, pool_position)``.
 
     Уведомления участников и чата модерации о попадании в шорт-лист —
-    задача ``services.notifications``. Здесь только обновление БД и логи.
+    задача ``services.notifications``.
     """
     async with _open_session_ctx(session) as s:
         all_shortlist: list[Application] = []
