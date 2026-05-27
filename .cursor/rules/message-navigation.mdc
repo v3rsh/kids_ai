@@ -43,3 +43,10 @@ alwaysApply: false
 ## Линейный FSM с историей в чате
 
 Текстовые шаги оставляют ответ родителя + промпт бота. Шаг **только с кнопкой** при edit теряется из истории — после выбора нужно persistent-подтверждение и отдельный промпт следующего шага. Формат текстов — `.cursor/rules/user-messages.mdc`.
+
+## Карточки модератора
+
+- Используйте `parse_origin(message.data)` и `card_action_buttons(app, origin)` из `app/utils/moderator_nav.py`.
+- Не хардкодьте `/queue` в back-кнопках карточек — для возврата в очередь используйте `/m_q_refresh`.
+- Кнопки списков: `command="/find"` + `data=find_button_data(br_id, origin)`.
+- `/files`: вложения отправляются `bot.answer_message` **без трекинга** (скачиваемые файлы); финальный экран — re-render карточки с origin, не transient summary.

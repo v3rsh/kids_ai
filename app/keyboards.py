@@ -754,6 +754,11 @@ def admin_resend_welcome_role_bubbles(huid: str) -> BubbleMarkup:
 # =====================================================================
 
 
+def intake_cancel_bubble(bubbles: BubbleMarkup) -> None:
+    """Кнопка «◀ Отмена» — выход из анкеты через /start."""
+    bubbles.add_button(command="/start", label="◀ Отмена", new_row=True)
+
+
 def track_selection_bubbles() -> BubbleMarkup:
     """Три кнопки выбора трека.
 
@@ -769,6 +774,7 @@ def track_selection_bubbles() -> BubbleMarkup:
             data={"track": track.name},
             new_row=True,
         )
+    intake_cancel_bubble(bubbles)
     return bubbles
 
 
@@ -803,6 +809,7 @@ def consents_bubbles(
             label="Подтвердить и продолжить",
             new_row=True,
         )
+    intake_cancel_bubble(bubbles)
     return bubbles
 
 
@@ -826,6 +833,7 @@ def file_upload_bubbles(*, can_add_more: bool, can_finish: bool) -> BubbleMarkup
             label="Завершить загрузку",
             new_row=True,
         )
+    intake_cancel_bubble(bubbles)
     return bubbles
 
 
@@ -836,6 +844,7 @@ def final_confirm_bubbles() -> BubbleMarkup:
         command="/intake_restart", label="Заполнить заново", new_row=True
     )
     bubbles.add_button(command="/intake_submit", label="Отправить заявку")
+    intake_cancel_bubble(bubbles)
     return bubbles
 
 
@@ -867,6 +876,7 @@ __all__ = [
     "admin_add_role_role_bubbles",
     "admin_resend_welcome_role_bubbles",
     "track_selection_bubbles",
+    "intake_cancel_bubble",
     "consents_bubbles",
     "file_upload_bubbles",
     "final_confirm_bubbles",

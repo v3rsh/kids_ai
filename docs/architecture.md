@@ -420,6 +420,42 @@ async def handler(message: IncomingMessage, bot: Bot) -> None:
 `{раздел}:{подраздел}:{состояние}`; значения регистрируются в
 диспетчере `default_message_handler` (см. раздел 11 «Диспетчер»).
 
+### FSM data keys
+
+Строковые ключи словаря `data` (не путать с Enum-состояниями) собраны
+в [`app/fsm/keys.py`](../app/fsm/keys.py). **Значения ключей не менять**
+без миграции — они могут лежать в Redis у активных сессий.
+
+| Ключ | Владелец | Назначение |
+|---|---|---|
+| `moderator_queue_tracks` … `moderator_browse_index` | `moderator_queue.py` | Фильтры и пагинация `/queue`, `/browse` |
+| `moderator:multi_subs:page` | `moderator_multi_subs.py` | Страница отчёта повторных заявок |
+| `moderator_nav_origin_*`, `moderator_target_br_id` | `moderator_actions.py` | Кеш origin на время FSM-диалога (comment/reject) |
+| `user:my_apps:page` | `user_applications.py` | Страница «Мои заявки» |
+| `file_upload_allowed` | `user_files.py` | Флаг шага загрузки файлов |
+| `jury_task_round_id`, `jury_task_index` | `jury_tasks.py` | Позиция в карусели жюри |
+| `admin_add_role` | `admin_roles.py` | Выбранная роль при добавлении |
+
+### Навигация модератора: контекст происхождения
+
+Карточка заявки (`/find`) и действия по ней используют **origin** —
+откуда модератор пришёл. Origin передаётся в `data` кнопки, парсится
+через `parse_origin()` из [`app/utils/moderator_nav.py`](../app/utils/moderator_nav.py).
+
+| `origin.kind` | Кнопка «назад» | Команда |
+|---|---|---|
+| `section` | ◀ К списку | `/m_list` + `{st, tr, ag, p}` |
+| `queue` | ◀ К очереди | `/m_q_refresh` (сохраняет страницу) |
+| `browse` | ◀ К карусели | `/m_b_refresh` |
+| `multi_subs` | ◀ К повторным | `/multi_subs` |
+| `admin_find` | ◀ В админку | `/admin` |
+| `direct` | — | только «◀ Меню модератора» |
+
+Кнопки списков открывают карточку как `command="/find"` +
+`data={"br_id": "...", "from": "...", ...}`. FSM-кеш origin — только
+на время ввода текста в `/comment` / `/notify_reject` (отмена —
+`/m_cancel_dialog`).
+
 ---
 
 ## 5а. Discovery ролей, in-memory кэш доступа и chat-gate

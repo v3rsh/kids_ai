@@ -31,7 +31,7 @@ from utils.bot_utils import (
 
 collector = HandlerCollector()
 
-FSM_KEY_MY_APPS_PAGE = "user:my_apps:page"
+from fsm.keys import FSM_KEY_MY_APPS_PAGE
 MY_APPS_PAGE_SIZE = 6
 
 

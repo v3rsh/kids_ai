@@ -56,6 +56,7 @@ from pybotx.models.attachments import OutgoingAttachment
 from config import ATTACHMENTS_DIR, COMPETITION_YEAR
 from database.models import Application, IntakeMode, ModerationStatus
 from fsm import cleanup_middleware, fsm_middleware
+from fsm.keys import FSM_KEY_MODERATOR_TARGET_BR_ID
 from handlers.common import register_state_handler
 from handlers.moderator_queue import build_full_card, render_application_card
 from services.access import moderator_only
@@ -67,12 +68,27 @@ from services.moderation import (
 )
 from keyboards import back_to_moderator_menu_bubbles
 from states import ModeratorAction
-from utils.bot_utils import reply_to_user, safe_answer_transient
+from utils.bot_utils import reply_to_user
+from utils.moderator_nav import (
+    ModeratorNavOrigin,
+    card_action_buttons,
+    clear_dialog_state,
+    fsm_dialog_prompt_bubbles,
+    load_dialog_origin,
+    parse_origin,
+    post_action_bubbles,
+    save_dialog_origin,
+    build_back_bubbles,
+)
 
 
 collector = HandlerCollector()
 
 _MODERATOR_BACK = back_to_moderator_menu_bubbles()
+
+_MODERATOR_ACTION_STATES = frozenset(
+    state.value for state in ModeratorAction
+)
 
 
 async def _reply_with_mod_menu(
@@ -150,62 +166,45 @@ def _normalize_br_id(token: str) -> str:
     return token.strip().upper() if token else ""
 
 
+def _resolve_br_id(message: IncomingMessage) -> str:
+    """BR-ID из ``message.data`` или аргумента команды."""
+    data = message.data or {}
+    if data.get("br_id"):
+        return _normalize_br_id(str(data["br_id"]))
+    arg = _split_command_argument(message)
+    br_id_token, _ = _split_id_and_rest(arg)
+    return _normalize_br_id(br_id_token)
+
+
+def _resolve_status_tokens(
+    message: IncomingMessage,
+) -> tuple[str, str, str]:
+    """BR-ID, группа и значение для ``/status``."""
+    data = message.data or {}
+    br_id = _resolve_br_id(message)
+    if data.get("group") and data.get("value"):
+        return br_id, str(data["group"]), str(data["value"])
+    arg = _split_command_argument(message)
+    br_id_token, rest = _split_id_and_rest(arg)
+    group_token, value_token = _split_id_and_rest(rest)
+    return (
+        _normalize_br_id(br_id_token) or br_id,
+        group_token,
+        value_token,
+    )
+
+
+async def _exit_moderator_action_state_if_active(message: IncomingMessage) -> None:
+    """Сбросить FSM-диалог модератора, сохранив фильтры очереди."""
+    fsm = message.state.fsm
+    state = await fsm.get_state()
+    if state in _MODERATOR_ACTION_STATES:
+        await clear_dialog_state(fsm)
+
+
 # =====================================================================
-# Карточка действий
+# Карточка действий (делегирование в utils.moderator_nav)
 # =====================================================================
-
-
-def _card_action_buttons(app: Application) -> BubbleMarkup:
-    """Полный набор инлайн-кнопок активной карточки заявки.
-
-    Состав зависит от статуса модерации:
-    - Для отклонённой заявки (``OTKLONENO``) кнопки действий (Допустить,
-      На исправление, Отклонить, Файлы) скрыты — файлы удалены с диска,
-      работать с такой заявкой моделирующее действие нельзя.
-    - Для активных статусов отображаются все стандартные действия.
-    """
-    bubbles = BubbleMarkup()
-    if app.moderation_status is ModerationStatus.OTKLONENO:
-        bubbles.add_button(
-            command=f"/comment {app.br_id}",
-            label="💬 Комментарий",
-            new_row=True,
-        )
-        bubbles.add_button(
-            command="/queue",
-            label="📋 К очереди",
-            new_row=True,
-        )
-        return bubbles
-
-    bubbles.add_button(
-        command=f"/files {app.br_id}",
-        label="📂 Файлы",
-        new_row=True,
-    )
-    bubbles.add_button(
-        command=f"/status {app.br_id} модерация допущено",
-        label="✅ Допустить",
-    )
-    bubbles.add_button(
-        command=f"/notify_fix {app.br_id}",
-        label="✏️ На исправление",
-    )
-    bubbles.add_button(
-        command=f"/notify_reject {app.br_id}",
-        label="🚫 Отклонить",
-        new_row=True,
-    )
-    bubbles.add_button(
-        command=f"/comment {app.br_id}",
-        label="💬 Комментарий",
-    )
-    bubbles.add_button(
-        command="/queue",
-        label="📋 К очереди",
-        new_row=True,
-    )
-    return bubbles
 
 
 def _moderation_action_headline(
@@ -240,6 +239,7 @@ async def _show_action_confirmation(
     app: Application,
     headline: str,
     extra: str | None = None,
+    origin: ModeratorNavOrigin | None = None,
 ) -> None:
     """Показать единое подтверждение действия модератора.
 
@@ -262,43 +262,38 @@ async def _show_action_confirmation(
     if extra:
         lines.append("")
         lines.append(extra)
+    nav_origin = origin if origin is not None else parse_origin(message.data)
     await reply_to_user(
         message,
         bot,
         "\n".join(lines),
-        bubbles=_post_action_bubbles(app),
+        bubbles=post_action_bubbles(nav_origin),
     )
 
 
-def _post_action_bubbles(app: Application) -> BubbleMarkup:
-    """Клавиатура после успешного действия модератора.
+# =====================================================================
+# /m_cancel_dialog — отмена FSM-диалога модератора
+# =====================================================================
 
-    Действия (допустить / отклонить / на исправление) исключают заявку
-    из активной очереди, поэтому кнопки этих действий мы убираем и
-    показываем нав-кнопки: «следующая в очереди», «к очереди»,
-    «карточка», «меню модератора».
-    """
-    bubbles = BubbleMarkup()
-    bubbles.add_button(
-        command="/queue_next",
-        label="▶ Следующая заявка",
-        new_row=True,
+
+@collector.command(
+    "/m_cancel_dialog",
+    description="Отменить ввод модератора и вернуться назад",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@moderator_only
+async def cmd_m_cancel_dialog(message: IncomingMessage, bot: Bot) -> None:
+    """Отмена FSM-диалога (comment/reject) с возвратом по origin."""
+    fsm = message.state.fsm
+    origin, _br_id = await load_dialog_origin(fsm)
+    await clear_dialog_state(fsm)
+    await reply_to_user(
+        message,
+        bot,
+        "Действие отменено.",
+        bubbles=build_back_bubbles(origin),
     )
-    bubbles.add_button(
-        command="/queue",
-        label="📋 К очереди",
-        new_row=True,
-    )
-    bubbles.add_button(
-        command=f"/find {app.br_id}",
-        label="📄 Карточка заявки",
-    )
-    bubbles.add_button(
-        command="/moderator",
-        label="◀ В меню модератора",
-        new_row=True,
-    )
-    return bubbles
 
 
 # =====================================================================
@@ -318,11 +313,11 @@ async def cmd_find(message: IncomingMessage, bot: Bot) -> None:
 
     Форматы вызова:
 
-    - ``/find BR-2026-0001`` — текстом или с кнопки.
+    - ``/find BR-2026-0001`` — текстом;
+    - кнопка ``/find`` + ``data["br_id"]`` + опциональный ``from`` (origin).
     """
-    arg = _split_command_argument(message)
-    br_id, _ = _split_id_and_rest(arg)
-    br_id = _normalize_br_id(br_id)
+    await _exit_moderator_action_state_if_active(message)
+    br_id = _resolve_br_id(message)
     if not br_id:
         await _reply_with_mod_menu(
             message,
@@ -338,11 +333,12 @@ async def cmd_find(message: IncomingMessage, bot: Bot) -> None:
             f"Заявка {br_id} не найдена.",
         )
         return
+    origin = parse_origin(message.data)
     await render_application_card(
         message,
         bot,
         app=app,
-        bubbles=_card_action_buttons(app),
+        bubbles=card_action_buttons(app, origin),
     )
 
 
@@ -370,9 +366,7 @@ async def cmd_status(message: IncomingMessage, bot: Bot) -> None:
     Пример: ``/status BR-2026-0001 модерация допущено``.
     """
     arg = _split_command_argument(message)
-    br_id_token, rest = _split_id_and_rest(arg)
-    group_token, value_token = _split_id_and_rest(rest)
-    br_id = _normalize_br_id(br_id_token)
+    br_id, group_token, value_token = _resolve_status_tokens(message)
 
     if not br_id or not group_token or not value_token:
         await _reply_with_mod_menu(
@@ -436,6 +430,7 @@ async def cmd_status(message: IncomingMessage, bot: Bot) -> None:
                 result.new_value or "",
                 notified_ok=notified_ok,
             ),
+            origin=parse_origin(message.data),
         )
         return
 
@@ -448,7 +443,9 @@ async def cmd_status(message: IncomingMessage, bot: Bot) -> None:
         message,
         bot,
         body + "\n\n" + await build_full_card(result.application),
-        bubbles=_card_action_buttons(result.application),
+        bubbles=card_action_buttons(
+            result.application, parse_origin(message.data)
+        ),
     )
 
 
@@ -473,7 +470,7 @@ async def cmd_comment(message: IncomingMessage, bot: Bot) -> None:
     """
     arg = _split_command_argument(message)
     br_id_token, rest = _split_id_and_rest(arg)
-    br_id = _normalize_br_id(br_id_token)
+    br_id = _resolve_br_id(message) or _normalize_br_id(br_id_token)
     if not br_id:
         await _reply_with_mod_menu(
             message,
@@ -483,21 +480,25 @@ async def cmd_comment(message: IncomingMessage, bot: Bot) -> None:
         return
 
     if not rest:
-        await message.state.fsm.set_state(
-            ModeratorAction.moderator_action_comment_input
-        )
-        await message.state.fsm.update_data(moderator_target_br_id=br_id)
-        await _reply_with_mod_menu(
+        origin = parse_origin(message.data)
+        fsm = message.state.fsm
+        await save_dialog_origin(fsm, origin=origin, br_id=br_id)
+        await fsm.set_state(ModeratorAction.moderator_action_comment_input)
+        await fsm.update_data(**{FSM_KEY_MODERATOR_TARGET_BR_ID: br_id})
+        await reply_to_user(
             message,
             bot,
             (
                 f"Введите новый комментарий к заявке {br_id} следующим "
                 "сообщением. Чтобы очистить — отправьте «-» или «нет»."
             ),
+            bubbles=fsm_dialog_prompt_bubbles(br_id, origin),
         )
         return
 
-    await _apply_comment(message, bot, br_id=br_id, text=rest)
+    await _apply_comment(
+        message, bot, br_id=br_id, text=rest, origin=parse_origin(message.data)
+    )
 
 
 async def _apply_comment(
@@ -506,6 +507,7 @@ async def _apply_comment(
     *,
     br_id: str,
     text: str,
+    origin: ModeratorNavOrigin | None = None,
 ) -> None:
     cleared = text.strip().casefold() in {"-", "—", "нет", "none", ""}
     new_text = "" if cleared else text
@@ -519,11 +521,12 @@ async def _apply_comment(
         body = f"Комментарий к {br_id} удалён."
     else:
         body = f"Комментарий к {br_id} сохранён."
+    nav_origin = origin if origin is not None else parse_origin(message.data)
     await reply_to_user(
         message,
         bot,
         body + "\n\n" + await build_full_card(app),
-        bubbles=_card_action_buttons(app),
+        bubbles=card_action_buttons(app, nav_origin),
     )
 
 
@@ -535,9 +538,12 @@ async def _state_handle_comment(message: IncomingMessage, bot: Bot) -> None:
     """
     fsm = message.state.fsm
     data = await fsm.get_data()
-    br_id = _normalize_br_id(data.get("moderator_target_br_id") or "")
+    origin, cached_br_id = await load_dialog_origin(fsm)
+    br_id = _normalize_br_id(
+        data.get(FSM_KEY_MODERATOR_TARGET_BR_ID) or cached_br_id or ""
+    )
     text = (message.body or "").strip()
-    await fsm.clear()
+    await clear_dialog_state(fsm)
     if not br_id:
         await _reply_with_mod_menu(
             message,
@@ -545,7 +551,7 @@ async def _state_handle_comment(message: IncomingMessage, bot: Bot) -> None:
             "Контекст комментария потерян. Используйте /comment <ID> <текст>.",
         )
         return
-    await _apply_comment(message, bot, br_id=br_id, text=text)
+    await _apply_comment(message, bot, br_id=br_id, text=text, origin=origin)
 
 
 # =====================================================================
@@ -666,6 +672,7 @@ async def _send_notify_fix(
         app=refreshed,
         headline="✏️ **Запрошены исправления.** Участник уведомлён.",
         extra=extra_block,
+        origin=parse_origin(message.data),
     )
 
 
@@ -690,7 +697,7 @@ async def cmd_notify_reject(message: IncomingMessage, bot: Bot) -> None:
     """
     arg = _split_command_argument(message)
     br_id_token, rest = _split_id_and_rest(arg)
-    br_id = _normalize_br_id(br_id_token)
+    br_id = _resolve_br_id(message) or _normalize_br_id(br_id_token)
     if not br_id:
         await _reply_with_mod_menu(
             message,
@@ -700,21 +707,29 @@ async def cmd_notify_reject(message: IncomingMessage, bot: Bot) -> None:
         return
 
     if not rest.strip():
-        await message.state.fsm.set_state(
-            ModeratorAction.moderator_action_reject_reason
-        )
-        await message.state.fsm.update_data(moderator_target_br_id=br_id)
-        await _reply_with_mod_menu(
+        origin = parse_origin(message.data)
+        fsm = message.state.fsm
+        await save_dialog_origin(fsm, origin=origin, br_id=br_id)
+        await fsm.set_state(ModeratorAction.moderator_action_reject_reason)
+        await fsm.update_data(**{FSM_KEY_MODERATOR_TARGET_BR_ID: br_id})
+        await reply_to_user(
             message,
             bot,
             (
                 f"Отправьте причину отклонения заявки {br_id} следующим "
                 "сообщением. Текст уйдёт в reason.txt дословно."
             ),
+            bubbles=fsm_dialog_prompt_bubbles(br_id, origin),
         )
         return
 
-    await _apply_reject(message, bot, br_id=br_id, reason=rest)
+    await _apply_reject(
+        message,
+        bot,
+        br_id=br_id,
+        reason=rest,
+        origin=parse_origin(message.data),
+    )
 
 
 async def _apply_reject(
@@ -723,6 +738,7 @@ async def _apply_reject(
     *,
     br_id: str,
     reason: str,
+    origin: ModeratorNavOrigin | None = None,
 ) -> None:
     app = await find_by_br_id(br_id)
     if app is None:
@@ -811,6 +827,7 @@ async def _apply_reject(
         app=refreshed,
         headline=headline,
         extra="\n".join(extra_lines),
+        origin=origin if origin is not None else parse_origin(message.data),
     )
 
 
@@ -820,9 +837,12 @@ async def _state_handle_reject_reason(
     """FSM-обработчик: получаем причину после ``/notify_reject <ID>``."""
     fsm = message.state.fsm
     data = await fsm.get_data()
-    br_id = _normalize_br_id(data.get("moderator_target_br_id") or "")
+    origin, cached_br_id = await load_dialog_origin(fsm)
+    br_id = _normalize_br_id(
+        data.get(FSM_KEY_MODERATOR_TARGET_BR_ID) or cached_br_id or ""
+    )
     reason = (message.body or "").strip()
-    await fsm.clear()
+    await clear_dialog_state(fsm)
     if not br_id:
         await _reply_with_mod_menu(
             message,
@@ -837,7 +857,7 @@ async def _state_handle_reject_reason(
             "Причина не может быть пустой.",
         )
         return
-    await _apply_reject(message, bot, br_id=br_id, reason=reason)
+    await _apply_reject(message, bot, br_id=br_id, reason=reason, origin=origin)
 
 
 async def _state_handle_fix_note(
@@ -846,9 +866,9 @@ async def _state_handle_fix_note(
     """FSM-обработчик опц. уточнения после ``/notify_fix <ID>``."""
     fsm = message.state.fsm
     data = await fsm.get_data()
-    br_id = _normalize_br_id(data.get("moderator_target_br_id") or "")
+    br_id = _normalize_br_id(data.get(FSM_KEY_MODERATOR_TARGET_BR_ID) or "")
     text = (message.body or "").strip()
-    await fsm.clear()
+    await clear_dialog_state(fsm)
     if not br_id:
         await _reply_with_mod_menu(
             message,
@@ -891,9 +911,8 @@ async def cmd_files(message: IncomingMessage, bot: Bot) -> None:
     (``OutgoingAttachment``). В режиме ``links`` — текстовое
     сообщение со ссылкой на папку участника.
     """
-    arg = _split_command_argument(message)
-    br_id_token, _ = _split_id_and_rest(arg)
-    br_id = _normalize_br_id(br_id_token)
+    br_id = _resolve_br_id(message)
+    origin = parse_origin(message.data)
     if not br_id:
         await _reply_with_mod_menu(
             message,
@@ -921,7 +940,12 @@ async def cmd_files(message: IncomingMessage, bot: Bot) -> None:
                 "недоступны. Дождитесь, пока участник дошлёт ссылку, "
                 "или свяжитесь с ним по контактам из карточки."
             )
-        await reply_to_user(message, bot, body, bubbles=_card_action_buttons(app))
+        await reply_to_user(
+            message,
+            bot,
+            body,
+            bubbles=card_action_buttons(app, origin),
+        )
         return
 
     if not app.files:
@@ -929,7 +953,7 @@ async def cmd_files(message: IncomingMessage, bot: Bot) -> None:
             message,
             bot,
             f"У заявки {app.br_id} нет сохранённых файлов в хранилище.",
-            bubbles=_card_action_buttons(app),
+            bubbles=card_action_buttons(app, origin),
         )
         return
 
@@ -950,6 +974,7 @@ async def cmd_files(message: IncomingMessage, bot: Bot) -> None:
             failed.append(file.stored_filename)
             continue
         try:
+            # Без трекинга: вложения не должны удаляться cleanup_middleware.
             await bot.answer_message(
                 f"📎 {app.br_id}: {file.stored_filename}",
                 file=attachment,
@@ -969,11 +994,13 @@ async def cmd_files(message: IncomingMessage, bot: Bot) -> None:
     ]
     if failed:
         summary_lines.append("Не удалось: " + ", ".join(failed))
-    await safe_answer_transient(
+    prefix = "\n".join(summary_lines) + "\n\n"
+    await render_application_card(
         message,
         bot,
-        "\n".join(summary_lines),
-        bubbles=_MODERATOR_BACK,
+        app=app,
+        bubbles=card_action_buttons(app, origin),
+        prefix=prefix,
     )
 
 

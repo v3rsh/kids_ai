@@ -82,7 +82,7 @@ _MAX_FILE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 TRADITIONAL_MAX_FILES = 4  # лимит ракурсов для 3D-варианта трека «Традиционное рисование»
 _TRADITIONAL_MAX_FILES = TRADITIONAL_MAX_FILES
 _SINGLE_FILE_TRACKS: frozenset[Track] = frozenset({Track.AI, Track.HANDMADE_TO_AI})
-FSM_KEY_FILE_UPLOAD_ALLOWED = "file_upload_allowed"
+from fsm.keys import FSM_KEY_FILE_UPLOAD_ALLOWED
 
 _ERR_BATCH_UPLOAD = (
     "За одну загрузку принимается один файл. Если нужно добавить ещё — "

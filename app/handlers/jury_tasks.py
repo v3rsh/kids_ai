@@ -26,6 +26,7 @@ from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
 from database.db import get_session
 from database.models import Application, JuryVoteValue
 from fsm import cleanup_middleware, fsm_middleware
+from fsm.keys import FSM_KEY_JURY_TASK_INDEX, FSM_KEY_JURY_TASK_ROUND_ID
 from keyboards import back_to_jury_menu_bubbles
 from services import jury as jury_service
 from services.access import jury_only
@@ -268,8 +269,10 @@ async def _render_current_view(
         pool = PoolKey(track=round_obj.track, age_category=round_obj.age_category)
 
     await message.state.fsm.update_data(
-        jury_task_round_id=str(round_id),
-        jury_task_index=index,
+        **{
+            FSM_KEY_JURY_TASK_ROUND_ID: str(round_id),
+            FSM_KEY_JURY_TASK_INDEX: index,
+        }
     )
 
     bubbles = _build_carousel_bubbles(
@@ -358,8 +361,8 @@ async def cmd_jt_nav(message: IncomingMessage, bot: Bot) -> None:
     direction = data.get("dir")
     fsm = message.state.fsm
     fsm_data = await fsm.get_data()
-    round_id = _safe_uuid(fsm_data.get("jury_task_round_id"))
-    index = _safe_int(fsm_data.get("jury_task_index"), 0)
+    round_id = _safe_uuid(fsm_data.get(FSM_KEY_JURY_TASK_ROUND_ID))
+    index = _safe_int(fsm_data.get(FSM_KEY_JURY_TASK_INDEX), 0)
     if round_id is None:
         await reply_to_user(
             message,
@@ -395,8 +398,8 @@ async def cmd_jt_vote(message: IncomingMessage, bot: Bot) -> None:
 
     fsm = message.state.fsm
     fsm_data = await fsm.get_data()
-    round_id = _safe_uuid(fsm_data.get("jury_task_round_id"))
-    index = _safe_int(fsm_data.get("jury_task_index"), 0)
+    round_id = _safe_uuid(fsm_data.get(FSM_KEY_JURY_TASK_ROUND_ID))
+    index = _safe_int(fsm_data.get(FSM_KEY_JURY_TASK_INDEX), 0)
     if round_id is None:
         await reply_to_user(
             message,
@@ -532,7 +535,7 @@ async def cmd_jt_submit(message: IncomingMessage, bot: Bot) -> None:
     """
     fsm = message.state.fsm
     fsm_data = await fsm.get_data()
-    round_id = _safe_uuid(fsm_data.get("jury_task_round_id"))
+    round_id = _safe_uuid(fsm_data.get(FSM_KEY_JURY_TASK_ROUND_ID))
     if round_id is None:
         await reply_to_user(
             message,

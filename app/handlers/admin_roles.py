@@ -33,6 +33,7 @@ from sqlalchemy import select
 from database.db import get_session
 from database.models import JuryMember, Moderator
 from fsm import cleanup_middleware, fsm_middleware
+from fsm.keys import FSM_KEY_ADMIN_ADD_ROLE
 from handlers.common import register_state_handler
 from keyboards import (
     admin_add_role_role_bubbles,
@@ -290,7 +291,7 @@ async def cmd_admin_role_add(message: IncomingMessage, bot: Bot) -> None:
 
     if role in ("moderator", "jury"):
         await message.state.fsm.set_state(AdminAction.admin_action_add_role_huid)
-        await message.state.fsm.update_data(admin_add_role=role)
+        await message.state.fsm.update_data(**{FSM_KEY_ADMIN_ADD_ROLE: role})
         role_label = "модератора" if role == "moderator" else "жюри"
         await reply_to_user(
             message,
@@ -316,7 +317,7 @@ async def _state_handle_add_role_huid(
     """FSM: ввод HUID при назначении роли."""
     huid = _parse_uuid((message.body or "").strip())
     data = await message.state.fsm.get_data()
-    role = (data.get("admin_add_role") or "").lower()
+    role = (data.get(FSM_KEY_ADMIN_ADD_ROLE) or "").lower()
     await message.state.fsm.clear()
 
     if huid is None:

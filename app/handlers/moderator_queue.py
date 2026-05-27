@@ -39,6 +39,16 @@ from pybotx import (
 
 from database.models import AgeCategory, Application, IntakeMode, ModerationStatus, Track
 from fsm import cleanup_middleware, fsm_middleware
+from fsm.keys import (
+    FSM_KEY_AGES,
+    FSM_KEY_BROWSE_INDEX,
+    FSM_KEY_DATE_FROM,
+    FSM_KEY_DATE_TO,
+    FSM_KEY_QUEUE_PAGE,
+    FSM_KEY_STATUSES,
+    FSM_KEY_TRACKS,
+)
+from keyboards import back_to_moderator_menu_bubbles
 from services.access import moderator_only
 from services.moderation import (
     DEFAULT_QUEUE_STATUSES,
@@ -51,6 +61,12 @@ from utils.bot_utils import (
     reply_to_user,
     send_application_files_with_card,
 )
+from utils.moderator_nav import (
+    ModeratorNavOrigin,
+    append_moderator_menu_button,
+    card_action_buttons,
+    find_button_data,
+)
 
 
 collector = HandlerCollector()
@@ -59,18 +75,6 @@ collector = HandlerCollector()
 # =====================================================================
 # Хранение фильтров/состояния в FSM
 # =====================================================================
-
-# Все ключи в одном FSM-словаре под общим неймспейсом, чтобы не
-# смешивать модераторскую навигацию с возможным состоянием в других
-# ветках (модератор может одновременно быть и обычным пользователем
-# для подачи заявок).
-FSM_KEY_TRACKS = "moderator_queue_tracks"
-FSM_KEY_AGES = "moderator_queue_ages"
-FSM_KEY_STATUSES = "moderator_queue_statuses"
-FSM_KEY_DATE_FROM = "moderator_queue_date_from"
-FSM_KEY_DATE_TO = "moderator_queue_date_to"
-FSM_KEY_QUEUE_PAGE = "moderator_queue_page"
-FSM_KEY_BROWSE_INDEX = "moderator_browse_index"
 
 QUEUE_PAGE_SIZE = 5
 
@@ -337,32 +341,6 @@ async def render_application_card(
 # =====================================================================
 
 
-def _action_buttons_for_app(bubbles: BubbleMarkup, app: Application) -> None:
-    """Инлайн-кнопки действий по карточке заявки."""
-    bubbles.add_button(
-        command=f"/files {app.br_id}",
-        label="📂 Файлы",
-        new_row=True,
-    )
-    bubbles.add_button(
-        command=f"/status {app.br_id} модерация допущено",
-        label="✅ Допустить",
-    )
-    bubbles.add_button(
-        command=f"/notify_fix {app.br_id}",
-        label="✏️ На исправление",
-    )
-    bubbles.add_button(
-        command=f"/notify_reject {app.br_id}",
-        label="🚫 Отклонить",
-        new_row=True,
-    )
-    bubbles.add_button(
-        command=f"/comment {app.br_id}",
-        label="💬 Комментарий",
-    )
-
-
 def _queue_filters_buttons(bubbles: BubbleMarkup) -> None:
     """Кнопки управления фильтрами в ``/queue``."""
     bubbles.add_button(
@@ -428,7 +406,7 @@ def _browse_navigation_buttons(
             new_row=index == 0,
         )
     bubbles.add_button(
-        command="/queue",
+        command="/m_q_refresh",
         label="📋 К списку",
         new_row=True,
     )
@@ -463,10 +441,10 @@ async def cmd_queue_next(message: IncomingMessage, bot: Bot) -> None:
     )
     if not page.items:
         bubbles = BubbleMarkup()
-        bubbles.add_button(command="/queue", label="📋 К очереди", new_row=True)
         bubbles.add_button(
-            command="/moderator", label="◀ В меню модератора", new_row=True
+            command="/m_q_refresh", label="📋 К очереди", new_row=True
         )
+        append_moderator_menu_button(bubbles)
         await reply_to_user(
             message,
             bot,
@@ -476,13 +454,13 @@ async def cmd_queue_next(message: IncomingMessage, bot: Bot) -> None:
         return
 
     app = page.items[0]
-    from handlers.moderator_actions import _card_action_buttons
+    origin = ModeratorNavOrigin(kind="queue")
 
     await render_application_card(
         message,
         bot,
         app=app,
-        bubbles=_card_action_buttons(app),
+        bubbles=card_action_buttons(app, origin),
         prefix=f"▶ Следующая заявка в очереди ({page.total} всего):\n\n",
     )
 
@@ -567,11 +545,13 @@ async def _render_queue(
         )
 
     bubbles = BubbleMarkup()
+    queue_origin = ModeratorNavOrigin(kind="queue")
     if result.items:
         for app in result.items:
             bubbles.add_button(
-                command=f"/find {app.br_id}",
+                command="/find",
                 label=f"📄 {app.br_id}",
+                data=find_button_data(app.br_id, queue_origin),
                 new_row=True,
             )
     _queue_filters_buttons(bubbles)
@@ -581,6 +561,7 @@ async def _render_queue(
         label="🖼️ Карусель",
         new_row=True,
     )
+    append_moderator_menu_button(bubbles)
 
     await reply_to_user(message, bot, body, bubbles=bubbles)
 
@@ -852,7 +833,10 @@ async def _render_browse(
             f"**Фильтры:** {_filters_summary(filters)}"
         )
         bubbles = BubbleMarkup()
-        bubbles.add_button(command="/queue", label="📋 К очереди", new_row=True)
+        bubbles.add_button(
+            command="/m_q_refresh", label="📋 К очереди", new_row=True
+        )
+        append_moderator_menu_button(bubbles)
         await reply_to_user(message, bot, body, bubbles=bubbles)
         return
 
@@ -869,9 +853,12 @@ async def _render_browse(
     prefix = f"**Фильтры:** {_filters_summary(filters)}\n\n"
     suffix = pagination_footer(index + 1, total, title="Карусель")
 
-    bubbles = BubbleMarkup()
-    _action_buttons_for_app(bubbles, app)
+    browse_origin = ModeratorNavOrigin(kind="browse")
+    bubbles = card_action_buttons(
+        app, browse_origin, with_navigation=False
+    )
     _browse_navigation_buttons(bubbles, index=index, total=total)
+    append_moderator_menu_button(bubbles)
 
     await render_application_card(
         message, bot, app=app, bubbles=bubbles, prefix=prefix, suffix=suffix
@@ -1044,10 +1031,18 @@ async def _render_section_list(
         )
 
     bubbles = BubbleMarkup()
+    section_origin = ModeratorNavOrigin(
+        kind="section",
+        section_status=status_name,
+        section_track=track.name,
+        section_age=age.name,
+        section_page=page,
+    )
     for app in result.items:
         bubbles.add_button(
-            command=f"/find {app.br_id}",
+            command="/find",
             label=f"📄 {app.br_id}",
+            data=find_button_data(app.br_id, section_origin),
             new_row=True,
         )
 
@@ -1095,6 +1090,7 @@ async def cmd_m_list(message: IncomingMessage, bot: Bot) -> None:
             message,
             bot,
             "Не удалось открыть раздел: некорректные параметры.",
+            bubbles=back_to_moderator_menu_bubbles(),
         )
         return
 
@@ -1111,7 +1107,12 @@ async def cmd_m_list(message: IncomingMessage, bot: Bot) -> None:
         return
 
     if track_name not in Track.__members__:
-        await reply_to_user(message, bot, f"Неизвестный трек: {track_name!r}.")
+        await reply_to_user(
+            message,
+            bot,
+            f"Неизвестный трек: {track_name!r}.",
+            bubbles=back_to_moderator_menu_bubbles(),
+        )
         return
     track = Track[track_name]
 
@@ -1123,7 +1124,10 @@ async def cmd_m_list(message: IncomingMessage, bot: Bot) -> None:
 
     if age_name not in AgeCategory.__members__:
         await reply_to_user(
-            message, bot, f"Неизвестная возрастная категория: {age_name!r}."
+            message,
+            bot,
+            f"Неизвестная возрастная категория: {age_name!r}.",
+            bubbles=back_to_moderator_menu_bubbles(),
         )
         return
     age = AgeCategory[age_name]

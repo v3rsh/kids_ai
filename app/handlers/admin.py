@@ -52,9 +52,10 @@ from keyboards import (
     admin_stats_menu_bubbles,
     admin_system_menu_bubbles,
     admin_users_menu_bubbles,
+    admin_back_bubble,
     back_to_admin_menu_bubbles,
+    back_to_moderator_menu_bubbles,
     intake_open_toggle_bubbles,
-    main_menu_bubbles,
 )
 from services import access
 from services.access import admin_only, moderator_only
@@ -478,7 +479,7 @@ async def cmd_admin_shortcut_find(message: IncomingMessage, bot: Bot) -> None:
         message,
         bot,
         "Введите ID заявки (например, BR-2026-0001) следующим сообщением.",
-        bubbles=BubbleMarkup(),
+        bubbles=back_to_admin_menu_bubbles(),
     )
 
 
@@ -486,9 +487,9 @@ async def _state_handle_shortcut_find_brid(
     message: IncomingMessage, bot: Bot
 ) -> None:
     """FSM: карточка заявки по BR-ID."""
-    from handlers.moderator_actions import _card_action_buttons
-    from handlers.moderator_queue import build_full_card
+    from handlers.moderator_queue import render_application_card
     from services.moderation import find_by_br_id
+    from utils.moderator_nav import ModeratorNavOrigin, card_action_buttons
 
     br_id = (message.body or "").strip().upper()
     await message.state.fsm.clear()
@@ -509,11 +510,12 @@ async def _state_handle_shortcut_find_brid(
             bubbles=admin_moderator_shortcuts_bubbles(),
         )
         return
-    await reply_to_user(
+    origin = ModeratorNavOrigin(kind="admin_find")
+    await render_application_card(
         message,
         bot,
-        await build_full_card(app),
-        bubbles=_card_action_buttons(app),
+        app=app,
+        bubbles=card_action_buttons(app, origin),
     )
 
 
@@ -553,6 +555,7 @@ def _intake_mode_bubbles(current: IntakeMode) -> BubbleMarkup:
         data={"mode": IntakeMode.LINKS.value},
         new_row=True,
     )
+    admin_back_bubble(bubbles)
     return bubbles
 
 
@@ -739,7 +742,7 @@ async def cmd_disk(message: IncomingMessage, bot: Bot) -> None:
         message,
         bot,
         "\n".join(body_parts),
-        bubbles=main_menu_bubbles(huid=_sender_huid(message)),
+        bubbles=back_to_moderator_menu_bubbles(),
     )
 
 

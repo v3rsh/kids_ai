@@ -8,14 +8,15 @@ from __future__ import annotations
 from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
 
 from fsm import cleanup_middleware, fsm_middleware
+from fsm.keys import FSM_KEY_MULTI_SUBS_PAGE
 from keyboards import back_to_moderator_menu_bubbles
 from services import applications as applications_service
 from services.access import moderator_only
 from utils.bot_utils import reply_to_user
+from utils.moderator_nav import ModeratorNavOrigin, find_button_data
 
 collector = HandlerCollector()
 
-FSM_KEY_PAGE = "moderator:multi_subs:page"
 PAGE_SIZE = 5
 
 
@@ -38,21 +39,24 @@ def _multi_subs_bubbles(
     total_pages: int,
 ) -> BubbleMarkup:
     bubbles = BubbleMarkup()
+    multi_origin = ModeratorNavOrigin(kind="multi_subs", multi_subs_page=page)
     start = (page - 1) * PAGE_SIZE
     page_groups = groups[start : start + PAGE_SIZE]
     for group in page_groups:
         primary_br = group.entries[0].br_id
         bubbles.add_button(
-            command=f"/find {primary_br}",
+            command="/find",
             label=f"📄 {primary_br}",
+            data=find_button_data(primary_br, multi_origin),
             new_row=True,
         )
         for entry in group.entries:
             if entry.br_id == primary_br:
                 continue
             bubbles.add_button(
-                command=f"/find {entry.br_id}",
+                command="/find",
                 label=f"↳ {entry.br_id}",
+                data=find_button_data(entry.br_id, multi_origin),
             )
         bubbles.add_button(
             command="/multi_subs_mark_actual",
@@ -105,7 +109,7 @@ async def _render_multi_subs(
 
     total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(1, min(page, total_pages))
-    await message.state.fsm.update_data(**{FSM_KEY_PAGE: page})
+    await message.state.fsm.update_data(**{FSM_KEY_MULTI_SUBS_PAGE: page})
 
     start = (page - 1) * PAGE_SIZE
     chunk = groups[start : start + PAGE_SIZE]
@@ -135,7 +139,7 @@ async def _render_multi_subs(
 async def cmd_multi_subs(message: IncomingMessage, bot: Bot) -> None:
     """Сводный список групп с более чем одной активной заявкой."""
     data = await message.state.fsm.get_data()
-    page = max(1, int(data.get(FSM_KEY_PAGE) or 1))
+    page = max(1, int(data.get(FSM_KEY_MULTI_SUBS_PAGE) or 1))
     await _render_multi_subs(message, bot, page=page)
 
 
@@ -190,7 +194,7 @@ async def cmd_multi_subs_mark_actual(message: IncomingMessage, bot: Bot) -> None
         return
 
     data = await message.state.fsm.get_data()
-    page = max(1, int(data.get(FSM_KEY_PAGE) or 1))
+    page = max(1, int(data.get(FSM_KEY_MULTI_SUBS_PAGE) or 1))
     await reply_to_user(
         message,
         bot,

@@ -7,7 +7,11 @@ from keyboards import (
     back_to_main_menu_bubbles,
     back_to_moderator_menu_bubbles,
     fix_needed_notification_bubbles,
+    intake_cancel_bubble,
+    track_selection_bubbles,
 )
+from pybotx import BubbleMarkup
+from utils.moderator_nav import ModeratorNavOrigin, build_back_bubbles
 
 
 def _commands(bubbles) -> list[str]:
@@ -36,3 +40,16 @@ class TestBackMenuBubbles:
             "/menu_contacts",
             "/start",
         ]
+
+    def test_intake_cancel_on_track_selection(self) -> None:
+        assert "/start" in _commands(track_selection_bubbles())
+
+    def test_intake_cancel_bubble(self) -> None:
+        bubbles = BubbleMarkup()
+        intake_cancel_bubble(bubbles)
+        assert _commands(bubbles) == ["/start"]
+
+    def test_build_back_bubbles_queue(self) -> None:
+        commands = _commands(build_back_bubbles(ModeratorNavOrigin(kind="queue")))
+        assert "/m_q_refresh" in commands
+        assert "/moderator" in commands
