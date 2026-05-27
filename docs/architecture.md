@@ -546,16 +546,27 @@ discovery: команды `/moderator` и `/jury` отправляют адми�
 |---|---|
 | 👥 Роли | `/admin_roles`, `/admin_role_add` (FSM: роль → HUID), `/admin_role_resend_welcome`, отзыв через `/admin_role_revoke` → `/admin_role_revoke_confirm` |
 | 💬 Чат модерации | `/admin_chat_status`, `/admin_chat_test` (FSM: свой текст), `/admin_chat_rediscover`, сброс через опасные операции |
-| 🖥 Система | `/disk`, `/intake_mode`, `/admin_intake_open`, `/admin_jury_settings`, `/admin_state`, `/admin_disk_alerts`, `/admin_jury_flush`, `/admin_export_files`, `/admin_export_shortlist_files` |
+| 🏆 Конкурс | `/admin_competition_*`: приём, выгрузки (XLSX/ZIP/архив на диск), старт жюри (TOP_N gate), статус пулов, настройки жюри |
+| 🖥 Система | `/disk`, `/intake_mode`, `/admin_state`, `/admin_disk_alerts`, `/admin_jury_flush`, `/admin_export_files`, `/admin_export_shortlist_files` |
 | 🙋 Пользователи | `/admin_user_find` (FSM: HUID), карточка с resync / apps / назначением роли |
 | 📊 Статистика | `/admin_stats` + шорткаты `/stats today` / `/stats all` |
 | 🛡 Меню модератора | шорткаты `/queue`, `/browse`, `/admin_shortcut_find` (FSM: BR-ID), `/export`, … |
 | ⚠️ Опасные операции | `/admin_danger` → `/admin_confirm` (force LINKS, cleanup disk_alerts, clear chat, flush jury) |
 
 Навигация по разделам — скрытая команда `/admin_section` с
-`data={"section": "roles|chat|system|users|stats|moderator|dangerous"}`.
+`data={"section": "roles|chat|competition|system|users|stats|moderator|dangerous"}`.
 FSM-state `admin:menu` перерисовывается диспетчером свободного текста
 в `handlers/common.py` (аналогично `moderator:menu`).
+
+#### Конкурс и жюри (админ)
+
+- **Раздел «Конкурс»** (`handlers/admin_competition.py`): приём, XLSX/ZIP, архив на диск,
+  старт раунда 1 (TOP_N), auto-shortlist для пулов `< TOP_N`, закрытие раунда.
+- **Уведомления судьям** (`services/jury_notifications.py`): DM только при `0→1` открытых
+  задач; пулы открываются последовательно (без `asyncio.gather`).
+- **Чат модерации**: детальные `round_opened` / `round_closed`; `shortlist_ready` идемпотентно
+  через `app_settings.shortlist_announced`.
+- **Дедлайнов раунда нет** — `deadline_at` data-only, scheduler автозакрытия не запускает.
 
 ### Chat-gate middleware (`fsm/chat_gate.py`)
 
