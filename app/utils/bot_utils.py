@@ -43,6 +43,17 @@ def resolve_bot_id(bot: Bot) -> UUID | None:
     return getattr(first, "id", None)
 
 
+def resolve_dm_chat_id(message: IncomingMessage) -> UUID | None:
+    """UUID личного чата из ``IncomingMessage``.
+
+    В pybotx ``UserSender`` не содержит ``chat_id`` — только ``message.chat.id``.
+    Для проактивной отправки по чужому huid используйте
+    ``services.notifications._resolve_user_chat_id``.
+    """
+    chat = getattr(message, "chat", None)
+    return getattr(chat, "id", None) if chat else None
+
+
 async def load_user_photo(photo_path: str) -> OutgoingAttachment | None:
     """
     Загружает фото пользователя из файла.

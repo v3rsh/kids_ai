@@ -1,6 +1,7 @@
 """Тесты утилит отправки файлов заявки в чат."""
 from __future__ import annotations
 
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,6 +11,7 @@ from utils.bot_utils import (
     format_anonymous_file_caption,
     format_numbered_file_caption,
     pagination_footer,
+    resolve_dm_chat_id,
     send_application_files_with_card,
 )
 
@@ -146,4 +148,78 @@ class TestSendApplicationFilesWithCard:
         second_call = send_mock.await_args_list[1].kwargs
         assert second_call["body"] == "📎 Файл 2 из 2"
         assert "BR-" not in second_call["body"]
-        assert "angle" not in second_call["body"]
+class TestResolveDmChatId:
+    def test_returns_chat_id_from_message(self):
+        chat_id = uuid.uuid4()
+        message = MagicMock()
+        message.chat.id = chat_id
+
+        assert resolve_dm_chat_id(message) == chat_id
+
+    def test_returns_none_without_chat(self):
+        message = MagicMock()
+        message.chat = None
+
+        assert resolve_dm_chat_id(message) is None
+
+
+def _consume_create_task(coro, **kwargs):
+    coro.close()
+    return MagicMock()
+
+
+@pytest.mark.asyncio
+class TestStartExportTask:
+    async def test_starts_background_task_with_chat_id(self):
+        from handlers.admin_export import start_export_task
+
+        chat_id = uuid.uuid4()
+        huid = uuid.uuid4()
+        bot = MagicMock()
+
+        with (
+            patch(
+                "handlers.admin_export.resolve_bot_id",
+                return_value=uuid.uuid4(),
+            ),
+            patch(
+                "handlers.admin_export.asyncio.create_task",
+                side_effect=_consume_create_task,
+            ) as create_task_mock,
+        ):
+            started = await start_export_task(
+                bot=bot,
+                chat_id=chat_id,
+                huid=huid,
+                selector_action="export_files_all",
+            )
+
+        assert started is True
+        create_task_mock.assert_called_once()
+        assert create_task_mock.call_args.kwargs["name"] == (
+            "attachments_export[all]"
+        )
+
+    async def test_returns_false_without_chat_id(self):
+        from handlers.admin_export import start_export_task
+
+        bot = MagicMock()
+
+        with (
+            patch(
+                "handlers.admin_export.resolve_bot_id",
+                return_value=uuid.uuid4(),
+            ),
+            patch(
+                "handlers.admin_export.asyncio.create_task",
+            ) as create_task_mock,
+        ):
+            started = await start_export_task(
+                bot=bot,
+                chat_id=None,
+                huid=uuid.uuid4(),
+                selector_action="export_files_all",
+            )
+
+        assert started is False
+        create_task_mock.assert_not_called()

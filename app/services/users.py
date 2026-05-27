@@ -37,7 +37,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from database.db import get_session
 from database.models import User
-from utils.bot_utils import resolve_bot_id
+from utils.bot_utils import resolve_bot_id, resolve_dm_chat_id
 
 if TYPE_CHECKING:  # pragma: no cover
     from pybotx import Bot, IncomingMessage
@@ -129,11 +129,12 @@ async def upsert_user_from_sender(
 async def upsert_user_from_message(message: "IncomingMessage") -> None:
     """Удобный wrapper над ``upsert_user_from_sender`` для middleware."""
     sender = getattr(message, "sender", None)
-    chat = getattr(message, "chat", None)
-    chat_id: UUID | None = getattr(chat, "id", None) if chat else None
     if sender is None:
         return
-    await upsert_user_from_sender(sender=sender, chat_id=chat_id)
+    await upsert_user_from_sender(
+        sender=sender,
+        chat_id=resolve_dm_chat_id(message),
+    )
 
 
 async def set_user_chat_id(huid: UUID, chat_id: UUID) -> None:

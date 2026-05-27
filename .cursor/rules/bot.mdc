@@ -20,6 +20,12 @@ alwaysApply: false
 
 Классы `str, Enum` на ветку: атрибут `user_reg_name`, значение `"user:reg:name"`. В хендлере: `message.state.fsm`, не `bot.state.fsm`. После flow: `await fsm.clear()`.
 
+## chat_id
+
+- **Из входящего DM-сообщения** → `resolve_dm_chat_id(message)` или `message.chat.id`
+- **Никогда** → `message.sender.chat_id` — у `UserSender` этого поля нет
+- **Проактивная отправка по huid** (юзер не в текущем хендлере) → `_resolve_user_chat_id(huid)` из БД (`services.notifications`, `services.discovery`)
+
 ## Sending messages
 
 - **Всегда** `wait_callback=False` — иначе 60s timeout / `CallbackNotReceivedError`
