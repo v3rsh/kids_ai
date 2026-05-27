@@ -56,6 +56,7 @@ from database.models import (
 from fsm import cleanup_middleware, fsm_middleware
 from keyboards import back_to_moderator_menu_bubbles
 from services.access import moderator_only
+from services.jury_settings import get_jury_auto_lot, get_jury_max_round
 from utils.bot_utils import reply_to_user
 
 
@@ -221,8 +222,12 @@ async def cmd_jury_state(message: IncomingMessage, bot: Bot) -> None:
             latest_round_per_pool[key] = r
 
     now = datetime.utcnow()
+    max_round = await get_jury_max_round()
+    auto_lot = await get_jury_auto_lot()
+    auto_lot_label = "вкл" if auto_lot else "выкл"
     lines = [
         "⚖️ Состояние жюри.",
+        f"Порог раундов: **{max_round}** · автожребий: **{auto_lot_label}**.",
         "Формат строки: <пул> · раунд · статус · "
         "судей submitted/назначено · до дедлайна.",
         "",

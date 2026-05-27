@@ -57,6 +57,7 @@ from .admin_roles import collector as admin_roles_collector
 from .admin_chat import collector as admin_chat_collector
 from .admin_users import collector as admin_users_collector
 from .admin_stats import collector as admin_stats_collector
+from .admin_jury_settings import collector as admin_jury_settings_collector
 
 
 def get_all_collectors() -> list:
@@ -91,6 +92,7 @@ def get_all_collectors() -> list:
         admin_chat_collector,
         admin_users_collector,
         admin_stats_collector,
+        admin_jury_settings_collector,
     ]
 
 

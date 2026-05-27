@@ -462,6 +462,11 @@ def admin_system_menu_bubbles() -> BubbleMarkup:
     bubbles = BubbleMarkup()
     bubbles.add_button(command="/disk", label="📦 Диск", new_row=True)
     bubbles.add_button(command="/intake_mode", label="🔁 Режим приёма", new_row=True)
+    bubbles.add_button(
+        command="/admin_jury_settings",
+        label="⚖️ Настройки жюри",
+        new_row=True,
+    )
     bubbles.add_button(command="/admin_state", label="🩺 Диагностика", new_row=True)
     bubbles.add_button(
         command="/admin_disk_alerts",
@@ -471,6 +476,39 @@ def admin_system_menu_bubbles() -> BubbleMarkup:
     bubbles.add_button(
         command="/admin_jury_flush",
         label="🚿 Сброс буфера жюри",
+        new_row=True,
+    )
+    admin_back_bubble(bubbles)
+    return bubbles
+
+
+def admin_jury_settings_bubbles(
+    *,
+    max_round: int,
+    auto_lot: bool,
+) -> BubbleMarkup:
+    """Меню «Настройки жюри» с тумблером и кнопкой изменения порога."""
+    bubbles = BubbleMarkup()
+    bubbles.add_button(
+        command="/admin_jury_set_max_round",
+        label=f"🎚 Порог раундов: {max_round}",
+        new_row=True,
+    )
+    new_state = not auto_lot
+    toggle_label = (
+        "🎲 Автожребий: вкл — выключить"
+        if auto_lot
+        else "🎲 Автожребий: выкл — включить"
+    )
+    bubbles.add_button(
+        command="/admin_jury_toggle_auto_lot",
+        label=toggle_label,
+        data={"enabled": "1" if new_state else "0"},
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/jury_state",
+        label="⚖️ Состояние пулов",
         new_row=True,
     )
     admin_back_bubble(bubbles)
@@ -747,6 +785,7 @@ __all__ = [
     "admin_roles_menu_bubbles",
     "admin_chat_menu_bubbles",
     "admin_system_menu_bubbles",
+    "admin_jury_settings_bubbles",
     "admin_users_menu_bubbles",
     "admin_stats_menu_bubbles",
     "admin_moderator_shortcuts_bubbles",

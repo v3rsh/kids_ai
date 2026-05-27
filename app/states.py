@@ -105,6 +105,7 @@ class AdminAction(str, Enum):
     admin_action_shortcut_find_brid = "admin:action:shortcut_find_brid"
     admin_action_resend_welcome_role = "admin:action:resend_welcome_role"
     admin_action_resend_welcome_huid = "admin:action:resend_welcome_huid"
+    admin_action_jury_max_round_input = "admin:action:jury_max_round_input"
 
 
 class JuryTaskFlow(str, Enum):
