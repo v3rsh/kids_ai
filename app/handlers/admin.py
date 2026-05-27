@@ -53,6 +53,7 @@ from keyboards import (
     admin_system_menu_bubbles,
     admin_users_menu_bubbles,
     back_to_admin_menu_bubbles,
+    intake_open_toggle_bubbles,
     main_menu_bubbles,
 )
 from services import access
@@ -64,6 +65,7 @@ from services.intake_mode import (
     maybe_auto_switch_to_links,
     set_intake_mode,
 )
+from services.intake_state import is_intake_open, set_intake_open
 from states import AdminAction, AdminFlow
 from services.storage import (
     cleanup_old_disk_alerts,
@@ -122,6 +124,7 @@ async def _show_admin_menu(message: IncomingMessage, bot: Bot) -> None:
             chat_configured=overview.moderation_chat_configured,
             intake_mode=overview.intake_mode,
             disk_pct=overview.disk_pct,
+            intake_open=overview.intake_open,
         ),
     )
 
@@ -165,6 +168,7 @@ async def cmd_admin_help(message: IncomingMessage, bot: Bot) -> None:
             chat_configured=overview.moderation_chat_configured,
             intake_mode=overview.intake_mode,
             disk_pct=overview.disk_pct,
+            intake_open=overview.intake_open,
         ),
     )
 
@@ -264,6 +268,17 @@ async def cmd_admin_danger(message: IncomingMessage, bot: Bot) -> None:
     )
 
 
+_SYSTEM_MENU_CONFIRM_ACTIONS: frozenset[str] = frozenset(
+    {
+        "close_intake",
+        "reopen_intake",
+        "export_files_all",
+        "export_files_shortlist",
+    }
+)
+"""Действия, возврат после которых идёт в admin_system_menu, а не в dangerous."""
+
+
 @collector.command(
     "/admin_confirm",
     description="Подтверждение опасной операции (admin)",
@@ -277,12 +292,18 @@ async def cmd_admin_confirm(message: IncomingMessage, bot: Bot) -> None:
     action = (data.get("action") or "").strip()
     confirm = (data.get("confirm") or "").strip().lower()
 
+    return_bubbles = (
+        admin_system_menu_bubbles()
+        if action in _SYSTEM_MENU_CONFIRM_ACTIONS
+        else admin_dangerous_menu_bubbles()
+    )
+
     if confirm != "yes":
         await reply_to_user(
             message,
             bot,
             "❌ Операция отменена.",
-            bubbles=admin_dangerous_menu_bubbles(),
+            bubbles=return_bubbles,
         )
         return
 
@@ -314,6 +335,60 @@ async def cmd_admin_confirm(message: IncomingMessage, bot: Bot) -> None:
 
             await flush_jury_event_aggregator()
             body = "✅ Буфер уведомлений жюри сброшен."
+        elif action == "close_intake":
+            currently_open = await is_intake_open()
+            if not currently_open:
+                body = "ℹ️ Приём уже закрыт."
+            else:
+                await set_intake_open(
+                    False,
+                    by_huid=message.sender.huid,
+                    reason="admin via /admin_intake_open",
+                )
+                body = (
+                    "✅ Приём заявок **закрыт**.\n\n"
+                    "Кнопка «Подать работу» теперь показывает экран "
+                    "«приём закрыт». Уже поданные заявки продолжают "
+                    "участвовать; режим LINKS-черновиков (досыл "
+                    "ссылки) тоже остаётся доступным."
+                )
+        elif action == "reopen_intake":
+            currently_open = await is_intake_open()
+            if currently_open:
+                body = "ℹ️ Приём уже открыт."
+            else:
+                await set_intake_open(
+                    True,
+                    by_huid=message.sender.huid,
+                    reason="admin via /admin_intake_open",
+                )
+                body = "✅ Приём заявок **открыт**."
+        elif action in ("export_files_all", "export_files_shortlist"):
+            from handlers.admin_export import start_export_task
+
+            try:
+                started = await start_export_task(
+                    bot=bot,
+                    requester=message.sender,
+                    selector_action=action,
+                )
+            except Exception:
+                logger.exception(
+                    "admin_export: не удалось стартовать задачу",
+                    action=action,
+                )
+                body = "❌ Не удалось запустить выгрузку. См. логи."
+            else:
+                if not started:
+                    body = (
+                        "ℹ️ Выгрузка не запущена: нечего выгружать "
+                        "(см. сообщение выше)."
+                    )
+                else:
+                    body = (
+                        "🚀 Выгрузка запущена. Архивы будут приходить "
+                        "в этот чат по мере готовности."
+                    )
         else:
             body = "❌ Неизвестная операция."
     except Exception:
@@ -324,7 +399,7 @@ async def cmd_admin_confirm(message: IncomingMessage, bot: Bot) -> None:
         message,
         bot,
         body,
-        bubbles=admin_dangerous_menu_bubbles(),
+        bubbles=return_bubbles,
     )
 
 
@@ -641,11 +716,13 @@ async def cmd_disk(message: IncomingMessage, bot: Bot) -> None:
     разрушительные команды (см. ``cmd_admin_state``) защищены отдельно.
     """
     current_mode = await get_intake_mode()
+    intake_open_now = await is_intake_open()
     body_parts = [
         await _format_disk_block(include_prediction=True),
         "",
         f"Текущий режим приёма: **{current_mode.value.upper()}** "
         f"({'файлы на сервере' if current_mode is IntakeMode.FILES else 'ссылки на облако'})",
+        f"Приём заявок: **{'🔓 открыт' if intake_open_now else '🔒 закрыт'}**",
     ]
 
     # Активируем фоновую проверку: если диск пересёк BLOCK — авто-переход.
@@ -762,6 +839,82 @@ async def cmd_intake_mode(message: IncomingMessage, bot: Bot) -> None:
 
 
 # =====================================================================
+# /admin_intake_open — закрытие/открытие приёма заявок
+# =====================================================================
+
+
+@collector.command(
+    "/admin_intake_open",
+    description="Закрыть или открыть приём заявок (admin)",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@admin_only
+async def cmd_admin_intake_open(message: IncomingMessage, bot: Bot) -> None:
+    """``/admin_intake_open`` — переключатель приёма заявок.
+
+    Поведение:
+    - без data — показывает текущее состояние и две кнопки;
+    - data={"target": "open"|"closed"} — переход к двухшаговому
+      подтверждению через /admin_confirm (action=close_intake|reopen_intake).
+
+    Источник истины — таблица ``app_settings`` (key=intake_open),
+    изменение переживает рестарт контейнера.
+    """
+    currently_open = await is_intake_open()
+    target = (_btn_data(message).get("target") or "").strip().lower()
+
+    if target not in ("open", "closed"):
+        body = (
+            f"Состояние приёма: "
+            f"**{'🔓 ОТКРЫТ' if currently_open else '🔒 ЗАКРЫТ'}**.\n\n"
+            "Кнопкой можно переключить."
+        )
+        if not currently_open:
+            body += (
+                "\n\nПока приём закрыт: участники не могут открыть "
+                "анкету через «Подать работу», но уже созданные "
+                "LINKS-черновики продолжают принимать ссылку на облако "
+                "через кнопку «🔗 Прислать ссылку на папку» в «Моих "
+                "заявках»."
+            )
+        await reply_to_user(
+            message,
+            bot,
+            body,
+            bubbles=intake_open_toggle_bubbles(currently_open=currently_open),
+        )
+        return
+
+    target_open = target == "open"
+    if target_open == currently_open:
+        await reply_to_user(
+            message,
+            bot,
+            (
+                "Приём уже "
+                + ("**🔓 открыт**" if currently_open else "**🔒 закрыт**")
+                + ". Изменения не нужны."
+            ),
+            bubbles=intake_open_toggle_bubbles(currently_open=currently_open),
+        )
+        return
+
+    action = "reopen_intake" if target_open else "close_intake"
+    label = (
+        "**открыть** приём заявок"
+        if target_open
+        else "**закрыть** приём заявок (новые анкеты создаваться не будут)"
+    )
+    await reply_to_user(
+        message,
+        bot,
+        f"⚠️ Подтвердите: {label}?",
+        bubbles=admin_confirm_bubbles(action=action),
+    )
+
+
+# =====================================================================
 # /admin_state — диагностический дамп (только админ)
 # =====================================================================
 
@@ -783,11 +936,14 @@ async def cmd_admin_state(message: IncomingMessage, bot: Bot) -> None:
     самодиагностики потоков уведомлений.
     """
     current = await get_intake_mode()
+    intake_open_now = await is_intake_open()
     disk_block = await _format_disk_block(include_prediction=True)
     roles_block = await _format_roles_block(bot, _sender_huid(message))
     body = (
         "🛠 Состояние бота (admin diagnostic):\n"
-        f"- intake_mode: **{current.value.upper()}**\n\n"
+        f"- intake_mode: **{current.value.upper()}**\n"
+        f"- приём заявок: "
+        f"**{'🔓 открыт' if intake_open_now else '🔒 закрыт'}**\n\n"
         f"{disk_block}\n"
         f"{roles_block}"
     )

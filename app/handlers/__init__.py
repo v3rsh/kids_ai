@@ -58,6 +58,7 @@ from .admin_chat import collector as admin_chat_collector
 from .admin_users import collector as admin_users_collector
 from .admin_stats import collector as admin_stats_collector
 from .admin_jury_settings import collector as admin_jury_settings_collector
+from .admin_export import collector as admin_export_collector
 
 
 def get_all_collectors() -> list:
@@ -93,6 +94,7 @@ def get_all_collectors() -> list:
         admin_users_collector,
         admin_stats_collector,
         admin_jury_settings_collector,
+        admin_export_collector,
     ]
 
 

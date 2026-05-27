@@ -144,6 +144,22 @@ JURY_POOLS_CONFIG = os.getenv("JURY_POOLS_CONFIG", "")
 # Год проведения конкурса — используется в формировании BR-ID.
 COMPETITION_YEAR = int(os.getenv("COMPETITION_YEAR", "2026"))
 
+# Параметры выгрузки архива файлов (`/admin_export_files`,
+# `/admin_export_shortlist_files`).
+#
+# EXPORT_PAUSE_MS — пауза между отправками отдельных архивов
+# в чат админа. Защищает eXpress-CTS от rate-limit и не даёт
+# бот-сессии «утопиться» в исходящих сообщениях. По умолчанию 800 мс.
+#
+# EXPORT_MAX_PART_BYTES — мягкий ограничитель размера ZIP-файла на
+# заявку. Если суммарный размер вложений превышает этот лимит,
+# в архиве сохраняем только meta.txt + description.txt + reason.txt
+# (без бинарников); в манифесте такая запись помечается
+# ``status=oversize_meta_only``. По умолчанию 90 МБ — берём с запасом
+# к лимиту вложений в eXpress (обычно 100 МБ).
+EXPORT_PAUSE_MS = int(os.getenv("EXPORT_PAUSE_MS", "800"))
+EXPORT_MAX_PART_BYTES = int(os.getenv("EXPORT_MAX_PART_BYTES", str(90 * 1024 * 1024)))
+
 # Текст экрана «Контакты организаторов». Вынесен из хардкода
 # `app/handlers/user.py` в env-переменную, чтобы заказчик мог поправить
 # формулировку без диффа в коде. Многострочный текст в .env передаётся

@@ -27,10 +27,19 @@ from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
 
 from config import build_contacts_text
 from fsm import cleanup_middleware, fsm_middleware
-from keyboards import back_to_main_menu_bubbles
+from keyboards import back_to_main_menu_bubbles, intake_closed_bubbles
+from services import intake_state as intake_state_service
 from services import users as users_service
 from states import UserIntake
 from utils.bot_utils import reply_to_user
+
+INTAKE_CLOSED_TEXT = (
+    "**Приём заявок на конкурс закрыт.**\n\n"
+    "Спасибо всем, кто успел подать работу! Если у вас уже есть "
+    "поданные заявки — они продолжают участвовать в конкурсе, "
+    "статус можно посмотреть в разделе «Мои заявки».\n\n"
+    "По вопросам — кнопка «Контакты организаторов»."
+)
 
 
 collector = HandlerCollector()
@@ -235,6 +244,16 @@ async def cmd_apply(message: IncomingMessage, bot: Bot) -> None:
     пользователь видел текстовое приглашение без отвлекающего меню —
     см. ``.cursor/rules/pybotx-bubbles.mdc``.
     """
+    if not await intake_state_service.is_intake_open():
+        logger.info(
+            "Заблокирован /apply — приём заявок закрыт",
+            sender=str(message.sender.huid),
+        )
+        await reply_to_user(
+            message, bot, INTAKE_CLOSED_TEXT, bubbles=intake_closed_bubbles()
+        )
+        return
+
     fsm = message.state.fsm
     await fsm.clear()
 

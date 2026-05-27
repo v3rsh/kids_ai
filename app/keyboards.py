@@ -186,6 +186,29 @@ def back_to_main_menu_bubbles() -> BubbleMarkup:
     return bubbles
 
 
+def intake_closed_bubbles() -> BubbleMarkup:
+    """Кнопки экрана «Приём заявок закрыт».
+
+    Показываются, когда пользователь жмёт «Подать работу», а админ
+    закрыл приём через /admin_intake_open. Состав:
+    «Мои заявки» (если есть что смотреть — карточка сама скажет
+    «у вас нет заявок»), «Контакты организаторов», «Главное меню».
+    """
+    bubbles = BubbleMarkup()
+    bubbles.add_button(
+        command="/menu_my_applications", label="Мои заявки", new_row=True
+    )
+    bubbles.add_button(
+        command="/menu_contacts",
+        label="Контакты организаторов",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/start", label="◀ Назад в главное меню", new_row=True
+    )
+    return bubbles
+
+
 # =====================================================================
 # Меню роли (модератор / жюри)
 # =====================================================================
@@ -356,9 +379,11 @@ def admin_main_menu_bubbles(
     chat_configured: bool = False,
     intake_mode: str = "FILES",
     disk_pct: float = 0.0,
+    intake_open: bool = True,
 ) -> BubbleMarkup:
     """Главное меню админки с бейджами на кнопках."""
     chat_label = "настроен" if chat_configured else "не настроен"
+    intake_label = "open" if intake_open else "🔒closed"
     bubbles = BubbleMarkup()
     bubbles.add_button(
         command="/admin_section",
@@ -374,7 +399,10 @@ def admin_main_menu_bubbles(
     )
     bubbles.add_button(
         command="/admin_section",
-        label=f"🖥 Система ({intake_mode} · диск {disk_pct:.0f}%)",
+        label=(
+            f"🖥 Система ({intake_label} · {intake_mode} · "
+            f"диск {disk_pct:.0f}%)"
+        ),
         data={"section": "system"},
         new_row=True,
     )
@@ -463,6 +491,11 @@ def admin_system_menu_bubbles() -> BubbleMarkup:
     bubbles.add_button(command="/disk", label="📦 Диск", new_row=True)
     bubbles.add_button(command="/intake_mode", label="🔁 Режим приёма", new_row=True)
     bubbles.add_button(
+        command="/admin_intake_open",
+        label="🔒 Приём заявок",
+        new_row=True,
+    )
+    bubbles.add_button(
         command="/admin_jury_settings",
         label="⚖️ Настройки жюри",
         new_row=True,
@@ -476,6 +509,40 @@ def admin_system_menu_bubbles() -> BubbleMarkup:
     bubbles.add_button(
         command="/admin_jury_flush",
         label="🚿 Сброс буфера жюри",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_export_files",
+        label="📦 Выгрузить все файлы",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_export_shortlist_files",
+        label="🏆 Выгрузить файлы шорт-листа",
+        new_row=True,
+    )
+    admin_back_bubble(bubbles)
+    return bubbles
+
+
+def intake_open_toggle_bubbles(*, currently_open: bool) -> BubbleMarkup:
+    """Кнопки в /admin_intake_open: показ текущего состояния + переключатель.
+
+    Активное состояние помечено ☑, противоположное — стрелкой →. Клик
+    по противоположной запускает двухшаговое подтверждение через
+    /admin_confirm (action="close_intake" / "reopen_intake").
+    """
+    bubbles = BubbleMarkup()
+    bubbles.add_button(
+        command="/admin_intake_open",
+        label=("☑ " if currently_open else "→ ") + "🔓 Открыт",
+        data={"target": "open"},
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_intake_open",
+        label=("☑ " if not currently_open else "→ ") + "🔒 Закрыт",
+        data={"target": "closed"},
         new_row=True,
     )
     admin_back_bubble(bubbles)
@@ -771,6 +838,7 @@ def final_confirm_bubbles() -> BubbleMarkup:
 __all__ = [
     "main_menu_bubbles",
     "back_to_main_menu_bubbles",
+    "intake_closed_bubbles",
     "my_applications_list_bubbles",
     "my_application_detail_bubbles",
     "moderator_menu_bubbles",
@@ -785,6 +853,7 @@ __all__ = [
     "admin_roles_menu_bubbles",
     "admin_chat_menu_bubbles",
     "admin_system_menu_bubbles",
+    "intake_open_toggle_bubbles",
     "admin_jury_settings_bubbles",
     "admin_users_menu_bubbles",
     "admin_stats_menu_bubbles",

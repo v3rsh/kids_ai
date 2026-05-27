@@ -52,9 +52,15 @@ from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
 from database.models import AgeCategory, FileKind, IntakeMode, Track
 from fsm import cleanup_middleware, fsm_middleware
 from handlers.common import register_state_handler
-from keyboards import consents_bubbles, final_confirm_bubbles, main_menu_bubbles
+from keyboards import (
+    consents_bubbles,
+    final_confirm_bubbles,
+    intake_closed_bubbles,
+    main_menu_bubbles,
+)
 from services import applications as applications_service
 from services import intake_mode as intake_mode_service
+from services import intake_state as intake_state_service
 from services import notifications as notifications_service
 from services import storage as storage_service
 from states import UserIntake
@@ -263,6 +269,27 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
         logger.debug(
             "intake_submit вне состояния review — игнорируем",
             current=current,
+        )
+        return
+
+    # Защита от гонки: пользователь долго заполнял анкету, админ за это
+    # время закрыл приём через /admin_intake_open. Сценарий редкий, но
+    # реальный — лучше отказать здесь, чем создать «лишнюю» заявку.
+    if not await intake_state_service.is_intake_open():
+        logger.info(
+            "Заблокирован /intake_submit — приём заявок закрыт",
+            sender=str(message.sender.huid),
+        )
+        await fsm.clear()
+        await reply_to_user(
+            message,
+            bot,
+            (
+                "Приём заявок был закрыт, пока вы заполняли анкету. "
+                "Уже поданные ранее заявки продолжают участвовать в "
+                "конкурсе, статус — в разделе «Мои заявки»."
+            ),
+            bubbles=intake_closed_bubbles(),
         )
         return
 

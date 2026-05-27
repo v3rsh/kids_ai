@@ -784,14 +784,33 @@ def _render_shortlist_workbook(
     return buf.getvalue(), n_cols, n_rows
 
 
-async def _fetch_top10_applications(session) -> list[Application]:
-    """Только заявки со статусом жюри `в топ-10`."""
+async def fetch_shortlist_applications(session) -> list[Application]:
+    """Заявки шорт-листа — со статусом жюри ``V_TOP_10``.
+
+    Единый источник правды по составу шорт-листа. Используется и в
+    XLSX-выгрузке (``build_shortlist_xlsx``), и в архивной выгрузке
+    файлов шорт-листа (``services.attachments_export`` с пресетом
+    ``SHORTLIST``). Сортировка — по ``br_id`` ASC; группировкой по
+    пулам (track / age_category) занимается caller.
+
+    После активации плана ``unlimited_jury_rounds`` ``V_TOP_10``
+    проставляется не одним финальным аккордом, а инкрементально по
+    мере закрытия раундов в пулах. Этот хелпер от изменения семантики
+    не зависит — он просто читает текущее значение ``jury_status``.
+    """
     stmt = (
         select(Application)
         .where(Application.jury_status == JuryStatus.V_TOP_10)
         .order_by(Application.br_id.asc())
     )
     return list((await session.scalars(stmt)).all())
+
+
+# Старое имя оставляем как алиас для обратной совместимости с
+# приватным импортом внутри registry.py — на случай, если где-то
+# ещё ссылается на «_fetch_top10_applications». Удалить можно после
+# мерджа `unlimited_jury_rounds` (см. план).
+_fetch_top10_applications = fetch_shortlist_applications
 
 
 async def build_shortlist_xlsx() -> bytes:
@@ -840,4 +859,5 @@ __all__ = [
     "jury_outcome",
     "build_registry_xlsx",
     "build_shortlist_xlsx",
+    "fetch_shortlist_applications",
 ]

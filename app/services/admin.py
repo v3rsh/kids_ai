@@ -31,6 +31,7 @@ from database.models import (
 )
 from services import access
 from services.intake_mode import get_intake_mode
+from services.intake_state import is_intake_open
 from services.storage import get_disk_usage_bytes, get_disk_usage_pct
 
 
@@ -43,6 +44,7 @@ class AdminOverview:
     moderation_chat_configured: bool
     intake_mode: str
     disk_pct: float
+    intake_open: bool = True
 
 
 @dataclass(frozen=True)
@@ -121,6 +123,7 @@ def build_by_pool_counts(raw: dict[tuple[Track, AgeCategory], int]) -> dict[str,
 async def overview_counters() -> AdminOverview:
     """Счётчики для бейджей кнопок главного меню админки."""
     mode = await get_intake_mode()
+    intake_open = await is_intake_open()
     pct = get_disk_usage_pct()
     mod_chat = access.get_moderation_chat_id()
 
@@ -150,6 +153,7 @@ async def overview_counters() -> AdminOverview:
         moderation_chat_configured=mod_chat is not None,
         intake_mode=mode.value.upper(),
         disk_pct=pct,
+        intake_open=intake_open,
     )
 
 
