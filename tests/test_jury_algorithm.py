@@ -114,5 +114,64 @@ class TestJuryAlgorithm(unittest.TestCase):
         self.assertEqual(outcome.sorted_app_ids, [a.id for a in apps])
 
 
+class TestIncrementalShortlist(unittest.TestCase):
+    """Инкрементальная фиксация шорт-листа с динамическим ``top_n``.
+
+    В новой модели (см. ТЗ §35.5) above_tie каждого раунда фиксируется
+    сразу в `V_TOP_10`, в следующий раунд уходит только tie-зона
+    с уменьшенным ``top_n = TOP_N - already_fixed``.
+    """
+
+    def test_round_after_partial_fix_uses_smaller_top_n(self):
+        """После R1 зафиксировано 8 above_tie → в R2 ``top_n=2`` (10-8)."""
+        # Симулируем R2: на входе только tie_zone из 5 заявок, нужно выбрать 2.
+        apps = _make_apps(5)
+        counts = {a.id: 0 for a in apps}
+        counts[apps[0].id] = 7
+        counts[apps[1].id] = 6
+        for i in range(2, 5):
+            counts[apps[i].id] = 3
+        outcome = _compute_outcome_from_data(apps, counts, top_n=2)
+        self.assertFalse(outcome.is_tied)
+        self.assertEqual(len(outcome.top_ids), 2)
+        self.assertEqual(set(outcome.top_ids), {apps[0].id, apps[1].id})
+
+    def test_round_after_partial_fix_with_tie_at_remaining(self):
+        """Tie на оставшейся вакансии: above_tie=1, tie_ids=N."""
+        apps = _make_apps(4)
+        counts = {a.id: 0 for a in apps}
+        counts[apps[0].id] = 7
+        # 3 заявки делят одну оставшуюся вакансию (top_n=2)
+        for i in range(1, 4):
+            counts[apps[i].id] = 4
+        outcome = _compute_outcome_from_data(apps, counts, top_n=2)
+        self.assertTrue(outcome.is_tied)
+        self.assertEqual(outcome.above_tie_ids, [apps[0].id])
+        self.assertEqual(set(outcome.tie_ids), {apps[1].id, apps[2].id, apps[3].id})
+
+    def test_top_n_zero_returns_empty(self):
+        """``top_n=0`` (пул уже заполнен) → ни above_tie, ни tie_ids."""
+        apps = _make_apps(3)
+        counts = {a.id: 5 for a in apps}
+        outcome = _compute_outcome_from_data(apps, counts, top_n=0)
+        self.assertFalse(outcome.is_tied)
+        self.assertEqual(outcome.top_ids, [])
+        self.assertEqual(outcome.above_tie_ids, [])
+        self.assertEqual(outcome.tie_ids, [])
+
+    def test_unlimited_rounds_simulation(self):
+        """5+ раундов: ничья в tie-зоне держится до выхода (auto_lot=off)."""
+        # 4 заявки на 2 вакансии, каждый раунд: 2 побеждают, 2 в ничье.
+        apps = _make_apps(4)
+        # Раунд N: tie всё ещё, выходит 1 выше + 3 в tie.
+        for round_no in range(1, 6):
+            counts = {a.id: 4 for a in apps[:1]}
+            counts.update({a.id: 3 for a in apps[1:]})
+            outcome = _compute_outcome_from_data(apps, counts, top_n=2)
+            self.assertTrue(outcome.is_tied)
+            self.assertEqual(outcome.above_tie_ids, [apps[0].id])
+            self.assertEqual(len(outcome.tie_ids), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -161,9 +161,6 @@ def _fake_app(**overrides):
         is_possible_duplicate=False,
         related_application_br_id=None,
         is_actual_version=True,
-        jury_round1_yes=0,
-        jury_round2_yes=0,
-        jury_round3_yes=0,
         jury_final_round=None,
         jury_decided_by_lot=False,
         pool_position=None,
@@ -232,11 +229,12 @@ class TestRenderRegistryWorkbook:
             votes=[],
             rounds_by_id={},
             jury_by_huid={},
+            aggregates_by_app={},
         )
         # XLSX = ZIP-архив, первые 2 байта = "PK".
         assert payload[:2] == b"PK"
-        # 29 колонок основного листа.
-        assert n_cols == 29
+        # 27 колонок основного листа (после объединения 23–25 в одну).
+        assert n_cols == 27
         # 1 шапка + 1 строка данных.
         assert n_rows == 2
 
@@ -246,7 +244,24 @@ class TestRenderRegistryWorkbook:
             votes=[],
             rounds_by_id={},
             jury_by_huid={},
+            aggregates_by_app={},
         )
         assert payload[:2] == b"PK"
-        assert n_cols == 29
+        assert n_cols == 27
         assert n_rows == 1  # одна только шапка
+
+    def test_round_yes_column_formatting(self):
+        """Колонка 23 ``Голоса «Достоин» по раундам`` — формат ``r1:N, r2:N``."""
+        from services.registry import _format_round_yes_aggregates
+
+        assert _format_round_yes_aggregates({}) == ""
+        assert _format_round_yes_aggregates({1: 7}) == "r1:7"
+        assert (
+            _format_round_yes_aggregates({1: 7, 2: 5, 3: 3, 4: 2})
+            == "r1:7, r2:5, r3:3, r4:2"
+        )
+        # Раунды сортируются по номеру независимо от порядка в dict.
+        assert (
+            _format_round_yes_aggregates({3: 3, 1: 7, 2: 5})
+            == "r1:7, r2:5, r3:3"
+        )
