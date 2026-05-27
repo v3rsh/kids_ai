@@ -29,8 +29,6 @@ Fallback-шаги (включаются, только если CTS не верн
 автоматически из возраста через ``AgeCategory.from_age`` в момент
 создания заявки.
 """
-import re
-from typing import Tuple
 
 from loguru import logger
 from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
@@ -42,6 +40,7 @@ from keyboards import track_selection_bubbles
 from services import intake_mode as intake_mode_service
 from states import UserIntake
 from utils.bot_utils import reply_to_user, safe_answer, safe_answer_transient
+from utils.validation import validate_and_normalize_contact
 
 
 collector = HandlerCollector()
@@ -67,34 +66,26 @@ _MAX_DESCRIPTION_LEN = 2000
 
 _MIN_CONTACT_LEN = 4
 _MAX_CONTACT_LEN = 100
-_MIN_PHONE_DIGITS = 10
-_MAX_PHONE_DIGITS = 15
 
 _AGE_MIN = 0
 _AGE_MAX = 18
 
-# Минимальный email-regex: запрещает пробелы и требует один '@' с
-# доменом и точкой. Этого достаточно для UX-проверки; жёсткой
-# RFC-валидации не делаем — почту всё равно проверит модератор/MTA.
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-_PHONE_NORMALIZE_RE = re.compile(r"[^\d+]")
-
 # 6 нумерованных шагов. Загрузка файлов отдельным этапом и нумеруется
 # не как «Шаг X», а как самостоятельный экран (см. user_files.py).
 _PROMPT_PARENT_CONTACT_BASE = (
-    "**Шаг 1 из 6. Контакт для связи**\n\n"
+    "**Шаг 1 из 7. Контакт для связи**\n\n"
     "Укажите телефон (например, «+79991234567») или email."
 )
 _PROMPT_CHILD_NAME = (
-    "**Шаг 2 из 6. Имя ребёнка**\n\n"
+    "**Шаг 2 из 7. Имя ребёнка**\n\n"
     "Как зовут ребёнка? Достаточно имени (например, «Маша»)."
 )
 _PROMPT_CHILD_AGE = (
-    "**Шаг 3 из 6. Возраст ребёнка**\n\n"
+    "**Шаг 3 из 7. Возраст ребёнка**\n\n"
     "Сколько ребёнку полных лет? Введите число от 0 до 18."
 )
 _PROMPT_TRACK = (
-    "**Шаг 4 из 6. Конкурсный трек**\n\n"
+    "**Шаг 4 из 7. Конкурсный трек**\n\n"
     "Выберите один из вариантов кнопкой ниже:\n\n"
     "• **Традиционное рисование** — рисунок, открытка, коллаж, аппликация, "
     "комикс, поделка, 3D-модель, фотоинсталляция или другая визуальная "
@@ -107,16 +98,16 @@ _PROMPT_TRACK = (
 
 
 def _track_selected_prompt(track: Track) -> str:
-    return f"**Шаг 4 из 6.** Выбран трек: {track.value}"
+    return f"**Шаг 4 из 7.** Выбран трек: {track.value}"
 
 
-_PROMPT_TITLE = "**Шаг 5 из 6. Название работы**\n\nВведите название работы."
+_PROMPT_TITLE = "**Шаг 5 из 7. Название работы**\n\nВведите название работы."
 _PROMPT_DESCRIPTION_BASE = (
-    "**Шаг 6 из 6. Описание работы**\n\n"
+    "**Шаг 6 из 7. Описание работы**\n\n"
     "Опишите работу: что изображено и почему ребёнок выбрал эту тему."
 )
 _PROMPT_DESCRIPTION_HANDMADE_TO_AI = (
-    "**Шаг 6 из 6. Описание работы**\n\n"
+    "**Шаг 6 из 7. Описание работы**\n\n"
     "Коротко напишите, что было в ручной работе и как ИИ "
     "помог переосмыслить или развить идею."
 )
@@ -167,44 +158,10 @@ def _build_contact_prompt(data: dict) -> str:
     )
 
 
-def _detect_contact_type(value: str) -> Tuple[str, str] | None:
-    """Определить тип контакта и нормализовать значение.
-
-    Returns:
-        ``(normalized, "email")`` для валидного email;
-        ``(normalized, "phone")`` для валидного телефона;
-        ``None`` если не похоже ни на то, ни на другое.
-    """
-    text = (value or "").strip()
-    if not text:
-        return None
-
-    if "@" in text:
-        candidate = text.lower()
-        if _EMAIL_RE.match(candidate):
-            return candidate, "email"
-        return None
-
-    # Телефон: оставляем только '+' и цифры. '+' допускается только
-    # один раз и только в начале — иначе считаем мусором.
-    cleaned = _PHONE_NORMALIZE_RE.sub("", text)
-    if cleaned.count("+") > 1 or (
-        "+" in cleaned and not cleaned.startswith("+")
-    ):
-        return None
-    digits = cleaned.lstrip("+")
-    if not digits.isdigit():
-        return None
-    if len(digits) < _MIN_PHONE_DIGITS or len(digits) > _MAX_PHONE_DIGITS:
-        return None
-    return cleaned, "phone"
-
-
 async def _handle_parent_contact(message: IncomingMessage, bot: Bot) -> None:
     """Шаг 1: контакт для связи — телефон или email.
 
-    Автоопределение типа по наличию '@'. На ошибку валидации —
-    транзиентное сообщение, состояние не меняется.
+    На ошибку валидации — транзиентное сообщение, состояние не меняется.
     """
     body = (message.body or "").strip()
     if len(body) < _MIN_CONTACT_LEN or len(body) > _MAX_CONTACT_LEN:
@@ -218,7 +175,7 @@ async def _handle_parent_contact(message: IncomingMessage, bot: Bot) -> None:
         )
         return
 
-    detected = _detect_contact_type(body)
+    detected = validate_and_normalize_contact(body)
     if detected is None:
         await safe_answer_transient(
             message,

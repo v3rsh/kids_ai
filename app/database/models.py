@@ -270,10 +270,9 @@ class Application(Base):
     parent_full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     parent_division: Mapped[str] = mapped_column(String(255), nullable=False)
     parent_ad_login: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    # Контакт для связи, который явно ввёл родитель на шаге «Контакт»
-    # анкеты (email или телефон). Тип определяется автоматически по
-    # наличию '@' и сохраняется отдельно для последующей валидации/UX
-    # (например, кликабельная ссылка mailto:/tel: в карточке модератора).
+    # Контакт (email или телефон), введённый родителем на шаге 1 анкеты.
+    # Нормализуется: email — через email-validator (syntax), телефон — phonenumbers (E.164, RU→+7...).
+    # parent_contact_type = 'email' | 'phone' для UX (mailto:/tel: в карточках).
     parent_contact: Mapped[str | None] = mapped_column(String(255), nullable=True)
     parent_contact_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
     child_name: Mapped[str] = mapped_column(String(255), nullable=False)

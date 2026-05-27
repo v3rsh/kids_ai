@@ -21,6 +21,12 @@ apscheduler>=3.10.0
 typing-extensions>=4.5.0
 aiofiles>=23.2.0
 
+# ===== Validation (шаг анкеты: телефон/email) =====
+# phonenumbers — парсинг, валидация и нормализация телефонов (в т.ч. RU → E.164 +7...)
+# email-validator — строгая проверка синтаксиса email (без DNS-запросов, check_deliverability=False)
+phonenumbers>=8.13.0
+email-validator>=2.0.0
+
 # ===== Excel (Безопасные рисунки) =====
 # openpyxl — on-demand генерация registry.xlsx / shortlist.xlsx (§25.4)
 openpyxl>=3.1.0

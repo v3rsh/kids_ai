@@ -247,8 +247,8 @@ CTS-данные используются в анкете для автопод�
 | parent_full_name | VARCHAR(255) | Снимок ФИО на момент submit (из CTS-кэша `users.full_name`, либо ручной fallback-ввод) |
 | parent_division | VARCHAR(255) | Снимок подразделения на момент submit (из CTS-кэша `users.department`, либо ручной fallback-ввод) |
 | parent_ad_login | VARCHAR(255), nullable | AD-логин для записи `@login` в meta/Excel (fallback контакта) |
-| parent_contact | VARCHAR(255), nullable | Контакт для связи, явно введённый родителем на шаге «Контакт» (email или телефон) |
-| parent_contact_type | VARCHAR(16), nullable | `'email'` или `'phone'` — автоматически по наличию `@` в `parent_contact` |
+| parent_contact | VARCHAR(255), nullable | Контакт (нормализованный: email — email-validator syntax, телефон — phonenumbers E.164 +7... для RU), введённый на шаге «Контакт» |
+| parent_contact_type | VARCHAR(16), nullable | `'email'` или `'phone'` (определяется в utils/validation) |
 | child_name | VARCHAR(255) | Имя ребёнка |
 | child_age | INTEGER | Полных лет (0–18) |
 | age_category | Enum `AgeCategory` | Вычисляется автоматически (`AgeCategory.from_age`) |
@@ -406,7 +406,7 @@ async def handler(message: IncomingMessage, bot: Bot) -> None:
 
 | Класс | Состояния | Назначение |
 |---|---|---|
-| `UserIntake` | parent_contact → child_name → child_age → track → title → description → files_collect → consents → review (горячий путь). Fallback: parent_full_name_fb / parent_division_fb — включаются, только если CTS не дал соответствующее поле | Поэтапная анкета участника. ФИО и подразделение тянутся из CTS-кэша в `cmd_apply` (`services.users.ensure_user_profile_loaded`), в анкете остаётся один шаг — «Контакт» (email/телефон с автоопределением) |
+| `UserIntake` | parent_contact → child_name → child_age → track → title → description → files_collect → consents → review (горячий путь). Fallback: parent_full_name_fb / parent_division_fb — включаются, только если CTS не дал соответствующее поле | Поэтапная анкета участника. ... шаг «Контакт» (строгая валидация + нормализация в utils/validation.py) |
 | `ModeratorFlow` | moderator_menu | Находится в меню модератора (после `/moderator` или welcome-DM). Свободного текста для этого состояния нет — диспетчер использует его только для того, чтобы перерисовать меню роли вместо главного |
 | `ModeratorAction` | status_change, comment_input, reject_reason, fix_note | Диалоговые подсказки модератора (ввод текста для `/comment`, `/notify_fix`, …) |
 | `JuryFlow` | jury_menu | Находится в меню жюри (после `/jury` или welcome-DM). Используется аналогично `ModeratorFlow.moderator_menu` |

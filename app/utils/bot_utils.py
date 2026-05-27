@@ -269,6 +269,26 @@ async def send_photo_transient(
     return sync_id
 
 
+async def send_photo_persistent(
+    message: IncomingMessage,
+    bot: Bot,
+    body: str,
+    photo: OutgoingAttachment,
+    bubbles: Optional[BubbleMarkup] = None,
+    **kwargs,
+) -> UUID:
+    """Persistent-сообщение с фото/файлом и подписью. Остаётся в истории чата.
+
+    В отличие от ``send_photo_transient``, сообщение не трекается и не
+    удаляется ``cleanup_middleware`` при следующей навигации.
+    """
+    send_kwargs = {"wait_callback": False, "file": photo, **kwargs}
+    if bubbles is not None:
+        send_kwargs["bubbles"] = bubbles
+
+    return await bot.answer_message(body, **send_kwargs)
+
+
 async def send_with_retry(
     bot: Bot,
     body: str,

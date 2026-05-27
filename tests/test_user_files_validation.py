@@ -6,7 +6,9 @@ import pytest
 from database.models import Track
 from handlers.user_files import (
     TRADITIONAL_MAX_FILES,
+    build_file_accepted_caption,
     check_file_upload,
+    count_raw_attachments,
     validate_files_count_for_track,
 )
 
@@ -82,3 +84,66 @@ class TestValidateFilesCountForTrack:
     def test_traditional_rejects_zero_and_five(self):
         assert validate_files_count_for_track(Track.TRADITIONAL, 0) is not None
         assert validate_files_count_for_track(Track.TRADITIONAL, 5) is not None
+
+
+class TestCountRawAttachments:
+    """`count_raw_attachments` — раннее обнаружение нескольких вложений в одном сообщении."""
+
+    def test_none_or_empty_or_missing_key_returns_zero(self):
+        assert count_raw_attachments(None) == 0
+        assert count_raw_attachments({}) == 0
+        assert count_raw_attachments({"command": {}}) == 0
+
+    def test_single_attachment(self):
+        raw = {"attachments": [{"type": "image", "data": {"file_name": "a.jpg"}}]}
+        assert count_raw_attachments(raw) == 1
+
+    def test_multiple_attachments(self):
+        raw = {
+            "attachments": [
+                {"type": "image", "data": {"file_name": "a.jpg"}},
+                {"type": "image", "data": {"file_name": "b.png"}},
+            ]
+        }
+        assert count_raw_attachments(raw) == 2
+
+    def test_non_list_attachments_treated_as_zero(self):
+        assert count_raw_attachments({"attachments": "not-a-list"}) == 0
+        assert count_raw_attachments({"attachments": None}) == 0
+
+
+class TestBuildFileAcceptedCaption:
+    """`build_file_accepted_caption` — подпись echo-сообщения на шаге 7."""
+
+    def test_traditional_first_file(self):
+        caption = build_file_accepted_caption(
+            Track.TRADITIONAL, "photo.jpg", 1
+        )
+        assert "Шаг 7 из 7" in caption
+        assert "photo.jpg" in caption
+        assert "1/4" in caption
+        assert "Добавьте ещё файл" in caption
+
+    def test_traditional_fourth_file(self):
+        caption = build_file_accepted_caption(
+            Track.TRADITIONAL, "side4.png", TRADITIONAL_MAX_FILES
+        )
+        assert "4/4" in caption
+        assert "side4.png" in caption
+        assert "Лимит достигнут" in caption
+
+    def test_ai_track(self):
+        caption = build_file_accepted_caption(
+            Track.AI, "ai_art.webp", 1
+        )
+        assert "ai_art.webp" in caption
+        assert "Переходим к согласиям" in caption
+        assert "коллаж" not in caption.lower()
+
+    def test_handmade_to_ai_track(self):
+        caption = build_file_accepted_caption(
+            Track.HANDMADE_TO_AI, "collage.jpg", 1
+        )
+        assert "коллаж" in caption.lower()
+        assert "collage.jpg" in caption
+        assert "Переходим к согласиям" in caption

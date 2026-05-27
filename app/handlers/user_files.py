@@ -6,6 +6,9 @@
 - **За одну загрузку — один файл** на всех треках. Второй файл подряд
   без нажатия «Добавить ещё файл» отвергается. Следующий файл на
   многофайловых треках — только после этой кнопки.
+- Сообщения с несколькими вложениями (более одного attachment в raw-пейлоаде)
+  полностью отвергаются на этом шаге; ни один файл не сохраняется.
+  Пользователь получает transient-ошибку с понятной инструкцией.
 - **Традиционное рисование**:
   - 1 файл — для 2D-работ (рисунок/открытка/коллаж/аппликация/комикс);
   - 2–4 файла — для поделки/3D-модели/фотоинсталляции.
@@ -50,6 +53,7 @@ from pybotx import (
     HandlerCollector,
     IncomingMessage,
 )
+from pybotx.models.attachments import OutgoingAttachment
 
 from config import MAX_FILE_SIZE_MB
 from database.models import Track
@@ -57,7 +61,11 @@ from fsm import cleanup_middleware, fsm_middleware
 from handlers.common import register_state_handler
 from keyboards import file_upload_bubbles
 from states import UserIntake
-from utils.bot_utils import reply_to_user, safe_answer_transient
+from utils.bot_utils import (
+    reply_to_user,
+    safe_answer_transient,
+    send_photo_persistent,
+)
 
 
 collector = HandlerCollector()
@@ -85,6 +93,13 @@ _ERR_SINGLE_FILE_TRACK = (
     "В этом треке принимается ровно один файл. Второй файл "
     "отвергнут — если нужно заменить первый, нажмите «Подать "
     "работу» в главном меню и подайте заявку заново."
+)
+_ERR_MULTIPLE_ATTACHMENTS_IN_ONE_MESSAGE = (
+    "Вы отправили несколько файлов в одном сообщении. Бот принимает "
+    "только один файл за одну отправку.\n\n"
+    "Отправляйте файлы по одному. Для 2–4 файлов в треке "
+    "«Традиционное рисование» после приёма первого нажмите "
+    "«Добавить ещё файл» и пришлите следующий отдельным сообщением."
 )
 
 # Per-user lock: защита от двойного приёма при быстрой отправке двух файлов.
@@ -140,6 +155,47 @@ def validate_files_count_for_track(track: Track, count: int) -> str | None:
     return None
 
 
+def count_raw_attachments(raw_command: dict | None) -> int:
+    """Вернуть количество attachments в raw-пейлоаде входящего сообщения.
+
+    Returns:
+        Число элементов в ключе "attachments" (если список), иначе 0.
+    """
+    if not raw_command:
+        return 0
+    atts = raw_command.get("attachments") or []
+    return len(atts) if isinstance(atts, list) else 0
+
+
+def build_file_accepted_caption(
+    track: Track,
+    original_filename: str,
+    files_count: int,
+) -> str:
+    """Подпись persistent-сообщения с эхо принятого файла (шаг 7 из 7)."""
+    if track == Track.TRADITIONAL:
+        if files_count >= _TRADITIONAL_MAX_FILES:
+            return (
+                f"**Шаг 7 из 7. Принят файл «{original_filename}» "
+                f"({_TRADITIONAL_MAX_FILES}/{_TRADITIONAL_MAX_FILES}).**\n\n"
+                "Лимит достигнут. Переходим к согласиям."
+            )
+        return (
+            f"**Шаг 7 из 7. Принят файл «{original_filename}» "
+            f"({files_count}/{_TRADITIONAL_MAX_FILES}).**\n\n"
+            "Добавьте ещё файл или завершите загрузку."
+        )
+    if track == Track.HANDMADE_TO_AI:
+        return (
+            f"**Шаг 7 из 7. Принят коллаж «{original_filename}».**\n\n"
+            "Переходим к согласиям."
+        )
+    return (
+        f"**Шаг 7 из 7. Принят файл «{original_filename}».**\n\n"
+        "Переходим к согласиям."
+    )
+
+
 # =====================================================================
 # Временный каталог для файлов между шагами
 # =====================================================================
@@ -170,26 +226,29 @@ def _cleanup_intake_temp_dir(huid: UUID | str) -> None:
 # =====================================================================
 
 _PROMPT_TRADITIONAL = (
-    "**Загрузите файл работы**\n\n"
+    "**Шаг 7 из 7. Загрузите файл работы**\n\n"
     "Для рисунка/открытки/коллажа/аппликации/комикса — один файл. "
     "Для поделки/3D-модели/фотоинсталляции — от 2 до 4 файлов "
     "(после первого появятся кнопки «Добавить ещё файл» / "
     "«Завершить загрузку»).\n\n"
     "Допустимые форматы: JPG, JPEG, PNG, HEIC, WEBP, PDF. "
-    f"Максимальный размер одного файла — {MAX_FILE_SIZE_MB} МБ."
+    f"Максимальный размер одного файла — {MAX_FILE_SIZE_MB} МБ.\n\n"
+    "В одном сообщении отправляйте только один файл."
 )
 _PROMPT_AI = (
-    "**Загрузите итоговое изображение**\n\n"
+    "**Шаг 7 из 7. Загрузите итоговое изображение**\n\n"
     "Созданное с помощью ИИ (1 файл).\n\n"
     "Допустимые форматы: JPG, JPEG, PNG, HEIC, WEBP, PDF. "
     f"Максимальный размер — {MAX_FILE_SIZE_MB} МБ. Промпт прикладывать "
-    "не обязательно."
+    "не обязательно.\n\n"
+    "В одном сообщении отправляйте только один файл."
 )
 _PROMPT_HANDMADE_TO_AI = (
-    "**Загрузите общий коллаж «до / после»**\n\n"
+    "**Шаг 7 из 7. Загрузите общий коллаж «до / после»**\n\n"
     "Ручная работа + ИИ-версия в одном изображении (1 файл).\n\n"
     "Допустимые форматы: JPG, JPEG, PNG, HEIC, WEBP, PDF. "
     f"Максимальный размер — {MAX_FILE_SIZE_MB} МБ.\n\n"
+    "В одном сообщении отправляйте только один файл. "
     "Если пришлёте второй файл — он будет отвергнут (нужен ровно "
     "один коллаж)."
 )
@@ -261,6 +320,12 @@ async def _handle_files_collect(
             bot,
             "Пришлите файл вложением. Текст в этом шаге не принимается.",
             bubbles=bubbles,
+        )
+        return
+
+    if count_raw_attachments(message.raw_command) > 1:
+        await safe_answer_transient(
+            message, bot, _ERR_MULTIPLE_ATTACHMENTS_IN_ONE_MESSAGE
         )
         return
 
@@ -404,32 +469,41 @@ async def _process_incoming_file_locked(
         track=track.name,
     )
 
-    # Дальше — траектория по треку.
-    if track == Track.TRADITIONAL:
-        if len(files) >= _TRADITIONAL_MAX_FILES:
-            logger.debug(
-                "TRADITIONAL: достигнут лимит 4 файлов, автозавершение",
-                parent_huid=str(huid),
-            )
-            await _proceed_to_consents(message, bot)
-            return
-        # Дать пользователю выбор: добавить ещё или завершить.
+    caption = build_file_accepted_caption(track, original_filename, len(files))
+    bubbles: BubbleMarkup | None = None
+    if track == Track.TRADITIONAL and len(files) < _TRADITIONAL_MAX_FILES:
+        bubbles = file_upload_bubbles(can_add_more=True, can_finish=True)
+
+    echo_photo = OutgoingAttachment(
+        content=incoming.content or b"",
+        filename=original_filename,
+    )
+    try:
+        await send_photo_persistent(
+            message, bot, caption, photo=echo_photo, bubbles=bubbles
+        )
+    except Exception:
+        logger.exception(
+            "Не удалось отправить echo-файл, fallback на текст",
+            parent_huid=str(huid),
+            original_filename=original_filename,
+        )
         await reply_to_user(
             message,
             bot,
-            (
-                f"Файл принят ({len(files)}/{_TRADITIONAL_MAX_FILES}). "
-                "Для поделки/3D-модели/фотоинсталляции — от 2 до 4 файлов. "
-                "Добавьте ещё файл или завершите загрузку."
-            ),
-            bubbles=file_upload_bubbles(
-                can_add_more=len(files) < _TRADITIONAL_MAX_FILES,
-                can_finish=True,
-            ),
+            caption,
+            bubbles=bubbles if bubbles is not None else BubbleMarkup(),
         )
+
+    if track == Track.TRADITIONAL and len(files) < _TRADITIONAL_MAX_FILES:
         return
 
-    # AI / HANDMADE_TO_AI: ровно 1 файл — сразу к согласиям.
+    if track == Track.TRADITIONAL and len(files) >= _TRADITIONAL_MAX_FILES:
+        logger.debug(
+            "TRADITIONAL: достигнут лимит 4 файлов, автозавершение",
+            parent_huid=str(huid),
+        )
+
     await _proceed_to_consents(message, bot)
 
 
