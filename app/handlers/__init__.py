@@ -34,6 +34,7 @@ from .user_intake import collector as user_intake_collector
 from .user_files import collector as user_files_collector
 from .user_links import collector as user_links_collector
 from .user_confirm import collector as user_confirm_collector
+from .user_fix import collector as user_fix_collector
 
 # Ветка модератора: меню, очередь, действия, экспорт, jury-admin.
 from .moderator import collector as moderator_collector
@@ -41,6 +42,7 @@ from .moderator_queue import collector as moderator_queue_collector
 from .moderator_actions import collector as moderator_actions_collector
 from .moderator_export import collector as moderator_export_collector
 from .moderator_jury_admin import collector as moderator_jury_admin_collector
+from .moderator_multi_subs import collector as moderator_multi_subs_collector
 
 # Ветка жюри: главное меню, задачи, статус прогресса.
 from .jury import collector as jury_collector
@@ -77,12 +79,14 @@ def get_all_collectors() -> list:
         user_files_collector,
         user_links_collector,
         user_confirm_collector,
+        user_fix_collector,
         # Ветка B — модератор
         moderator_collector,
         moderator_queue_collector,
         moderator_actions_collector,
         moderator_export_collector,
         moderator_jury_admin_collector,
+        moderator_multi_subs_collector,
         # Ветка C — жюри
         jury_collector,
         jury_tasks_collector,

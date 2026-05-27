@@ -59,7 +59,7 @@ python -m pytest tests/test_application_flow.py tests/test_jury_flow.py -q
 | `tests/conftest.py` | Общий setup: env (`BOT_ID`/`CTS_URL`/...), `sys.path` для `from services import ...`, маркер `slow` | — |
 | `tests/test_validation.py` | Валидаторы и нормализаторы пользовательского ввода (анкета участника). **1 пре-existing fail в `test_sanitize_input`** — оставлен под отдельную правку | [`architecture.md`](architecture.md) → «FSM-система» |
 | `tests/test_jury_algorithm.py` | 3 классических кейса алгоритма раунда: 1 раунд без ничьи, ничья на границе, эскалация в раунд 3 | [`architecture.md`](architecture.md) → «Модель данных» (jury_rounds, jury_votes) |
-| `tests/test_application_flow.py` | `services.applications`: normalize_child_name, AgeCategory.from_age, _select_next_br_number (мок-сессия), find_possible_duplicate edge-cases, валидация `intake_mode` | [`architecture.md`](architecture.md) → «applications» |
+| `tests/test_application_flow.py` | `services.applications`: normalize_child_name, child_submission_key, `_group_applications`, find_possible_duplicate, валидация `intake_mode` | [`architecture.md`](architecture.md) → «applications» |
 | `tests/test_moderation_flow.py` | `services.moderation`: parse_status_group алиасы, _moderation_status_by_value / _voting_status_by_value, _build_queue_where_clauses, DEFAULT_QUEUE_STATUSES | [`architecture.md`](architecture.md) → «applications» (поля статусов) |
 | `tests/test_deeplink.py` | `utils.deeplink`: `build_bot_deeplink`, `build_find_deeplink` (плейсхолдеры, encoding, graceful degradation) | [`architecture.md`](architecture.md) → «Deeplink в чате модерации» |
 | `tests/test_jury_flow.py` | Расширение `test_jury_algorithm`: размер top_n, above_tie == TOP_N, детерминизм сортировки, `services.pools.all_pools()` = 3×3 = 9 пулов | [`architecture.md`](architecture.md) → «jury_pool_assignments» |
@@ -133,9 +133,12 @@ python -m pytest tests/test_application_flow.py tests/test_jury_flow.py -q
    файл > `MAX_FILE_SIZE_MB` (по умолчанию 10 МБ).
 4. Поставить согласия → подтвердить → получить сообщение «Заявка
    принята и передана на модерацию» с присвоенным `BR-2026-NNNN`.
-5. Повторно подать заявку на того же ребёнка → ожидаем автопометку
-   «возможный дубль» в карточке модератора.
-6. «Мои заявки» → список с номером и статусом → открыть карточку
+5. Повторно подать заявку на того же ребёнка и трек → автопометка
+   «возможный дубль» и блок «Повтор по правилу 1 работа в трек» в карточке.
+6. `/multi_subs` (модератор) — список групп; «Актуальная» / `/find` по BR-ID.
+7. После `/notify_fix` — «Подать исправленную работу» (`/apply_fix`) → тот же
+   BR-ID, статус снова «на модерации».
+8. «Мои заявки» → список с номером и статусом → открыть карточку
    (превью работы + текст подписью, кнопка «Все файлы»);
    после `/notify_fix` / `/notify_reject` — проверить текст модератора
    и кнопки (исправление → «Подать исправленную работу»).

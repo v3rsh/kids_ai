@@ -126,8 +126,9 @@ def my_application_detail_bubbles(app: Application) -> BubbleMarkup:
     bubbles = BubbleMarkup()
     if app.moderation_status == ModerationStatus.NUZHNO_ISPRAVIT:
         bubbles.add_button(
-            command="/apply",
+            command="/apply_fix",
             label="Подать исправленную работу",
+            data={"br_id": app.br_id},
             new_row=True,
         )
         bubbles.add_button(
@@ -230,6 +231,9 @@ def moderator_menu_bubbles() -> BubbleMarkup:
     """
     bubbles = BubbleMarkup()
     bubbles.add_button(command="/queue", label="📋 Очередь")
+    bubbles.add_button(
+        command="/multi_subs", label="⚠️ Повторные заявки", new_row=True
+    )
     bubbles.add_button(
         command="/m_accepted", label="✅ Принятые заявки", new_row=True
     )

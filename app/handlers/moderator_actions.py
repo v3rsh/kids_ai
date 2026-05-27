@@ -57,7 +57,7 @@ from config import ATTACHMENTS_DIR, COMPETITION_YEAR
 from database.models import Application, IntakeMode, ModerationStatus
 from fsm import cleanup_middleware, fsm_middleware
 from handlers.common import register_state_handler
-from handlers.moderator_queue import _full_card, render_application_card
+from handlers.moderator_queue import build_full_card, render_application_card
 from services.access import moderator_only
 from services.moderation import (
     add_comment,
@@ -447,7 +447,7 @@ async def cmd_status(message: IncomingMessage, bot: Bot) -> None:
     await reply_to_user(
         message,
         bot,
-        body + "\n\n" + _full_card(result.application),
+        body + "\n\n" + await build_full_card(result.application),
         bubbles=_card_action_buttons(result.application),
     )
 
@@ -522,7 +522,7 @@ async def _apply_comment(
     await reply_to_user(
         message,
         bot,
-        body + "\n\n" + _full_card(app),
+        body + "\n\n" + await build_full_card(app),
         bubbles=_card_action_buttons(app),
     )
 

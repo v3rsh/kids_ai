@@ -347,52 +347,91 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
             )
             return
 
-    # ----- Шаг 1: создание заявки в БД (для LINKS — без cloud_link) -----
-    try:
-        application = await applications_service.create_application(
-            parent_huid=parent_huid,
-            parent_full_name=data["parent_full_name"],
-            parent_division=data["parent_division"],
-            parent_ad_login=getattr(message.sender, "ad_login", None),
-            parent_contact=data.get("parent_contact"),
-            parent_contact_type=data.get("parent_contact_type"),
-            child_name=data["child_name"],
-            child_age=int(data["child_age"]),
-            track_name=data["track"],
-            title=data["title"],
-            description=data["description"],
-            intake_mode_value=current_intake_mode.value,
-        )
-    except ValueError as exc:
-        logger.warning(
-            "Не удалось создать заявку (валидация)",
-            parent_huid=str(parent_huid),
-            error=str(exc),
-        )
-        await safe_answer_transient(
-            message,
-            bot,
-            _REJECTED_TECH_TEMPLATE.format(reason=str(exc)),
-        )
-        return
-    except Exception:
-        logger.exception(
-            "Сбой при создании заявки",
-            parent_huid=str(parent_huid),
-        )
-        from keyboards import back_to_main_menu_bubbles
+    fix_br_id = (data.get("fix_for_br_id") or "").strip().upper()
 
-        await safe_answer_transient(
-            message,
-            bot,
-            _REJECTED_TECH_TEMPLATE.format(
-                reason="временная техническая ошибка, попробуйте ещё раз"
-            ),
-            bubbles=back_to_main_menu_bubbles(),
-        )
-        return
+    # ----- Исправление существующей заявки (тот же BR-ID) -----
+    if fix_br_id:
+        try:
+            await applications_service.clear_application_work_files(fix_br_id)
+            application = await applications_service.update_application_for_fix(
+                br_id=fix_br_id,
+                parent_huid=parent_huid,
+                title=data["title"],
+                description=data["description"],
+                intake_mode_value=current_intake_mode.value,
+            )
+        except ValueError as exc:
+            await safe_answer_transient(
+                message,
+                bot,
+                _REJECTED_TECH_TEMPLATE.format(reason=str(exc)),
+            )
+            return
+        except Exception:
+            logger.exception(
+                "Сбой при обновлении заявки (исправление)",
+                br_id=fix_br_id,
+                parent_huid=str(parent_huid),
+            )
+            from keyboards import back_to_main_menu_bubbles
 
-    br_id = application.br_id
+            await safe_answer_transient(
+                message,
+                bot,
+                _REJECTED_TECH_TEMPLATE.format(
+                    reason="временная техническая ошибка, попробуйте ещё раз"
+                ),
+                bubbles=back_to_main_menu_bubbles(),
+            )
+            return
+        br_id = fix_br_id
+    else:
+        # ----- Шаг 1: создание заявки в БД (для LINKS — без cloud_link) -----
+        try:
+            application = await applications_service.create_application(
+                parent_huid=parent_huid,
+                parent_full_name=data["parent_full_name"],
+                parent_division=data["parent_division"],
+                parent_ad_login=getattr(message.sender, "ad_login", None),
+                parent_contact=data.get("parent_contact"),
+                parent_contact_type=data.get("parent_contact_type"),
+                child_name=data["child_name"],
+                child_age=int(data["child_age"]),
+                track_name=data["track"],
+                title=data["title"],
+                description=data["description"],
+                intake_mode_value=current_intake_mode.value,
+            )
+        except ValueError as exc:
+            logger.warning(
+                "Не удалось создать заявку (валидация)",
+                parent_huid=str(parent_huid),
+                error=str(exc),
+            )
+            await safe_answer_transient(
+                message,
+                bot,
+                _REJECTED_TECH_TEMPLATE.format(reason=str(exc)),
+            )
+            return
+        except Exception:
+            logger.exception(
+                "Сбой при создании заявки",
+                parent_huid=str(parent_huid),
+            )
+            from keyboards import back_to_main_menu_bubbles
+
+            await safe_answer_transient(
+                message,
+                bot,
+                _REJECTED_TECH_TEMPLATE.format(
+                    reason="временная техническая ошибка, попробуйте ещё раз"
+                ),
+                bubbles=back_to_main_menu_bubbles(),
+            )
+            return
+
+        br_id = application.br_id
 
     # ----- Ветка LINKS: запросить ссылку у участника -----
     if current_intake_mode is IntakeMode.LINKS:
@@ -434,13 +473,20 @@ async def cmd_submit(message: IncomingMessage, bot: Bot) -> None:
     _cleanup_intake_temp_dir(parent_huid)
     await fsm.clear()
 
+    if fix_br_id:
+        body = (
+            "Исправленные материалы приняты на проверку.\n\n"
+            f"**Номер заявки:** {br_id}"
+        )
+    else:
+        body = (
+            f"{notifications_service.ACCEPTED_TEMPLATE}\n\n"
+            f"**Номер заявки:** {br_id}"
+        )
     await reply_to_user(
         message,
         bot,
-        (
-            f"{notifications_service.ACCEPTED_TEMPLATE}\n\n"
-            f"**Номер заявки:** {br_id}"
-        ),
+        body,
         bubbles=main_menu_bubbles(huid=parent_huid),
     )
 

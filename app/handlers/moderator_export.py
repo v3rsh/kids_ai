@@ -98,6 +98,9 @@ def _format_stats(stats: StatsCounters) -> str:
     lines.append("")
     lines.append(f"Требует исправления: {stats.needs_fix}")
     lines.append(f"Отклонено: {stats.rejected}")
+    lines.append(
+        f"Повторные заявки (ребёнок+трек): {stats.multi_submission_groups}"
+    )
     return "\n".join(lines)
 
 

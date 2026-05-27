@@ -262,7 +262,9 @@ CTS-данные используются в анкете для автопод�
 | jury_status | Enum `JuryStatus` | Автополе по итогам процесса голосования по пулу |
 | voting_status | Enum `VotingStatus` | Заполняется модератором/организатором |
 | merch_potential | VARCHAR(255), nullable | Поле «Потенциал для мерча» |
-| is_possible_duplicate | BOOLEAN, indexed | Автопометка дубля: `parent_huid` + нормализованное имя ребёнка + `track` |
+| is_possible_duplicate | BOOLEAN, indexed | Автопометка дубля: `parent_huid` + `child_submission_key` (имя+возраст) + `track` |
+
+Модератор: `/multi_subs` — сводка групп с >1 активной заявкой на ключ; в карточке — блок «Повтор по правилу 1 работа в трек». Исправление заявки — `/apply_fix` (тот же BR-ID, `update_application_for_fix`).
 | related_application_br_id | VARCHAR(20), nullable | Ссылка на связанную заявку |
 | is_actual_version | BOOLEAN | Признак актуальной версии (заполняется модератором) |
 | jury_round1_yes / 2 / 3 | INTEGER | Голосов «Достоин» в раундах 1/2/3 |

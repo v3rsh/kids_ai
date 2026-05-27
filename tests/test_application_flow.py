@@ -25,12 +25,17 @@ import pytest
 
 from services.applications import (
     ApplicationFileSpec,
+    _group_applications,
     _select_next_br_number,
+    child_submission_key,
     find_possible_duplicate,
+    multi_submission_br_ids_from_applications,
     normalize_child_name,
     register_application_files,
     set_application_cloud_link,
+    submission_keys_match,
 )
+from database.models import ModerationStatus, Track
 from database.models import AgeCategory, FileKind, IntakeMode
 from services.storage import _format_files_block
 
@@ -108,6 +113,91 @@ class TestBrIdGeneration:
         assert n == 1
 
 
+class TestChildSubmissionKey:
+    def test_includes_age(self):
+        assert child_submission_key("Маша", 7) != child_submission_key("Маша", 8)
+
+    def test_submission_keys_match(self):
+        assert submission_keys_match(
+            child_name_a="Ёлка",
+            child_age_a=5,
+            child_name_b="елка",
+            child_age_b=5,
+        )
+
+
+class TestGroupApplications:
+    def test_groups_same_parent_child_track(self):
+        parent = uuid.uuid4()
+        apps = [
+            SimpleNamespace(
+                parent_huid=parent,
+                parent_full_name="Иванов",
+                child_name="Маша",
+                child_age=7,
+                track=Track.TRADITIONAL,
+                br_id="BR-2026-0001",
+                moderation_status=ModerationStatus.NA_MODERATSII,
+                created_at=SimpleNamespace(),
+                is_actual_version=True,
+                id=uuid.uuid4(),
+            ),
+            SimpleNamespace(
+                parent_huid=parent,
+                parent_full_name="Иванов",
+                child_name="Маша",
+                child_age=7,
+                track=Track.TRADITIONAL,
+                br_id="BR-2026-0002",
+                moderation_status=ModerationStatus.DOPUSHCHENO,
+                created_at=SimpleNamespace(),
+                is_actual_version=False,
+                id=uuid.uuid4(),
+            ),
+        ]
+        from datetime import datetime
+
+        apps[0].created_at = datetime(2026, 6, 1)
+        apps[1].created_at = datetime(2026, 6, 2)
+        groups = _group_applications(apps, only_active=True)
+        assert len(groups) == 1
+        assert len(groups[0].entries) == 2
+        ids = multi_submission_br_ids_from_applications(apps)
+        assert ids == {"BR-2026-0001", "BR-2026-0002"}
+
+    def test_rejected_excluded_when_only_active(self):
+        parent = uuid.uuid4()
+        from datetime import datetime
+
+        apps = [
+            SimpleNamespace(
+                parent_huid=parent,
+                parent_full_name="Иванов",
+                child_name="Маша",
+                child_age=7,
+                track=Track.AI,
+                br_id="BR-2026-0001",
+                moderation_status=ModerationStatus.OTKLONENO,
+                created_at=datetime(2026, 6, 1),
+                is_actual_version=False,
+                id=uuid.uuid4(),
+            ),
+            SimpleNamespace(
+                parent_huid=parent,
+                parent_full_name="Иванов",
+                child_name="Маша",
+                child_age=7,
+                track=Track.AI,
+                br_id="BR-2026-0002",
+                moderation_status=ModerationStatus.NA_MODERATSII,
+                created_at=datetime(2026, 6, 2),
+                is_actual_version=True,
+                id=uuid.uuid4(),
+            ),
+        ]
+        assert _group_applications(apps, only_active=True) == []
+
+
 class TestFindPossibleDuplicate:
     """`find_possible_duplicate` — защита от пустого нормализованного имени."""
 
@@ -115,6 +205,7 @@ class TestFindPossibleDuplicate:
         result = await find_possible_duplicate(
             parent_huid=uuid.uuid4(),
             child_name="   ",
+            child_age=7,
             track_name="TRADITIONAL",
         )
         assert result is None
@@ -124,6 +215,7 @@ class TestFindPossibleDuplicate:
             await find_possible_duplicate(
                 parent_huid=uuid.uuid4(),
                 child_name="Алиса",
+                child_age=7,
                 track_name="BOGUS_TRACK",
             )
 

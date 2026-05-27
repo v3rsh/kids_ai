@@ -147,6 +147,7 @@ class StatsCounters:
     by_moderation_status: dict[str, int]
     needs_fix: int
     rejected: int
+    multi_submission_groups: int
 
 
 StatsPeriod = Literal["today", "all"]
@@ -552,6 +553,12 @@ async def count_stats(period: StatsPeriod = "all") -> StatsCounters:
     needs_fix = by_status.get(ModerationStatus.NUZHNO_ISPRAVIT.value, 0)
     rejected = by_status.get(ModerationStatus.OTKLONENO.value, 0)
 
+    from services import applications as applications_service
+
+    multi_groups = await applications_service.count_multi_submission_groups(
+        only_active=True
+    )
+
     return StatsCounters(
         period_label=period_label,
         period_from=period_from,
@@ -562,6 +569,7 @@ async def count_stats(period: StatsPeriod = "all") -> StatsCounters:
         by_moderation_status=by_status,
         needs_fix=needs_fix,
         rejected=rejected,
+        multi_submission_groups=multi_groups,
     )
 
 

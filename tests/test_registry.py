@@ -234,7 +234,7 @@ class TestRenderRegistryWorkbook:
             aggregates_by_app={},
         )
         assert payload[:2] == b"PK"
-        assert n_cols == 27
+        assert n_cols == 28
         assert n_rows == 2
         wb = load_workbook(BytesIO(payload))
         ws_main = wb["Реестр"]
@@ -254,7 +254,7 @@ class TestRenderRegistryWorkbook:
             aggregates_by_app={},
         )
         assert payload[:2] == b"PK"
-        assert n_cols == 27
+        assert n_cols == 28
         assert n_rows == 1
         wb = load_workbook(BytesIO(payload))
         ws_main = wb["Реестр"]

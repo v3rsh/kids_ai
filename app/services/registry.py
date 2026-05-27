@@ -252,6 +252,7 @@ _MAIN_COLUMNS: list[tuple[str, int, bool]] = [
     ("Итог по жюри", 18, False),                             # 25
     ("Определено жребием", 12, False),                       # 26
     ("Позиция в пуле", 10, False),                           # 27
+    ("Повтор (ребёнок+трек)", 12, False),                    # 28
 ]
 
 # Фиксированные колонки листа `Голосование жюри`.
@@ -373,8 +374,10 @@ def _format_round_yes_aggregates(yes_by_round: dict[int, int]) -> str:
 def _row_for_main_sheet(
     app: Application,
     aggregates_by_app: dict[uuid_pkg.UUID, dict[int, int]],
+    *,
+    multi_submission_br_ids: set[str] | None = None,
 ) -> list:
-    """27 значений одной строки основного листа.
+    """28 значений одной строки основного листа.
 
     ``aggregates_by_app[app.id]`` — словарь ``round_no → yes_count``
     (см. ``_fetch_round_aggregates``). Если для заявки нет ни одного
@@ -410,6 +413,10 @@ def _row_for_main_sheet(
         jury_outcome(app),                                         # 25
         _yesno_or_blank(app.jury_decided_by_lot),                  # 26
         app.pool_position if app.pool_position is not None else "",        # 27
+        _yesno_or_blank(
+            multi_submission_br_ids is not None
+            and app.br_id in multi_submission_br_ids
+        ),  # 28
     ]
 
 
@@ -417,6 +424,8 @@ def _build_main_sheet(
     ws: Worksheet,
     applications: Sequence[Application],
     aggregates_by_app: dict[uuid_pkg.UUID, dict[int, int]],
+    *,
+    multi_submission_br_ids: set[str] | None = None,
 ) -> tuple[int, int]:
     """Заполнить лист `Реестр`. Возвращает (n_rows, n_cols).
 
@@ -425,7 +434,12 @@ def _build_main_sheet(
     _apply_columns_header(ws, _MAIN_COLUMNS)
     for row_offset, app in enumerate(applications, start=2):
         for col_idx, value in enumerate(
-            _row_for_main_sheet(app, aggregates_by_app), start=1
+            _row_for_main_sheet(
+                app,
+                aggregates_by_app,
+                multi_submission_br_ids=multi_submission_br_ids,
+            ),
+            start=1,
         ):
             ws.cell(row=row_offset, column=col_idx, value=value)
         _apply_wrap_text(ws, row_offset, _MAIN_COLUMNS)
@@ -561,6 +575,8 @@ def _render_registry_workbook(
     rounds_by_id: dict[uuid_pkg.UUID, JuryRound],
     jury_by_huid: dict[uuid_pkg.UUID, JuryMember],
     aggregates_by_app: dict[uuid_pkg.UUID, dict[int, int]],
+    *,
+    multi_submission_br_ids: set[str] | None = None,
 ) -> tuple[bytes, int, int]:
     """Собрать `registry.xlsx` в bytes; вернуть (bytes, total_cols, ...).
 
@@ -570,7 +586,10 @@ def _render_registry_workbook(
     main_ws = wb.active
     main_ws.title = "Реестр"
     n_rows_main, n_cols_main = _build_main_sheet(
-        main_ws, applications, aggregates_by_app
+        main_ws,
+        applications,
+        aggregates_by_app,
+        multi_submission_br_ids=multi_submission_br_ids,
     )
 
     jury_ws = wb.create_sheet("Голосование жюри")
@@ -673,12 +692,19 @@ async def build_registry_xlsx() -> bytes:
             session, rounds_by_id
         )
 
+    from services.applications import multi_submission_br_ids_from_applications
+
+    multi_br_ids = multi_submission_br_ids_from_applications(
+        applications, only_active=True
+    )
+
     payload, n_cols, n_rows = _render_registry_workbook(
         applications=applications,
         votes=votes,
         rounds_by_id=rounds_by_id,
         jury_by_huid=jury_by_huid,
         aggregates_by_app=aggregates_by_app,
+        multi_submission_br_ids=multi_br_ids,
     )
 
     duration_ms = (time.perf_counter() - t0) * 1000

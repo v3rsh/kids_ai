@@ -167,7 +167,26 @@ def _short_card(app: Application) -> str:
     )
 
 
-def _full_card(app: Application) -> str:
+def _format_multi_submission_block(
+    siblings: list,
+) -> str:
+    """Блок предупреждения о других заявках того же ребёнка в треке."""
+    if not siblings:
+        return ""
+    lines = [
+        "\n\n⚠️ **Повтор по правилу «1 работа в трек»** (другие заявки):"
+    ]
+    for entry in siblings:
+        actual = " · актуальная" if entry.is_actual_version else ""
+        lines.append(f"  • **{entry.br_id}** — {entry.moderation_status}{actual}")
+    return "\n".join(lines)
+
+
+def _full_card(
+    app: Application,
+    *,
+    siblings: list | None = None,
+) -> str:
     """Развёрнутая карточка для ``/browse`` и ``/find``.
 
     Поле «Родитель» рендерится через ``MentionBuilder.contact`` —
@@ -227,8 +246,20 @@ def _full_card(app: Application) -> str:
         f"**Статус модерации:** {app.moderation_status.value}\n"
         f"**Статус жюри:** {app.jury_status.value}\n"
         f"**Статус голосования:** {app.voting_status.value}"
-        f"{duplicate_line}{comment_line}{intake_line}"
+        f"{duplicate_line}"
+        f"{_format_multi_submission_block(siblings or [])}"
+        f"{comment_line}{intake_line}"
     )
+
+
+async def build_full_card(app: Application) -> str:
+    """Карточка с подгруженным блоком повторных заявок."""
+    from services import applications as applications_service
+
+    siblings = await applications_service.find_active_siblings_for_application(
+        app
+    )
+    return _full_card(app, siblings=siblings)
 
 
 def _format_dt(dt: datetime) -> str:
@@ -286,7 +317,7 @@ async def render_application_card(
         suffix: дополнительный текст после карточки (например, счётчик
             карусели).
     """
-    body = _full_card(app)
+    body = await build_full_card(app)
     if prefix:
         body = prefix + body
     if suffix:

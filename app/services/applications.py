@@ -16,11 +16,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Sequence
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import func, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -32,8 +33,10 @@ from database.models import (
     ApplicationFile,
     FileKind,
     IntakeMode,
+    JuryStatus,
     ModerationStatus,
     Track,
+    VotingStatus,
 )
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -64,6 +67,27 @@ class ApplicationFileSpec:
 # это безопаснее, чем sequence (нет «дыр» от откатов) и проще, чем INSERT
 # с обработкой UniqueViolation + ретраи.
 _BR_ID_LOCK_KEY = 0xBA8E_8001  # любое стабильное int — не пересекается с другими locks
+
+
+def child_submission_key(child_name: str, child_age: int) -> str:
+    """Ключ «ребёнок» для дубля и лимита «1 работа в трек».
+
+    ``normalize_child_name`` + возраст в полных годах (как в анкете).
+    """
+    return f"{normalize_child_name(child_name)}|{child_age}"
+
+
+def submission_keys_match(
+    *,
+    child_name_a: str,
+    child_age_a: int,
+    child_name_b: str,
+    child_age_b: int,
+) -> bool:
+    """True, если две заявки относятся к одному ребёнку по правилам конкурса."""
+    return child_submission_key(child_name_a, child_age_a) == child_submission_key(
+        child_name_b, child_age_b
+    )
 
 
 def normalize_child_name(child_name: str) -> str:
@@ -136,12 +160,13 @@ async def find_possible_duplicate(
     *,
     parent_huid: UUID,
     child_name: str,
+    child_age: int,
     track_name: str,
 ) -> "Application | None":
     """Алгоритм автопометки «возможный дубль».
 
     Возвращает последнюю ранее принятую заявку с тем же набором ключей:
-    ``parent_huid`` + нормализованное имя ребёнка + ``track``. Заявки в
+    ``parent_huid`` + ``child_submission_key`` + ``track``. Заявки в
     статусе ``отклонено`` в проверке не участвуют.
 
     Реализация: один SELECT с фильтром по ``parent_huid + track``
@@ -157,8 +182,7 @@ async def find_possible_duplicate(
             f"Допустимы: {[t.name for t in Track]}"
         ) from exc
 
-    normalized_target = normalize_child_name(child_name)
-    if not normalized_target:
+    if not normalize_child_name(child_name):
         return None
 
     async with get_session()() as session:
@@ -172,9 +196,166 @@ async def find_possible_duplicate(
             .order_by(Application.created_at.desc())
         )
         for candidate in result.scalars():
-            if normalize_child_name(candidate.child_name) == normalized_target:
+            if submission_keys_match(
+                child_name_a=child_name,
+                child_age_a=child_age,
+                child_name_b=candidate.child_name,
+                child_age_b=candidate.child_age,
+            ):
                 return candidate
     return None
+
+
+@dataclass(frozen=True)
+class MultiSubmissionEntry:
+    """Одна заявка внутри группы повторных подач."""
+
+    br_id: str
+    moderation_status: str
+    created_at: datetime
+    is_actual_version: bool
+
+
+@dataclass(frozen=True)
+class MultiSubmissionGroup:
+    """Нарушение правила «1 работа в трек» для одного ребёнка."""
+
+    parent_huid: UUID
+    parent_full_name: str
+    child_name: str
+    child_age: int
+    track: Track
+    entries: tuple[MultiSubmissionEntry, ...]
+
+
+def _group_applications(
+    apps: Sequence[Application],
+    *,
+    only_active: bool,
+) -> list[MultiSubmissionGroup]:
+    """Сгруппировать заявки по (parent, child_key, track), оставить count>1."""
+    buckets: dict[tuple[UUID, str, Track], list[Application]] = {}
+    for app in apps:
+        if only_active and app.moderation_status == ModerationStatus.OTKLONENO:
+            continue
+        key = (
+            app.parent_huid,
+            child_submission_key(app.child_name, app.child_age),
+            app.track,
+        )
+        buckets.setdefault(key, []).append(app)
+
+    groups: list[MultiSubmissionGroup] = []
+    for (_parent, _child_key, _track), members in buckets.items():
+        if len(members) < 2:
+            continue
+        members_sorted = sorted(
+            members, key=lambda a: (a.created_at, str(a.id)), reverse=True
+        )
+        sample = members_sorted[0]
+        entries = tuple(
+            MultiSubmissionEntry(
+                br_id=m.br_id,
+                moderation_status=m.moderation_status.value,
+                created_at=m.created_at,
+                is_actual_version=m.is_actual_version,
+            )
+            for m in members_sorted
+        )
+        groups.append(
+            MultiSubmissionGroup(
+                parent_huid=sample.parent_huid,
+                parent_full_name=sample.parent_full_name,
+                child_name=sample.child_name,
+                child_age=sample.child_age,
+                track=sample.track,
+                entries=entries,
+            )
+        )
+    groups.sort(
+        key=lambda g: (
+            g.parent_full_name.lower(),
+            g.child_name.lower(),
+            g.track.value,
+        )
+    )
+    return groups
+
+
+async def find_multi_submission_groups(
+    *,
+    only_active: bool = True,
+) -> list[MultiSubmissionGroup]:
+    """Группы с более чем одной заявкой на (родитель, ребёнок, трек).
+
+    Один SELECT по всем заявкам, группировка в Python (без N+1).
+    """
+    async with get_session()() as session:
+        result = await session.execute(
+            select(Application).order_by(Application.created_at.desc())
+        )
+        apps = list(result.scalars().all())
+    return _group_applications(apps, only_active=only_active)
+
+
+async def count_multi_submission_groups(*, only_active: bool = True) -> int:
+    """Число групп с нарушением лимита «1 работа в трек»."""
+    return len(await find_multi_submission_groups(only_active=only_active))
+
+
+async def find_active_siblings_for_application(
+    app: Application,
+) -> list[MultiSubmissionEntry]:
+    """Другие «живые» заявки того же родителя, ребёнка и трека (без текущей)."""
+    async with get_session()() as session:
+        result = await session.execute(
+            select(Application)
+            .where(
+                Application.parent_huid == app.parent_huid,
+                Application.track == app.track,
+                Application.moderation_status != ModerationStatus.OTKLONENO,
+                Application.br_id != app.br_id,
+            )
+            .order_by(Application.created_at.desc())
+        )
+        siblings: list[MultiSubmissionEntry] = []
+        for cand in result.scalars():
+            if submission_keys_match(
+                child_name_a=app.child_name,
+                child_age_a=app.child_age,
+                child_name_b=cand.child_name,
+                child_age_b=cand.child_age,
+            ):
+                siblings.append(
+                    MultiSubmissionEntry(
+                        br_id=cand.br_id,
+                        moderation_status=cand.moderation_status.value,
+                        created_at=cand.created_at,
+                        is_actual_version=cand.is_actual_version,
+                    )
+                )
+    return siblings
+
+
+def multi_submission_br_ids_from_applications(
+    apps: Sequence[Application],
+    *,
+    only_active: bool = True,
+) -> set[str]:
+    """BR-ID заявок, входящих в группы повторной подачи (из уже загруженного списка)."""
+    groups = _group_applications(apps, only_active=only_active)
+    return application_ids_in_multi_submission_groups(groups)
+
+
+def application_ids_in_multi_submission_groups(
+    groups: Sequence[MultiSubmissionGroup],
+) -> set[str]:
+    """Множество BR-ID всех заявок из групп повторных подач."""
+    ids: set[str] = set()
+    for group in groups:
+        for entry in group.entries:
+            ids.add(entry.br_id)
+    return ids
 
 
 async def create_application(
@@ -221,7 +402,6 @@ async def create_application(
     age_category = AgeCategory.from_age(child_age)
     intake_mode_enum = IntakeMode(intake_mode_value)
 
-    normalized_target = normalize_child_name(child_name)
     prefix = f"BR-{COMPETITION_YEAR}-"
 
     async with get_session()() as session:
@@ -246,7 +426,12 @@ async def create_application(
             duplicate_result = await session.execute(duplicate_query)
             duplicate: Application | None = None
             for cand in duplicate_result.scalars():
-                if normalize_child_name(cand.child_name) == normalized_target:
+                if submission_keys_match(
+                    child_name_a=child_name,
+                    child_age_a=child_age,
+                    child_name_b=cand.child_name,
+                    child_age_b=cand.child_age,
+                ):
                     duplicate = cand
                     break
 
@@ -477,7 +662,6 @@ async def mark_as_actual_version(
             )
             return
 
-        normalized = normalize_child_name(target.child_name)
         chain_query = select(Application).where(
             Application.parent_huid == target.parent_huid,
             Application.track == target.track,
@@ -486,7 +670,12 @@ async def mark_as_actual_version(
         chain_result = await session.execute(chain_query)
         sibling_ids: list[UUID] = []
         for sibling in chain_result.scalars():
-            if normalize_child_name(sibling.child_name) == normalized:
+            if submission_keys_match(
+                child_name_a=target.child_name,
+                child_age_a=target.child_age,
+                child_name_b=sibling.child_name,
+                child_age_b=sibling.child_age,
+            ):
                 sibling_ids.append(sibling.id)
 
         if sibling_ids:
@@ -568,6 +757,112 @@ async def list_by_parent_huid(
     )
 
 
+async def update_application_for_fix(
+    *,
+    br_id: str,
+    parent_huid: UUID,
+    title: str,
+    description: str,
+    intake_mode_value: str,
+    cloud_link: str | None = None,
+) -> Application:
+    """Обновить заявку «нужно исправить» без нового BR-ID.
+
+    Сбрасывает модерацию и поля жюри, снимает флаг дубля. Файлы
+    работы нужно заменить отдельно (``clear_application_work_files`` +
+    ``register_application_files``).
+    """
+    needle = (br_id or "").strip().upper()
+    intake_mode_enum = IntakeMode(intake_mode_value)
+
+    async with get_session()() as session:
+        app = (
+            await session.execute(
+                select(Application).where(Application.br_id == needle)
+            )
+        ).scalar_one_or_none()
+        if app is None:
+            raise ValueError(f"Заявка не найдена: {needle}")
+        if app.parent_huid != parent_huid:
+            raise ValueError("Заявка принадлежит другому участнику")
+        if app.moderation_status != ModerationStatus.NUZHNO_ISPRAVIT:
+            raise ValueError(
+                "Исправление доступно только для статуса «нужно исправить»"
+            )
+
+        app.title = title.strip()
+        app.description = description.strip()
+        app.intake_mode = intake_mode_enum
+        app.cloud_link = (cloud_link or "").strip() or None
+        app.moderation_status = ModerationStatus.NA_MODERATSII
+        app.moderator_comment = None
+        app.is_possible_duplicate = False
+        app.related_application_br_id = None
+        app.is_actual_version = True
+        app.jury_status = JuryStatus.NE_PEREDANO_ZHYURI
+        app.jury_final_round = None
+        app.jury_decided_by_lot = False
+        app.pool_position = None
+        app.voting_status = VotingStatus.NE_UCHASTVUET
+
+        await session.commit()
+        reload_stmt = (
+            select(Application)
+            .where(Application.br_id == needle)
+            .options(selectinload(Application.files))
+            .execution_options(populate_existing=True)
+        )
+        reloaded = (await session.execute(reload_stmt)).scalar_one()
+        _ = list(reloaded.files)
+        session.expunge(reloaded)
+
+    logger.info(
+        "Заявка обновлена (исправление)",
+        br_id=needle,
+        parent_huid=str(parent_huid),
+    )
+    return reloaded
+
+
+async def clear_application_work_files(br_id: str) -> Application:
+    """Удалить файлы работы заявки в БД и на диске (перед повторной загрузкой)."""
+    needle = (br_id or "").strip().upper()
+    async with get_session()() as session:
+        app = (
+            await session.execute(
+                select(Application)
+                .where(Application.br_id == needle)
+                .options(selectinload(Application.files))
+            )
+        ).scalar_one_or_none()
+        if app is None:
+            raise ValueError(f"Заявка не найдена: {needle}")
+
+        await session.execute(
+            delete(ApplicationFile).where(
+                ApplicationFile.application_id == app.id
+            )
+        )
+        await session.commit()
+        _ = list(app.files)
+
+    from services import storage
+
+    await storage.delete_application_files(app)
+
+    async with get_session()() as session:
+        reload_stmt = (
+            select(Application)
+            .where(Application.br_id == needle)
+            .options(selectinload(Application.files))
+            .execution_options(populate_existing=True)
+        )
+        reloaded = (await session.execute(reload_stmt)).scalar_one()
+        _ = list(reloaded.files)
+        session.expunge(reloaded)
+    return reloaded
+
+
 async def get_for_participant(
     br_id: str,
     parent_huid: UUID,
@@ -594,14 +889,25 @@ async def get_for_participant(
 
 __all__ = [
     "ApplicationFileSpec",
+    "MultiSubmissionEntry",
+    "MultiSubmissionGroup",
     "ParentApplicationsPage",
-    "create_application",
+    "application_ids_in_multi_submission_groups",
     "assign_br_id",
+    "child_submission_key",
+    "clear_application_work_files",
+    "count_multi_submission_groups",
+    "create_application",
+    "find_active_siblings_for_application",
+    "find_multi_submission_groups",
     "find_possible_duplicate",
     "get_for_participant",
     "list_by_parent_huid",
     "mark_as_actual_version",
+    "multi_submission_br_ids_from_applications",
     "normalize_child_name",
     "register_application_files",
     "set_application_cloud_link",
+    "submission_keys_match",
+    "update_application_for_fix",
 ]

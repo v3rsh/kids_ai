@@ -195,6 +195,7 @@ class ApplicationsService(Protocol):
         *,
         parent_huid: UUID,
         child_name: str,
+        child_age: int,
         track_name: str,
     ) -> "Application | None": ...
     async def register_application_files(
