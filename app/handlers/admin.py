@@ -134,6 +134,7 @@ async def _show_admin_menu(message: IncomingMessage, bot: Bot) -> None:
 @collector.command(
     "/admin",
     description="Меню администратора",
+    visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
 @admin_only

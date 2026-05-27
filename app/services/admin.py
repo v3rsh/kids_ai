@@ -15,6 +15,7 @@ from sqlalchemy.orm import selectinload
 
 from database.db import get_session
 from database.models import (
+    AgeCategory,
     Application,
     ApplicationFile,
     DiskAlert,
@@ -25,6 +26,7 @@ from database.models import (
     JuryVote,
     JuryVoteState,
     Moderator,
+    Track,
     User,
 )
 from services import access
@@ -89,9 +91,31 @@ class AdminStatsReport:
     jury: JuryAggregate
     disk: DiskForecast
     disk_alerts_7d: int
-    by_track: dict[str, int] = field(default_factory=dict)
-    by_age: dict[str, int] = field(default_factory=dict)
+    by_pool: dict[str, int] = field(default_factory=dict)
     by_moderation_status: dict[str, int] = field(default_factory=dict)
+
+
+def pool_label(track: Track, age: AgeCategory) -> str:
+    """Человекочитаемая метка пула ``трек / возраст``."""
+    return f"{track.value} / {age.value}"
+
+
+def pool_labels_in_order() -> list[str]:
+    """Все 9 пулов в фиксированном порядке (Track × AgeCategory)."""
+    return [
+        pool_label(track, age)
+        for track in Track
+        for age in AgeCategory
+    ]
+
+
+def build_by_pool_counts(raw: dict[tuple[Track, AgeCategory], int]) -> dict[str, int]:
+    """Дополнить счётчики нулями для всех 9 комбинаций трек × возраст."""
+    return {
+        pool_label(track, age): int(raw.get((track, age), 0))
+        for track in Track
+        for age in AgeCategory
+    }
 
 
 async def overview_counters() -> AdminOverview:
@@ -323,24 +347,19 @@ async def build_admin_stats_report() -> AdminStatsReport:
         apps_total = int(
             (await session.execute(select(func.count()).select_from(Application))).scalar_one()
         )
-        by_track = {
-            track.value: int(cnt)
-            for track, cnt in (
+        by_pool_raw: dict[tuple[Track, AgeCategory], int] = {
+            (track, age): int(cnt)
+            for track, age, cnt in (
                 await session.execute(
-                    select(Application.track, func.count()).group_by(Application.track)
+                    select(
+                        Application.track,
+                        Application.age_category,
+                        func.count(),
+                    ).group_by(Application.track, Application.age_category)
                 )
             ).all()
         }
-        by_age = {
-            cat.value: int(cnt)
-            for cat, cnt in (
-                await session.execute(
-                    select(Application.age_category, func.count()).group_by(
-                        Application.age_category
-                    )
-                )
-            ).all()
-        }
+        by_pool = build_by_pool_counts(by_pool_raw)
         by_status = {
             st.value: int(cnt)
             for st, cnt in (
@@ -360,8 +379,7 @@ async def build_admin_stats_report() -> AdminStatsReport:
         jury=jury,
         disk=disk,
         disk_alerts_7d=alerts_7d,
-        by_track=by_track,
-        by_age=by_age,
+        by_pool=by_pool,
         by_moderation_status=by_status,
     )
 
@@ -372,6 +390,9 @@ __all__ = [
     "JuryAggregate",
     "DiskForecast",
     "AdminStatsReport",
+    "pool_label",
+    "pool_labels_in_order",
+    "build_by_pool_counts",
     "overview_counters",
     "count_users_stats",
     "jury_aggregate_state",
