@@ -403,9 +403,11 @@ async def cmd_status(message: IncomingMessage, bot: Bot) -> None:
         return
 
     if group == "moderation":
+        status_changed = result.previous_value != result.new_value
         notified_ok = True
         if (
-            result.new_value
+            status_changed
+            and result.new_value
             and result.new_value.casefold()
             == ModerationStatus.DOPUSHCHENO.value.casefold()
         ):
@@ -422,14 +424,22 @@ async def cmd_status(message: IncomingMessage, bot: Bot) -> None:
                 )
                 notified_ok = False
 
+        if status_changed:
+            headline = _moderation_action_headline(
+                result.new_value or "",
+                notified_ok=notified_ok,
+            )
+        else:
+            headline = (
+                f"ℹ️ **Статус уже «{result.new_value or '—'}».** "
+                "Повторное уведомление не отправлено."
+            )
+
         await _show_action_confirmation(
             message,
             bot,
             app=result.application,
-            headline=_moderation_action_headline(
-                result.new_value or "",
-                notified_ok=notified_ok,
-            ),
+            headline=headline,
             origin=parse_origin(message.data),
         )
         return
@@ -612,7 +622,8 @@ async def _send_notify_fix(
 
     # Изменим статус на «нужно исправить»: это синхронизирует
     # поле статуса с фактическим действием.
-    if app.moderation_status != ModerationStatus.NUZHNO_ISPRAVIT:
+    already_fix = app.moderation_status == ModerationStatus.NUZHNO_ISPRAVIT
+    if not already_fix:
         await change_status(
             br_id=app.br_id,
             group="moderation",
@@ -626,6 +637,24 @@ async def _send_notify_fix(
             text=extra.strip(),
             by_huid=message.sender.huid,
         )
+
+    if already_fix:
+        refreshed = await find_by_br_id(app.br_id) or app
+        extra_block: str | None = None
+        if extra:
+            extra_block = f"**Уточнение сохранено:** {extra}"
+        await _show_action_confirmation(
+            message,
+            bot,
+            app=refreshed,
+            headline=(
+                "ℹ️ **Статус уже «нужно исправить».** "
+                "Повторное уведомление не отправлено."
+            ),
+            extra=extra_block,
+            origin=parse_origin(message.data),
+        )
+        return
 
     try:
         from services import notifications  # runtime-импорт (ветка D)
@@ -743,6 +772,22 @@ async def _apply_reject(
     app = await find_by_br_id(br_id)
     if app is None:
         await _reply_with_mod_menu(message, bot, f"Заявка {br_id} не найдена.")
+        return
+
+    if app.moderation_status == ModerationStatus.OTKLONENO:
+        nav_origin = (
+            origin if origin is not None else parse_origin(message.data)
+        )
+        await reply_to_user(
+            message,
+            bot,
+            (
+                f"**Заявка {br_id} уже отклонена.** "
+                "Повторное уведомление не отправлено.\n\n"
+                + await build_full_card(app)
+            ),
+            bubbles=card_action_buttons(app, nav_origin),
+        )
         return
 
     storage_done = False

@@ -222,26 +222,30 @@ def card_action_buttons(
             append_card_navigation(bubbles, origin)
         return bubbles
 
+    status = app.moderation_status
+
     bubbles.add_button(
         command="/files",
         label="📂 Файлы",
         data=action_data,
         new_row=True,
     )
-    bubbles.add_button(
-        command="/status",
-        label="✅ Допустить",
-        data={
-            **action_data,
-            "group": "moderation",
-            "value": ModerationStatus.DOPUSHCHENO.value,
-        },
-    )
-    bubbles.add_button(
-        command="/notify_fix",
-        label="✏️ На исправление",
-        data=action_data,
-    )
+    if status is not ModerationStatus.DOPUSHCHENO:
+        bubbles.add_button(
+            command="/status",
+            label="✅ Допустить",
+            data={
+                **action_data,
+                "group": "moderation",
+                "value": ModerationStatus.DOPUSHCHENO.value,
+            },
+        )
+    if status is not ModerationStatus.NUZHNO_ISPRAVIT:
+        bubbles.add_button(
+            command="/notify_fix",
+            label="✏️ На исправление",
+            data=action_data,
+        )
     bubbles.add_button(
         command="/notify_reject",
         label="🚫 Отклонить",

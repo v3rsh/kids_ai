@@ -128,6 +128,38 @@ class TestCardActionButtons:
         assert "/moderator" in _commands(bubbles)
         assert "/files" in _commands(bubbles)
 
+    @pytest.mark.parametrize(
+        "status,hidden_commands",
+        [
+            (
+                ModerationStatus.NA_MODERATSII,
+                set(),
+            ),
+            (
+                ModerationStatus.DOPUSHCHENO,
+                {"/status"},
+            ),
+            (
+                ModerationStatus.NUZHNO_ISPRAVIT,
+                {"/notify_fix"},
+            ),
+        ],
+    )
+    def test_hides_button_for_current_status(
+        self,
+        status: ModerationStatus,
+        hidden_commands: set[str],
+    ) -> None:
+        origin = ModeratorNavOrigin(kind="queue")
+        commands = set(_commands(card_action_buttons(_app(status=status), origin)))
+        for cmd in hidden_commands:
+            assert cmd not in commands
+        assert "/files" in commands
+        assert "/comment" in commands
+        assert "/notify_reject" in commands
+        if status is ModerationStatus.NA_MODERATSII:
+            assert {"/status", "/notify_fix"} <= commands
+
     def test_rejected_app_hides_actions(self) -> None:
         origin = ModeratorNavOrigin(kind="section", section_status="OTKLONENO")
         bubbles = card_action_buttons(

@@ -142,11 +142,11 @@ class StatsCounters:
     period_from: datetime | None
     period_to: datetime | None
     total: int
-    by_pool: dict[str, int] = field(default_factory=dict)
-    by_moderation_status: dict[str, int] = field(default_factory=dict)
     needs_fix: int
     rejected: int
     multi_submission_groups: int
+    by_pool: dict[str, int] = field(default_factory=dict)
+    by_moderation_status: dict[str, int] = field(default_factory=dict)
 
 
 StatsPeriod = Literal["today", "all"]
