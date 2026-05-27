@@ -105,6 +105,10 @@ ATTACHMENTS_DIR = Path(
 )
 ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Каталог долговременной архивации вложений (копия ATTACHMENTS_DIR на диск).
+ARCHIVE_DIR = Path(os.getenv("ARCHIVE_DIR", str(DATA_DIR / "archive")))
+ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+
 # Лимит размера одного файла и пороги мониторинга диска.
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
 DISK_WARN_PCT = int(os.getenv("DISK_WARN_PCT", "80"))
