@@ -119,12 +119,25 @@ INTAKE_MODE_DEFAULT = os.getenv("INTAKE_MODE_DEFAULT", "files")
 
 # Параметры жюри.
 # TOP_N — размер шорт-листа на пул (по умолчанию 10).
-# JURY_ROUNDS — максимальное число раундов до автоматического жребия.
+# JURY_MAX_ROUND_DEFAULT — стартовый порог раундов; начиная с него
+#   срабатывает автоматический жребий, если включён JURY_AUTO_LOT.
+#   Это значение копируется в app_settings при первом запуске; дальше
+#   админ меняет порог через /admin_jury_settings (рантайм, переживает
+#   рестарт).
+# JURY_AUTO_LOT_DEFAULT — стартовое состояние тумблера жребия (on/off).
+#   off ⇒ раунды продолжаются без верхней границы, пока ничья не
+#   разрешится сама.
 # JURY_ROUND_DEADLINE_HOURS — дедлайн одного раунда (по умолчанию 48 ч).
 # JURY_POOLS_CONFIG — JSON-конфиг распределения судей по пулам;
 #   пустая строка = все судьи во всех 9 пулах (поведение по умолчанию).
 TOP_N = int(os.getenv("TOP_N", "10"))
-JURY_ROUNDS = int(os.getenv("JURY_ROUNDS", "3"))
+JURY_MAX_ROUND_DEFAULT = int(os.getenv("JURY_MAX_ROUND", "3"))
+JURY_AUTO_LOT_DEFAULT = os.getenv("JURY_AUTO_LOT", "on").strip().lower() in (
+    "on",
+    "true",
+    "1",
+    "yes",
+)
 JURY_ROUND_DEADLINE_HOURS = int(os.getenv("JURY_ROUND_DEADLINE_HOURS", "48"))
 JURY_POOLS_CONFIG = os.getenv("JURY_POOLS_CONFIG", "")
 

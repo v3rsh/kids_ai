@@ -320,10 +320,14 @@ class Application(Base):
         Boolean, nullable=False, default=True
     )
 
-    # ===== Агрегированные поля жюри (поля №№ 23–29 реестра) =====
-    jury_round1_yes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    jury_round2_yes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    jury_round3_yes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # ===== Агрегированные поля жюри (поля №№ 26–29 реестра) =====
+    #
+    # Колонок `jury_round{1,2,3}_yes` БОЛЬШЕ НЕТ: число раундов теперь
+    # неограничено (см. JURY_MAX_ROUND / JURY_AUTO_LOT в app_settings).
+    # Подсчёт ``YES``-голосов по каждому раунду хранится в отдельной
+    # таблице ``jury_round_aggregates`` (ниже, класс ``JuryRoundAggregate``),
+    # а Excel-реестр (§25.3 ТЗ) собирает сводную колонку
+    # «r1:N, r2:N, …» из этой таблицы.
     jury_final_round: Mapped[int | None] = mapped_column(Integer, nullable=True)
     jury_decided_by_lot: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
@@ -594,6 +598,58 @@ class JuryVote(Base):
         return (
             f"<JuryVote round={self.round_id} app={self.application_id}"
             f" vote={self.vote.name} state={self.state.name}>"
+        )
+
+
+class JuryRoundAggregate(Base):
+    """Сводный подсчёт ``YES``-голосов по заявке в раунде.
+
+    Заполняется в момент закрытия раунда (``services.jury.close_round``)
+    и далее не меняется. Позволяет хранить неограниченное число
+    раундов без правок схемы — раньше для этого служили колонки
+    ``jury_round{1,2,3}_yes`` в ``applications`` (удалены).
+
+    Используется:
+    - в Excel-реестре (одна сводная колонка «r1:N, r2:N, …»);
+    - в `_compute_round_outcome` для подсчёта итогов прошлых раундов
+      без обращения к ``JuryVote`` (для оптимизации).
+    """
+
+    __tablename__ = "jury_round_aggregates"
+    __table_args__ = (
+        UniqueConstraint(
+            "round_id",
+            "application_id",
+            name="uq_jra_round_app",
+        ),
+        Index(
+            "ix_jra_application",
+            "application_id",
+        ),
+    )
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    round_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("jury_rounds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    application_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("applications.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    yes_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<JuryRoundAggregate round={self.round_id}"
+            f" app={self.application_id} yes={self.yes_count}>"
         )
 
 

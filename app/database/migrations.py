@@ -372,6 +372,119 @@ async def sync_enum_values() -> int:
     return added
 
 
+async def migrate_jury_round_aggregates() -> None:
+    """Перенос ``jury_round{1,2,3}_yes`` в ``jury_round_aggregates``.
+
+    Идемпотентно:
+    - проверяет существование колонок в ``applications``;
+    - проверяет, что таблица ``jury_round_aggregates`` уже создана
+      (``Base.metadata.create_all`` запускается раньше нас в main.py);
+    - переносит данные **только при наличии** старых колонок;
+    - после переноса удаляет старые колонки.
+
+    Алгоритм переноса для каждого N ∈ {1,2,3}:
+    1. Найти все ``JuryRound`` с ``round_no = N``.
+    2. Для каждой пары (round_id, app_id) скопировать
+       ``applications.jury_round{N}_yes`` в новую строку агрегата.
+    3. ``ON CONFLICT DO NOTHING`` по уникальному ключу
+       (round_id, application_id) — повторный запуск миграции
+       ничего не сломает.
+    """
+    columns_to_check = ["jury_round1_yes", "jury_round2_yes", "jury_round3_yes"]
+
+    async with engine.begin() as conn:
+        result = await conn.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'applications' "
+                "AND column_name = ANY(:cols)"
+            ),
+            {"cols": columns_to_check},
+        )
+        existing_old_cols = {row[0] for row in result.fetchall()}
+
+        if not existing_old_cols:
+            logger.debug(
+                "migrate_jury_round_aggregates: старых колонок нет, миграция не нужна"
+            )
+            return
+
+        table_exists = await conn.execute(
+            text(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = 'public' AND table_name = 'jury_round_aggregates'"
+            )
+        )
+        if not table_exists.fetchone():
+            logger.warning(
+                "migrate_jury_round_aggregates: таблица jury_round_aggregates "
+                "ещё не создана, миграция отложена"
+            )
+            return
+
+        backfill_total = 0
+        for round_no, col_name in enumerate(
+            ["jury_round1_yes", "jury_round2_yes", "jury_round3_yes"], start=1
+        ):
+            if col_name not in existing_old_cols:
+                continue
+
+            sql = text(
+                f"""
+                INSERT INTO jury_round_aggregates
+                    (id, round_id, application_id, yes_count, created_at)
+                SELECT
+                    gen_random_uuid(),
+                    jr.id,
+                    a.id,
+                    a.{col_name},
+                    NOW()
+                FROM applications a
+                JOIN jury_rounds jr
+                    ON jr.track = a.track
+                    AND jr.age_category = a.age_category
+                    AND jr.round_no = :rn
+                WHERE COALESCE(a.{col_name}, 0) > 0
+                ON CONFLICT ON CONSTRAINT uq_jra_round_app DO NOTHING
+                """
+            )
+            try:
+                result = await conn.execute(sql, {"rn": round_no})
+                backfill_total += result.rowcount or 0
+                logger.info(
+                    "migrate_jury_round_aggregates: перенос для round_no="
+                    f"{round_no} ({col_name}), строк={result.rowcount}",
+                )
+            except Exception:
+                logger.exception(
+                    "migrate_jury_round_aggregates: ошибка переноса round_no="
+                    f"{round_no}, прерываем миграцию"
+                )
+                return
+
+        for col_name in existing_old_cols:
+            try:
+                await conn.execute(
+                    text(
+                        f"ALTER TABLE applications DROP COLUMN IF EXISTS {col_name}"
+                    )
+                )
+                logger.info(
+                    "migrate_jury_round_aggregates: удалена колонка",
+                    column=col_name,
+                )
+            except Exception:
+                logger.exception(
+                    "migrate_jury_round_aggregates: не удалось удалить колонку",
+                )
+
+        logger.info(
+            "migrate_jury_round_aggregates: миграция завершена",
+            rows_backfilled=backfill_total,
+            columns_dropped=sorted(existing_old_cols),
+        )
+
+
 async def run_auto_migrations() -> None:
     """
     Главная функция автомиграции.
@@ -427,6 +540,9 @@ async def run_auto_migrations() -> None:
 
         enums_added = await sync_enum_values()
         total_indexes_added = await add_missing_indexes()
+
+        # Одноразовые миграции (вызываются после автодобавления колонок/индексов).
+        await migrate_jury_round_aggregates()
 
         if total_columns_added or total_indexes_added or enums_added:
             logger.info(
