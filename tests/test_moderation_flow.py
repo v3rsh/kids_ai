@@ -119,3 +119,14 @@ class TestQueueFilters:
         «На рассмотрении» (см. ``handlers/moderator_queue.cmd_m_review``).
         """
         assert set(DEFAULT_QUEUE_STATUSES) == {ModerationStatus.NA_MODERATSII}
+
+    def test_default_queue_statuses_produce_status_clause(self):
+        """``/queue_next`` строит фильтр на ``DEFAULT_QUEUE_STATUSES`` и
+        полагается на то, что он попадает в SQL ``WHERE``: иначе после
+        «Допустить» следующая заявка совпадёт с только что обработанной
+        (она остаётся самой свежей по ``created_at``).
+        """
+        clauses = _build_queue_where_clauses(
+            QueueFilters(moderation_statuses=DEFAULT_QUEUE_STATUSES)
+        )
+        assert len(clauses) == 1

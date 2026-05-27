@@ -422,8 +422,11 @@ async def cmd_queue_next(message: IncomingMessage, bot: Bot) -> None:
     статусе ``DEFAULT_QUEUE_STATUSES`` (по умолчанию — только новые).
     Если очередь пуста — короткое сообщение с возвратом в меню.
     """
+    default_filters = QueueFilters(moderation_statuses=DEFAULT_QUEUE_STATUSES)
+    await _save_filters(message, default_filters)
+    await _save_queue_page(message, 1)
     page = await list_queue(
-        filters=QueueFilters(),
+        filters=default_filters,
         page=1,
         page_size=1,
     )
@@ -444,7 +447,6 @@ async def cmd_queue_next(message: IncomingMessage, bot: Bot) -> None:
     app = page.items[0]
     from handlers.moderator_actions import _card_action_buttons
 
-    await _save_queue_page(message, 1)
     await render_application_card(
         message,
         bot,
