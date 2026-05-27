@@ -108,16 +108,12 @@ def my_applications_list_bubbles(
             data={"to": str(page.page - 1)},
             new_row=True,
         )
-    bubbles.add_button(
-        command="/my_apps_refresh",
-        label=f"{page.page} из {page.total_pages}",
-        new_row=not has_prev,
-    )
     if has_next:
         bubbles.add_button(
             command="/my_apps_page",
             label="Вперёд →",
             data={"to": str(page.page + 1)},
+            new_row=not has_prev,
         )
     bubbles.add_button(
         command="/start", label="◀ Назад в главное меню", new_row=True

@@ -9,6 +9,7 @@ from pybotx.models.attachments import OutgoingAttachment
 from utils.bot_utils import (
     format_anonymous_file_caption,
     format_numbered_file_caption,
+    pagination_footer,
     send_application_files_with_card,
 )
 
@@ -21,6 +22,19 @@ def _app(br_id: str = "BR-2026-0001") -> MagicMock:
     app = MagicMock()
     app.br_id = br_id
     return app
+
+
+class TestPaginationFooter:
+    def test_empty_when_single_page(self):
+        assert pagination_footer(1, 1) == ""
+
+    def test_plain_format(self):
+        assert pagination_footer(3, 20) == "\n\n3 из 20"
+
+    def test_with_title(self):
+        assert pagination_footer(2, 5, title="Карусель") == (
+            "\n\n**Карусель:** 2 из 5"
+        )
 
 
 class TestFileCaptions:

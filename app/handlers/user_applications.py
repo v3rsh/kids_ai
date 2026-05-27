@@ -23,6 +23,7 @@ from keyboards import (
 from services import applications as applications_service
 from services.user_application_views import format_application_detail, format_list_item
 from utils.bot_utils import (
+    pagination_footer,
     reply_to_user,
     safe_answer_transient,
     send_application_files_with_card,
@@ -148,7 +149,9 @@ async def _render_list(
         ]
         for app in page_result.items:
             lines.append(format_list_item(app))
-        body = "\n\n".join(lines)
+        body = "\n\n".join(lines) + pagination_footer(
+            page_result.page, page_result.total_pages
+        )
         bubbles = my_applications_list_bubbles(
             apps=page_result.items,
             page=page_result,

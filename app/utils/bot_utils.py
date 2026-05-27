@@ -339,6 +339,20 @@ def format_anonymous_file_caption(index: int, total: int) -> str:
     return f"📎 Файл {index} из {total}"
 
 
+def pagination_footer(current: int, total: int, *, title: str | None = None) -> str:
+    """Хвост сообщения со счётчиком страниц.
+
+    Пустая строка при ``total <= 1``, иначе ``\\n\\n[N из M]`` или
+    ``\\n\\n**Title:** N из M``.
+    """
+    if total <= 1:
+        return ""
+    text = f"{current} из {total}"
+    if title:
+        text = f"**{title}:** {text}"
+    return f"\n\n{text}"
+
+
 async def send_application_files_with_card(
     message: IncomingMessage,
     bot: Bot,

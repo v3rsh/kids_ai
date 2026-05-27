@@ -47,6 +47,7 @@ from services.moderation import (
     list_queue,
 )
 from utils.bot_utils import (
+    pagination_footer,
     reply_to_user,
     send_application_files_with_card,
 )
@@ -260,22 +261,28 @@ async def render_application_card(
     app: Application,
     bubbles: BubbleMarkup,
     prefix: str = "",
+    suffix: str = "",
 ) -> None:
     """Отрисовать карточку заявки модератору с файлами работы.
 
     Поведение:
     - ``IntakeMode.FILES`` — все файлы заявки сразу: первый с полной
-      карточкой (``_full_card`` + ``prefix``) и кнопками действий,
-      остальные — с нумерованной подписью. Сообщения transient,
+      карточкой (``_full_card`` + ``prefix`` + ``suffix``) и кнопками
+      действий, остальные — с нумерованной подписью. Сообщения transient,
       cleanup-middleware удалит их при следующей навигации.
     - ``IntakeMode.LINKS`` или отсутствие файлов на диске — текстовая
       карточка через ``reply_to_user``.
 
     Args:
-        prefix: дополнительный текст, добавляется перед карточкой —
-            например, статусная плашка «Карусель: 2 из 5».
+        prefix: дополнительный текст перед карточкой.
+        suffix: дополнительный текст после карточки (например, счётчик
+            карусели).
     """
-    body = (prefix + _full_card(app)) if prefix else _full_card(app)
+    body = _full_card(app)
+    if prefix:
+        body = prefix + body
+    if suffix:
+        body = body + suffix
     if app.intake_mode is IntakeMode.LINKS:
         await reply_to_user(message, bot, body, bubbles=bubbles)
         return
@@ -351,16 +358,12 @@ def _queue_pagination_buttons(bubbles: BubbleMarkup, page: QueuePage) -> None:
             data={"to": str(page.page - 1)},
             new_row=True,
         )
-    bubbles.add_button(
-        command="/m_q_refresh",
-        label=f"{page.page} из {page.total_pages}",
-        new_row=not has_prev,
-    )
     if has_next:
         bubbles.add_button(
             command="/m_q_page",
             label="Вперёд →",
             data={"to": str(page.page + 1)},
+            new_row=not has_prev,
         )
 
 
@@ -378,16 +381,12 @@ def _browse_navigation_buttons(
             data={"to": str(index - 1)},
             new_row=True,
         )
-    bubbles.add_button(
-        command="/m_b_refresh",
-        label=f"{index + 1} из {total}",
-        new_row=index == 0,
-    )
     if index + 1 < total:
         bubbles.add_button(
             command="/m_b_nav",
             label="Следующая →",
             data={"to": str(index + 1)},
+            new_row=index == 0,
         )
     bubbles.add_button(
         command="/queue",
@@ -522,7 +521,9 @@ async def _render_queue(
         ]
         for app in result.items:
             lines.append(_short_card(app))
-        body = "\n\n".join(lines)
+        body = "\n\n".join(lines) + pagination_footer(
+            result.page, result.total_pages
+        )
 
     bubbles = BubbleMarkup()
     if result.items:
@@ -824,17 +825,15 @@ async def _render_browse(
         )
 
     app = result.items[inner_offset]
-    prefix = (
-        f"**Карусель:** {index + 1} из {total}\n"
-        f"**Фильтры:** {_filters_summary(filters)}\n\n"
-    )
+    prefix = f"**Фильтры:** {_filters_summary(filters)}\n\n"
+    suffix = pagination_footer(index + 1, total, title="Карусель")
 
     bubbles = BubbleMarkup()
     _action_buttons_for_app(bubbles, app)
     _browse_navigation_buttons(bubbles, index=index, total=total)
 
     await render_application_card(
-        message, bot, app=app, bubbles=bubbles, prefix=prefix
+        message, bot, app=app, bubbles=bubbles, prefix=prefix, suffix=suffix
     )
 
 
@@ -934,6 +933,38 @@ async def _render_section_age_picker(
     await reply_to_user(message, bot, body, bubbles=bubbles)
 
 
+def _section_pagination_buttons(
+    bubbles: BubbleMarkup,
+    *,
+    status_name: str,
+    track: Track,
+    age: AgeCategory,
+    page: QueuePage,
+) -> None:
+    """Кнопки навигации по страницам раздела модератора."""
+    has_prev = page.page > 1
+    has_next = page.page < page.total_pages
+    nav_data_base = {
+        "st": status_name,
+        "tr": track.name,
+        "ag": age.name,
+    }
+    if has_prev:
+        bubbles.add_button(
+            command="/m_list",
+            label="← Назад",
+            data={**nav_data_base, "p": str(page.page - 1)},
+            new_row=True,
+        )
+    if has_next:
+        bubbles.add_button(
+            command="/m_list",
+            label="Вперёд →",
+            data={**nav_data_base, "p": str(page.page + 1)},
+            new_row=not has_prev,
+        )
+
+
 async def _render_section_list(
     message: IncomingMessage,
     bot: Bot,
@@ -967,7 +998,9 @@ async def _render_section_list(
         body_lines = list(header_lines) + [""]
         for app in result.items:
             body_lines.append(_short_card(app))
-        body = "\n\n".join(body_lines)
+        body = "\n\n".join(body_lines) + pagination_footer(
+            result.page, result.total_pages
+        )
 
     bubbles = BubbleMarkup()
     for app in result.items:
@@ -977,44 +1010,13 @@ async def _render_section_list(
             new_row=True,
         )
 
-    # Пагинация.
-    has_prev = result.page > 1
-    has_next = result.page < result.total_pages
-    if has_prev:
-        bubbles.add_button(
-            command="/m_list",
-            label="← Назад",
-            data={
-                "st": status_name,
-                "tr": track.name,
-                "ag": age.name,
-                "p": str(result.page - 1),
-            },
-            new_row=True,
-        )
-    if result.total_pages > 0:
-        bubbles.add_button(
-            command="/m_list",
-            label=f"{result.page} из {result.total_pages}",
-            data={
-                "st": status_name,
-                "tr": track.name,
-                "ag": age.name,
-                "p": str(result.page),
-            },
-            new_row=not has_prev,
-        )
-    if has_next:
-        bubbles.add_button(
-            command="/m_list",
-            label="Вперёд →",
-            data={
-                "st": status_name,
-                "tr": track.name,
-                "ag": age.name,
-                "p": str(result.page + 1),
-            },
-        )
+    _section_pagination_buttons(
+        bubbles,
+        status_name=status_name,
+        track=track,
+        age=age,
+        page=result,
+    )
 
     bubbles.add_button(
         command="/m_list",
