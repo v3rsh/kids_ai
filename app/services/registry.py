@@ -32,6 +32,7 @@ from database.models import (
     IntakeMode,
     JuryMember,
     JuryRound,
+    JuryRoundAggregate,
     JuryStatus,
     JuryVote,
     JuryVoteState,
@@ -245,13 +246,11 @@ _MAIN_COLUMNS: list[tuple[str, int, bool]] = [
     ("Возможный дубль", 10, False),                          # 20
     ("Связанная заявка", 14, False),                         # 21
     ("Актуальная версия заявки", 10, False),                 # 22
-    ("Голосов «Достоин» в р.1", 12, False),                  # 23
-    ("Голосов «Достоин» в р.2", 12, False),                  # 24
-    ("Голосов «Достоин» в р.3", 12, False),                  # 25
-    ("Итоговый раунд", 10, False),                           # 26
-    ("Итог по жюри", 18, False),                             # 27
-    ("Определено жребием", 12, False),                       # 28
-    ("Позиция в пуле", 10, False),                           # 29
+    ("Голоса «Достоин» по раундам", 28, False),              # 23
+    ("Итоговый раунд", 10, False),                           # 24
+    ("Итог по жюри", 18, False),                             # 25
+    ("Определено жребием", 12, False),                       # 26
+    ("Позиция в пуле", 10, False),                           # 27
 ]
 
 # Фиксированные колонки листа `Голосование жюри`.
@@ -343,9 +342,33 @@ def _set_freeze_and_filter(
 # =====================================================================
 
 
-def _row_for_main_sheet(app: Application) -> list:
-    """29 значений одной строки основного листа."""
+def _format_round_yes_aggregates(yes_by_round: dict[int, int]) -> str:
+    """Свернуть голоса «Достоин» в строку вида ``r1:7, r2:5, r3:3``.
+
+    Раунды отсортированы по номеру. Пустой словарь → пустая строка.
+    Используется в новой колонке 23 реестра (после отказа от трёх
+    фиксированных колонок ``jury_round{1,2,3}_yes``).
+    """
+    if not yes_by_round:
+        return ""
+    return ", ".join(
+        f"r{rn}:{yes_by_round[rn]}"
+        for rn in sorted(yes_by_round.keys())
+    )
+
+
+def _row_for_main_sheet(
+    app: Application,
+    aggregates_by_app: dict[uuid_pkg.UUID, dict[int, int]],
+) -> list:
+    """27 значений одной строки основного листа.
+
+    ``aggregates_by_app[app.id]`` — словарь ``round_no → yes_count``
+    (см. ``_fetch_round_aggregates``). Если для заявки нет ни одного
+    раунда — выводится пустая строка.
+    """
     n_files = len(app.files) if app.files else 0
+    yes_by_round = aggregates_by_app.get(app.id, {})
     return [
         app.br_id,                                                 # 1
         _to_msk_iso(app.created_at),                               # 2
@@ -369,18 +392,18 @@ def _row_for_main_sheet(app: Application) -> list:
         _yesno_or_blank(app.is_possible_duplicate),                # 20
         app.related_application_br_id or "",                       # 21
         "да" if app.is_actual_version else "нет",                  # 22
-        app.jury_round1_yes,                                       # 23
-        app.jury_round2_yes,                                       # 24
-        app.jury_round3_yes,                                       # 25
-        app.jury_final_round if app.jury_final_round is not None else "",  # 26
-        jury_outcome(app),                                         # 27
-        _yesno_or_blank(app.jury_decided_by_lot),                  # 28
-        app.pool_position if app.pool_position is not None else "",        # 29
+        _format_round_yes_aggregates(yes_by_round),                # 23
+        app.jury_final_round if app.jury_final_round is not None else "",  # 24
+        jury_outcome(app),                                         # 25
+        _yesno_or_blank(app.jury_decided_by_lot),                  # 26
+        app.pool_position if app.pool_position is not None else "",        # 27
     ]
 
 
 def _build_main_sheet(
-    ws: Worksheet, applications: Sequence[Application]
+    ws: Worksheet,
+    applications: Sequence[Application],
+    aggregates_by_app: dict[uuid_pkg.UUID, dict[int, int]],
 ) -> tuple[int, int]:
     """Заполнить лист `Реестр`. Возвращает (n_rows, n_cols).
 
@@ -388,7 +411,9 @@ def _build_main_sheet(
     """
     _apply_columns_header(ws, _MAIN_COLUMNS)
     for row_offset, app in enumerate(applications, start=2):
-        for col_idx, value in enumerate(_row_for_main_sheet(app), start=1):
+        for col_idx, value in enumerate(
+            _row_for_main_sheet(app, aggregates_by_app), start=1
+        ):
             ws.cell(row=row_offset, column=col_idx, value=value)
         _apply_wrap_text(ws, row_offset, _MAIN_COLUMNS)
     n_cols = len(_MAIN_COLUMNS)
@@ -521,6 +546,7 @@ def _render_registry_workbook(
     votes: Sequence[JuryVote],
     rounds_by_id: dict[uuid_pkg.UUID, JuryRound],
     jury_by_huid: dict[uuid_pkg.UUID, JuryMember],
+    aggregates_by_app: dict[uuid_pkg.UUID, dict[int, int]],
 ) -> tuple[bytes, int, int]:
     """Собрать `registry.xlsx` в bytes; вернуть (bytes, total_cols, ...).
 
@@ -529,7 +555,9 @@ def _render_registry_workbook(
     wb = Workbook()
     main_ws = wb.active
     main_ws.title = "Реестр"
-    n_rows_main, n_cols_main = _build_main_sheet(main_ws, applications)
+    n_rows_main, n_cols_main = _build_main_sheet(
+        main_ws, applications, aggregates_by_app
+    )
 
     jury_ws = wb.create_sheet("Голосование жюри")
     _build_jury_detail_sheet(
@@ -577,6 +605,31 @@ async def _fetch_jury_axes(
     return votes, rounds_by_id, jury_by_huid
 
 
+async def _fetch_round_aggregates(
+    session,
+    rounds_by_id: dict[uuid_pkg.UUID, JuryRound],
+) -> dict[uuid_pkg.UUID, dict[int, int]]:
+    """Собрать ``application_id → {round_no: yes_count}`` для колонки 23.
+
+    Один SELECT по всей таблице ``jury_round_aggregates`` + индексация
+    в памяти. ``rounds_by_id`` (загруженный ``_fetch_jury_axes``)
+    переиспользуется, чтобы получить ``round_no`` по ``round_id``
+    без N+1.
+    """
+    rows = list(
+        (await session.scalars(select(JuryRoundAggregate))).all()
+    )
+    by_app: dict[uuid_pkg.UUID, dict[int, int]] = {}
+    for row in rows:
+        rnd = rounds_by_id.get(row.round_id)
+        if rnd is None:
+            continue
+        by_app.setdefault(row.application_id, {})[rnd.round_no] = int(
+            row.yes_count
+        )
+    return by_app
+
+
 # =====================================================================
 # Публичный API (контракт RegistryService)
 # =====================================================================
@@ -602,12 +655,16 @@ async def build_registry_xlsx() -> bytes:
     async with get_session()() as session:
         applications = await _fetch_all_applications(session)
         votes, rounds_by_id, jury_by_huid = await _fetch_jury_axes(session)
+        aggregates_by_app = await _fetch_round_aggregates(
+            session, rounds_by_id
+        )
 
     payload, n_cols, n_rows = _render_registry_workbook(
         applications=applications,
         votes=votes,
         rounds_by_id=rounds_by_id,
         jury_by_huid=jury_by_huid,
+        aggregates_by_app=aggregates_by_app,
     )
 
     duration_ms = (time.perf_counter() - t0) * 1000
