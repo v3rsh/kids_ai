@@ -120,6 +120,20 @@ def build_by_pool_counts(raw: dict[tuple[Track, AgeCategory], int]) -> dict[str,
     }
 
 
+def format_track_age_stats_lines(by_pool: dict[str, int]) -> list[str]:
+    """Строки отчёта: блок на каждый трек, внутри — возрастные категории."""
+    lines: list[str] = []
+    for track in Track:
+        lines.append(f"{track.value}:")
+        for age in AgeCategory:
+            key = pool_label(track, age)
+            lines.append(f"  • {age.value}: {by_pool.get(key, 0)}")
+        lines.append("")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 async def overview_counters() -> AdminOverview:
     """Счётчики для бейджей кнопок главного меню админки."""
     mode = await get_intake_mode()
@@ -397,6 +411,7 @@ __all__ = [
     "pool_label",
     "pool_labels_in_order",
     "build_by_pool_counts",
+    "format_track_age_stats_lines",
     "overview_counters",
     "count_users_stats",
     "jury_aggregate_state",

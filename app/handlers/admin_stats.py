@@ -8,7 +8,10 @@ from pybotx import Bot, HandlerCollector, IncomingMessage
 from fsm import cleanup_middleware, fsm_middleware
 from keyboards import admin_stats_menu_bubbles
 from services.access import admin_only
-from services.admin import build_admin_stats_report, pool_labels_in_order
+from services.admin import (
+    build_admin_stats_report,
+    format_track_age_stats_lines,
+)
 from states import AdminFlow
 from utils.bot_utils import reply_to_user
 
@@ -44,10 +47,10 @@ def _format_admin_stats(report) -> str:
         if u.total
         else "• Конверсия: —",
         "",
-        "**По пулам (трек × возраст):**",
+        "**По трекам и возрастным категориям:**",
+        "",
     ]
-    for name in pool_labels_in_order():
-        lines.append(f"  • {name}: {report.by_pool.get(name, 0)}")
+    lines.extend(format_track_age_stats_lines(report.by_pool))
     lines.append("")
     lines.append("**По статусам модерации:**")
     for name in sorted(report.by_moderation_status):

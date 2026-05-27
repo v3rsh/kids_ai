@@ -30,6 +30,7 @@ from pybotx.models.attachments import OutgoingAttachment
 from fsm import cleanup_middleware, fsm_middleware
 from keyboards import back_to_moderator_menu_bubbles
 from services.access import moderator_only
+from services.admin import format_track_age_stats_lines
 from services.moderation import StatsCounters, StatsPeriod, count_stats
 from utils.bot_utils import reply_to_user
 
@@ -80,16 +81,10 @@ def _format_stats(stats: StatsCounters) -> str:
             f"{stats.period_to.strftime('%Y-%m-%d')})"
         )
     lines = [f"📊 Статистика — {period_text}", f"Всего заявок: {stats.total}"]
-    if stats.by_track:
-        lines.append("")
-        lines.append("По трекам:")
-        for name in sorted(stats.by_track):
-            lines.append(f"  • {name}: {stats.by_track[name]}")
-    if stats.by_age_category:
-        lines.append("")
-        lines.append("По возрастным категориям:")
-        for name in sorted(stats.by_age_category):
-            lines.append(f"  • {name}: {stats.by_age_category[name]}")
+    lines.append("")
+    lines.append("По трекам и возрастным категориям:")
+    lines.append("")
+    lines.extend(format_track_age_stats_lines(stats.by_pool))
     if stats.by_moderation_status:
         lines.append("")
         lines.append("По статусам модерации:")

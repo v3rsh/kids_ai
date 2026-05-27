@@ -133,18 +133,17 @@ class StatsCounters:
     """Сводка статистики для ``/stats``.
 
     ``period_label`` — человекочитаемая подпись («сегодня» / «весь
-    период»). Все распределения — ``dict[str, int]``, ключ — текстовое
-    значение enum (``Track.value``, ``AgeCategory.value``,
-    ``ModerationStatus.value``).
+    период»). ``by_pool`` — 9 ячеек ``трек / возраст`` (ключи
+    ``pool_label``). ``by_moderation_status`` — ключ
+    ``ModerationStatus.value``.
     """
 
     period_label: str
     period_from: datetime | None
     period_to: datetime | None
     total: int
-    by_track: dict[str, int]
-    by_age_category: dict[str, int]
-    by_moderation_status: dict[str, int]
+    by_pool: dict[str, int] = field(default_factory=dict)
+    by_moderation_status: dict[str, int] = field(default_factory=dict)
     needs_fix: int
     rejected: int
     multi_submission_groups: int
@@ -486,9 +485,8 @@ async def add_comment(
 async def count_stats(period: StatsPeriod = "all") -> StatsCounters:
     """Агрегированная статистика по заявкам для команды ``/stats``.
 
-    Делается **тремя** SQL-запросами с ``GROUP BY`` (по треку,
-    по возрасту, по статусу модерации) + один общий COUNT. Никаких
-    ``SELECT`` в циклах: всё агрегируется на уровне БД.
+    Делается **двумя** SQL-запросами с ``GROUP BY`` (трек × возраст,
+    статус модерации) + один общий COUNT. Никаких ``SELECT`` в циклах.
 
     ``period``:
 
@@ -520,25 +518,20 @@ async def count_stats(period: StatsPeriod = "all") -> StatsCounters:
             total_stmt = total_stmt.where(and_(*where_clauses))
         total = int((await session.execute(total_stmt)).scalar_one())
 
-        track_stmt = select(Application.track, func.count()).group_by(
-            Application.track
-        )
-        if where_clauses:
-            track_stmt = track_stmt.where(and_(*where_clauses))
-        by_track = {
-            track.value: int(cnt)
-            for track, cnt in (await session.execute(track_stmt)).all()
-        }
+        from services.admin import build_by_pool_counts
 
-        age_stmt = select(Application.age_category, func.count()).group_by(
-            Application.age_category
-        )
+        pool_stmt = select(
+            Application.track,
+            Application.age_category,
+            func.count(),
+        ).group_by(Application.track, Application.age_category)
         if where_clauses:
-            age_stmt = age_stmt.where(and_(*where_clauses))
-        by_age = {
-            cat.value: int(cnt)
-            for cat, cnt in (await session.execute(age_stmt)).all()
+            pool_stmt = pool_stmt.where(and_(*where_clauses))
+        by_pool_raw: dict[tuple[Track, AgeCategory], int] = {
+            (track, age): int(cnt)
+            for track, age, cnt in (await session.execute(pool_stmt)).all()
         }
+        by_pool = build_by_pool_counts(by_pool_raw)
 
         status_stmt = select(
             Application.moderation_status, func.count()
@@ -564,8 +557,7 @@ async def count_stats(period: StatsPeriod = "all") -> StatsCounters:
         period_from=period_from,
         period_to=period_to,
         total=total,
-        by_track=by_track,
-        by_age_category=by_age,
+        by_pool=by_pool,
         by_moderation_status=by_status,
         needs_fix=needs_fix,
         rejected=rejected,
