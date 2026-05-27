@@ -575,6 +575,7 @@ async def cmd_jt_submit(message: IncomingMessage, bot: Bot) -> None:
                 jury_huid=huid,
                 votes=drafts,
                 session=session,
+                bot=bot,
             )
             await session.commit()
         except (ValueError, LookupError) as exc:
@@ -590,6 +591,21 @@ async def cmd_jt_submit(message: IncomingMessage, bot: Bot) -> None:
                 bot,
                 f"Не удалось отправить оценки: {exc}",
                 bubbles=_back_to_tasks_bubbles(),
+            )
+            return
+        except PermissionError:
+            await session.rollback()
+            logger.warning(
+                "/jt_submit: судья отозван во время отправки",
+                round_id=str(round_id),
+                jury_huid=str(huid),
+            )
+            await fsm.clear()
+            await reply_to_user(
+                message,
+                bot,
+                "Вы были отозваны из жюри, голоса не сохранены.",
+                bubbles=back_to_jury_menu_bubbles(),
             )
             return
 

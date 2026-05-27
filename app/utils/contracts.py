@@ -154,6 +154,24 @@ class JuryTaskDTO:
 
 
 @dataclass(frozen=True)
+class RoundCloseReport:
+    """Детальная сводка закрытия раунда для чата модерации."""
+
+    candidates_n: int
+    slots_n: int
+    fixed_top_n_in_round: int
+    tie_n: int
+    losers_n: int
+    remaining_slots_after: int
+    pool_completed: bool
+    lot_applied: bool
+    next_round_opened: bool
+    next_round_candidates_n: int = 0
+    next_round_slots_n: int = 0
+    pool_top_n: int = 0
+
+
+@dataclass(frozen=True)
 class RoundResult:
     """Итог раунда жюри.
 
@@ -437,6 +455,7 @@ __all__ = [
     "ApplicationDTO",
     "ApplicationFileDTO",
     "JuryTaskDTO",
+    "RoundCloseReport",
     "RoundResult",
     # Protocols
     "ApplicationsService",

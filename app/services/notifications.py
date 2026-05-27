@@ -33,6 +33,7 @@ from pybotx import MentionBuilder
 
 from services.access import get_moderation_chat_id
 from utils.bot_utils import format_numbered_file_caption, resolve_bot_id
+from utils.contracts import RoundCloseReport
 
 if TYPE_CHECKING:
     from pybotx import Bot, BubbleMarkup
@@ -125,16 +126,19 @@ NEW_APPLICATION_MODERATION_TEMPLATE = (
 
 JURY_ROUND_OPENED_TEMPLATE = (
     "**Раунд {round_no} открыт** в пулах:\n\n"
-    "{pool_lines}\n\n"
-    "**Дедлайн:** {deadline}."
+    "{pool_lines}"
 )
 """Чат модерации: открытие раунда (агрегируется по моменту времени)."""
 
 JURY_ROUND_OPENED_SINGLE_TEMPLATE = (
-    "Пул `{pool}`: раунд {round_no} открыт, претендентов — {candidates_n}, "
-    "дедлайн — {deadline}."
+    "Пул `{pool}`: раунд {round_no} открыт.\n"
+    "Претендентов: {candidates_n}, мест в шорт-листе пула: {slots_n}."
 )
-"""Чат модерации: открытие раунда в одном пуле (когда агрегация не сработала)."""
+"""Чат модерации: открытие раунда в одном пуле."""
+
+JURY_ROUND_OPENED_POOL_LINE = (
+    "- {track} / {age} — {candidates_n} претендентов на {slots_n} мест"
+)
 
 JURY_ROUND_CLOSED_TEMPLATE = (
     "**Раунд {round_no} закрыт** в пулах:\n\n"
@@ -143,9 +147,27 @@ JURY_ROUND_CLOSED_TEMPLATE = (
 """Чат модерации: закрытие раунда (агрегируется)."""
 
 JURY_ROUND_CLOSED_SINGLE_TEMPLATE = (
-    "Пул `{pool}`: раунд {round_no} закрыт."
+    "Пул `{pool}`: раунд {round_no} закрыт.\n"
+    "Кандидатов: {candidates_n}. В шорт-лист пула сразу: {fixed_top_n_in_round}.\n"
+    "В зоне ничьи (уходят в след. раунд): {tie_n}. Выбыло: {losers_n}.\n"
+    "Осталось мест в шорт-листе пула: {remaining_slots_after}."
 )
 """Чат модерации: закрытие раунда в одном пуле."""
+
+JURY_ROUND_CLOSED_POOL_LINE = (
+    "- {track} / {age}: канд.{candidates_n}, в шорт-лист {fixed_top_n_in_round}, "
+    "ничья {tie_n}, выбыло {losers_n}, осталось мест {remaining_slots_after}"
+)
+
+JURY_POOL_COMPLETED_TAIL_TEMPLATE = (
+    "\n\nТоп-{top_n} пула определён (жребий: {lot_label}). "
+    "В шорт-листе пула: {pool_top_n} работ."
+)
+
+JURY_UNDERSIZED_POOL_TEMPLATE = (
+    "Пул `{pool}`: голосование не проводилось (работ {works_n} < TOP_N={top_n}). "
+    "Все {works_n} работ — в шорт-листе."
+)
 
 JURY_LOT_TEMPLATE = (
     "Пул `{pool}`: после раунда {round_no} применён автоматический жребий. "
@@ -645,6 +667,9 @@ class _JuryEvent:
     deadline_text: str | None = None
     extra: str | None = None
     lot_applied: bool = False  # для pool_completed: пул закрыт жребием?
+    candidates_n: int | None = None
+    slots_n: int | None = None
+    close_report: RoundCloseReport | None = None
 
 
 @dataclass
@@ -665,6 +690,64 @@ def _get_aggregator() -> _AggregatorState:
     if _AGGREGATOR is None:
         _AGGREGATOR = _AggregatorState()
     return _AGGREGATOR
+
+
+def _format_round_opened_pool_line(ev: _JuryEvent) -> str:
+    track, age = ev.pool
+    return JURY_ROUND_OPENED_POOL_LINE.format(
+        track=track,
+        age=age,
+        candidates_n=ev.candidates_n if ev.candidates_n is not None else "—",
+        slots_n=ev.slots_n if ev.slots_n is not None else "—",
+    )
+
+
+def _format_round_closed_body(ev: _JuryEvent, *, pool_label: str) -> str:
+    report = ev.close_report
+    if report is None:
+        return JURY_ROUND_CLOSED_SINGLE_TEMPLATE.format(
+            pool=pool_label,
+            round_no=ev.round_no or 1,
+            candidates_n="—",
+            fixed_top_n_in_round="—",
+            tie_n="—",
+            losers_n="—",
+            remaining_slots_after="—",
+        )
+    from config import TOP_N
+
+    body = JURY_ROUND_CLOSED_SINGLE_TEMPLATE.format(
+        pool=pool_label,
+        round_no=ev.round_no or 1,
+        candidates_n=report.candidates_n,
+        fixed_top_n_in_round=report.fixed_top_n_in_round,
+        tie_n=report.tie_n,
+        losers_n=report.losers_n,
+        remaining_slots_after=report.remaining_slots_after,
+    )
+    if report.pool_completed:
+        body += JURY_POOL_COMPLETED_TAIL_TEMPLATE.format(
+            top_n=TOP_N,
+            lot_label="да" if report.lot_applied else "нет",
+            pool_top_n=report.pool_top_n,
+        )
+    return body
+
+
+def _format_round_closed_pool_line(ev: _JuryEvent) -> str:
+    track, age = ev.pool
+    report = ev.close_report
+    if report is None:
+        return f"- {track} / {age}: раунд {ev.round_no or 1} закрыт"
+    return JURY_ROUND_CLOSED_POOL_LINE.format(
+        track=track,
+        age=age,
+        candidates_n=report.candidates_n,
+        fixed_top_n_in_round=report.fixed_top_n_in_round,
+        tie_n=report.tie_n,
+        losers_n=report.losers_n,
+        remaining_slots_after=report.remaining_slots_after,
+    )
 
 
 async def _flush_aggregator() -> None:
@@ -692,36 +775,35 @@ async def _flush_aggregator() -> None:
 
     for (kind, round_no), events in grouped.items():
         pools = [ev.pool for ev in events]
-        deadline_text = next(
-            (ev.deadline_text for ev in events if ev.deadline_text),
-            None,
-        )
         if kind == "round_opened":
-            if len(pools) == 1:
+            if len(events) == 1:
+                ev = events[0]
                 pool_label = f"{pools[0][0]} / {pools[0][1]}"
                 body = JURY_ROUND_OPENED_SINGLE_TEMPLATE.format(
                     pool=pool_label,
                     round_no=round_no or 1,
-                    candidates_n=events[0].extra or "—",
-                    deadline=deadline_text or "не задан",
+                    candidates_n=ev.candidates_n if ev.candidates_n is not None else "—",
+                    slots_n=ev.slots_n if ev.slots_n is not None else "—",
                 )
             else:
+                pool_lines = "\n".join(
+                    _format_round_opened_pool_line(ev) for ev in events
+                )
                 body = JURY_ROUND_OPENED_TEMPLATE.format(
                     round_no=round_no or 1,
-                    pool_lines=_format_pool_lines(pools),
-                    deadline=deadline_text or "не задан",
+                    pool_lines=pool_lines,
                 )
         elif kind == "round_closed":
-            if len(pools) == 1:
+            if len(events) == 1:
                 pool_label = f"{pools[0][0]} / {pools[0][1]}"
-                body = JURY_ROUND_CLOSED_SINGLE_TEMPLATE.format(
-                    pool=pool_label,
-                    round_no=round_no or 1,
-                )
+                body = _format_round_closed_body(events[0], pool_label=pool_label)
             else:
+                pool_lines = "\n".join(
+                    _format_round_closed_pool_line(ev) for ev in events
+                )
                 body = JURY_ROUND_CLOSED_TEMPLATE.format(
                     round_no=round_no or 1,
-                    pool_lines=_format_pool_lines(pools),
+                    pool_lines=pool_lines,
                 )
         else:
             continue  # pragma: no cover — типов больше нет
@@ -789,6 +871,52 @@ async def _enqueue_jury_event(bot: "Bot", event: _JuryEvent) -> None:
         agg.flush_task = asyncio.create_task(_aggregator_worker())
 
 
+async def notify_moderation_chat_undersized_pool(
+    bot: "Bot",
+    *,
+    pool_label: str,
+    works_n: int,
+    top_n: int,
+) -> None:
+    """Уведомление: пул закрыт без голосования (< TOP_N работ)."""
+    body = JURY_UNDERSIZED_POOL_TEMPLATE.format(
+        pool=pool_label,
+        works_n=works_n,
+        top_n=top_n,
+    )
+    await _send_to_moderation_chat(
+        bot,
+        body,
+        purpose="moderation_jury_undersized_pool",
+    )
+
+
+def _align_per_pool_values(
+    pools: list[tuple[str, str]],
+    value: int | list[int] | None,
+) -> list[int | None]:
+    if value is None:
+        return [None] * len(pools)
+    if isinstance(value, list):
+        return [
+            value[i] if i < len(value) else None for i in range(len(pools))
+        ]
+    return [value] * len(pools)
+
+
+def _align_close_reports(
+    pools: list[tuple[str, str]],
+    reports: RoundCloseReport | list[RoundCloseReport] | None,
+) -> list[RoundCloseReport | None]:
+    if reports is None:
+        return [None] * len(pools)
+    if isinstance(reports, list):
+        return [
+            reports[i] if i < len(reports) else None for i in range(len(pools))
+        ]
+    return [reports] * len(pools)
+
+
 async def notify_moderation_chat_jury_event(
     bot: "Bot",
     *,
@@ -797,6 +925,9 @@ async def notify_moderation_chat_jury_event(
     round_no: int | None,
     deadline_text: str | None = None,
     extra: str | None = None,
+    candidates_n: int | list[int] | None = None,
+    slots_n: int | list[int] | None = None,
+    close_report: RoundCloseReport | list[RoundCloseReport] | None = None,
 ) -> None:
     """Событие жюри для чата модерации.
 
@@ -837,6 +968,11 @@ async def notify_moderation_chat_jury_event(
         return
 
     if event_kind == "shortlist_ready":
+        from services.jury_settings import get_shortlist_announced, set_shortlist_announced
+
+        if await get_shortlist_announced():
+            logger.info("shortlist_ready уже объявлен — пропуск")
+            return
         await _send_jury_event_single(
             bot,
             _JuryEvent(
@@ -845,6 +981,7 @@ async def notify_moderation_chat_jury_event(
                 round_no=None,
             ),
         )
+        await set_shortlist_announced(announced=True)
         return
 
     if event_kind == "lot_applied":
@@ -877,7 +1014,10 @@ async def notify_moderation_chat_jury_event(
         return
 
     # round_opened / round_closed — через агрегатор.
-    for pool in pools:
+    candidates_list = _align_per_pool_values(pools, candidates_n)
+    slots_list = _align_per_pool_values(pools, slots_n)
+    reports_list = _align_close_reports(pools, close_report)
+    for idx, pool in enumerate(pools):
         await _enqueue_jury_event(
             bot,
             _JuryEvent(
@@ -886,6 +1026,9 @@ async def notify_moderation_chat_jury_event(
                 round_no=round_no,
                 deadline_text=deadline_text,
                 extra=extra,
+                candidates_n=candidates_list[idx],
+                slots_n=slots_list[idx],
+                close_report=reports_list[idx],
             ),
         )
 
@@ -922,7 +1065,10 @@ __all__ = [
     "JURY_ROUND_CLOSED_TEMPLATE",
     "JURY_ROUND_CLOSED_SINGLE_TEMPLATE",
     "JURY_LOT_TEMPLATE",
-    "JURY_POOL_COMPLETED_TEMPLATE",
+    "JURY_ROUND_OPENED_POOL_LINE",
+    "JURY_ROUND_CLOSED_POOL_LINE",
+    "JURY_POOL_COMPLETED_TAIL_TEMPLATE",
+    "JURY_UNDERSIZED_POOL_TEMPLATE",
     "JURY_SHORTLIST_READY_TEMPLATE",
     "DISK_ALERT_80_TEMPLATE",
     "DISK_ALERT_95_TEMPLATE",
@@ -935,6 +1081,7 @@ __all__ = [
     "notify_participant_jury_result",
     # Функции в чат модерации
     "notify_moderation_chat_new_application",
+    "notify_moderation_chat_undersized_pool",
     "notify_moderation_chat_jury_event",
     "notify_moderation_chat_disk_alert",
     # Утилиты

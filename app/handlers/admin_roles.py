@@ -109,6 +109,13 @@ async def _assign_role(
         username=profile.get("username"),
         by_huid=message.sender.huid,
     )
+    from services import jury_notifications
+
+    await jury_notifications.maybe_announce_next_task_to_judge(
+        bot,
+        jury_huid=huid,
+        trigger="judge_added",
+    )
     dm_ok = await discovery.send_welcome_dm_to_jury(bot, huid)
     return (
         f"✅ Назначен членом жюри: **{full_name or huid}**.\n"
@@ -592,7 +599,7 @@ async def cmd_admin_role_revoke_confirm(
     if role == "moderator":
         changed = await access.revoke_moderator(huid)
     else:
-        changed = await access.revoke_jury(huid)
+        changed = await access.revoke_jury(huid, bot=bot)
 
     role_label = "модератора" if role == "moderator" else "члена жюри"
     if changed:

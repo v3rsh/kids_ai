@@ -300,9 +300,56 @@ async def revoke_moderator(huid: UUID, *, session=None) -> bool:
     return await _deactivate_role("moderator", huid=huid, session=session)
 
 
-async def revoke_jury(huid: UUID, *, session=None) -> bool:
-    """Деактивировать судью (is_active=False, история голосов сохраняется)."""
-    return await _deactivate_role("jury", huid=huid, session=session)
+async def revoke_jury(
+    huid: UUID,
+    *,
+    session=None,
+    bot=None,
+) -> bool:
+    """Деактивировать судью и очистить голоса в OPEN-раундах."""
+    from services import jury as jury_service
+
+    async def _do(s) -> tuple[bool, list[UUID]]:
+        from sqlalchemy import update
+
+        from database.models import JuryMember
+
+        result = await s.execute(
+            update(JuryMember)
+            .where(JuryMember.huid == huid, JuryMember.is_active.is_(True))
+            .values(is_active=False)
+        )
+        changed = (result.rowcount or 0) > 0
+        affected = await jury_service.purge_inactive_jury_votes_in_open_rounds(
+            huid, session=s
+        )
+        await s.commit()
+        return changed, affected
+
+    affected: list = []
+    if session is not None:
+        changed, affected = await _do(session)
+        await reload_access_cache(session)
+    else:
+        from database.db import get_session
+
+        async with get_session()() as s:
+            changed, affected = await _do(s)
+            await reload_access_cache(s)
+
+    if changed and affected:
+        await jury_service.try_auto_close_rounds_after_revoke(
+            affected, bot=bot, session=session
+        )
+
+    logger.info(
+        "Отозвана роль",
+        role="jury",
+        huid=str(huid),
+        changed=changed,
+        affected_rounds=len(affected),
+    )
+    return changed
 
 
 async def set_moderation_chat(

@@ -363,7 +363,7 @@ async def _close_open_rounds(
             failed.append(f"{pool_label} р{r.round_no} — services.jury недоступен")
             continue
         try:
-            await jury.close_round(r.id)
+            await jury.close_round(r.id, bot=bot)
         except NotImplementedError:
             not_implemented = True
             failed.append(
@@ -421,7 +421,7 @@ async def cmd_jury_finalize(message: IncomingMessage, bot: Bot) -> None:
     try:
         from services import jury  # runtime-импорт (ветка C)
 
-        result = await jury.build_shortlist()
+        result = await jury.build_shortlist(bot=bot)
     except NotImplementedError:
         await reply_to_user(
             message,

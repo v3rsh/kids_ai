@@ -30,11 +30,11 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Mapping, Optional
+from typing import TYPE_CHECKING, Mapping, Optional
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import JURY_ROUND_DEADLINE_HOURS, TOP_N
@@ -58,7 +58,10 @@ from services.pools import (
     get_jury_for_pool,
     get_pool_applications,
 )
-from utils.contracts import JuryTaskDTO, PoolKey, RoundResult
+from utils.contracts import JuryTaskDTO, PoolKey, RoundCloseReport, RoundResult
+
+if TYPE_CHECKING:
+    from pybotx import Bot
 
 
 # =====================================================================
@@ -441,6 +444,351 @@ async def _fix_losers_in_round(
     return int(result.rowcount or len(losers))
 
 
+async def _count_dopushcheno_in_pool(
+    pool: PoolKey,
+    *,
+    session: AsyncSession,
+) -> int:
+    stmt = select(func.count(Application.id)).where(
+        Application.track == pool.track,
+        Application.age_category == pool.age_category,
+        Application.moderation_status == ModerationStatus.DOPUSHCHENO,
+    )
+    return int((await session.execute(stmt)).scalar() or 0)
+
+
+async def is_pool_done(
+    pool: PoolKey,
+    *,
+    session: AsyncSession,
+) -> bool:
+    """Пул «отработан» для глобального shortlist_ready."""
+    top_n_count = await _count_fixed_top_in_pool(
+        track=pool.track,
+        age_category=pool.age_category,
+        session=session,
+    )
+    voting_count = int(
+        (
+            await session.execute(
+                select(func.count(Application.id)).where(
+                    Application.track == pool.track,
+                    Application.age_category == pool.age_category,
+                    Application.jury_status == JuryStatus.NA_GOLOSOVANII,
+                )
+            )
+        ).scalar()
+        or 0
+    )
+    open_rounds = int(
+        (
+            await session.execute(
+                select(func.count(JuryRound.id)).where(
+                    JuryRound.track == pool.track,
+                    JuryRound.age_category == pool.age_category,
+                    JuryRound.status == JuryRoundStatus.OPEN,
+                )
+            )
+        ).scalar()
+        or 0
+    )
+    if top_n_count >= 1 and voting_count == 0:
+        return True
+    if open_rounds == 0 and voting_count == 0:
+        return True
+    return False
+
+
+async def is_global_shortlist_ready(
+    *,
+    session: Optional[AsyncSession] = None,
+) -> bool:
+    """True, если все 9 пулов отработаны."""
+    async with _open_session_ctx(session) as s:
+        for pool in all_pools():
+            if not await is_pool_done(pool, session=s):
+                return False
+        return True
+
+
+async def maybe_notify_shortlist_ready(
+    bot: "Bot | None",
+    *,
+    session: Optional[AsyncSession] = None,
+) -> None:
+    if bot is None:
+        return
+    from services.jury_settings import get_shortlist_announced
+
+    if await get_shortlist_announced():
+        return
+    if not await is_global_shortlist_ready(session=session):
+        return
+    from services import notifications
+
+    await notifications.notify_moderation_chat_jury_event(
+        bot,
+        event_kind="shortlist_ready",
+        pools=[],
+        round_no=None,
+    )
+
+
+async def purge_inactive_jury_votes_in_open_rounds(
+    jury_huid: UUID,
+    *,
+    session: AsyncSession,
+) -> list[UUID]:
+    """Удалить голоса отозванного судьи только в OPEN-раундах."""
+    open_round_ids = (
+        await session.execute(
+            select(JuryRound.id).where(JuryRound.status == JuryRoundStatus.OPEN)
+        )
+    ).scalars().all()
+    if not open_round_ids:
+        return []
+
+    affected = (
+        await session.execute(
+            select(JuryVote.round_id)
+            .where(
+                JuryVote.jury_huid == jury_huid,
+                JuryVote.round_id.in_(open_round_ids),
+            )
+            .group_by(JuryVote.round_id)
+        )
+    ).scalars().all()
+
+    await session.execute(
+        delete(JuryVote).where(
+            JuryVote.jury_huid == jury_huid,
+            JuryVote.round_id.in_(open_round_ids),
+        )
+    )
+    return list(affected)
+
+
+async def try_auto_close_rounds_after_revoke(
+    round_ids: list[UUID],
+    *,
+    bot: "Bot | None" = None,
+    session: Optional[AsyncSession] = None,
+) -> None:
+    """Пересчитать all_submitted и закрыть OPEN-раунды при необходимости."""
+    if not round_ids:
+        return
+    async with _open_session_ctx(session) as s:
+        for round_id in round_ids:
+            round_obj = await _get_round(round_id, session=s)
+            if round_obj is None or round_obj.status != JuryRoundStatus.OPEN:
+                continue
+            pool = PoolKey(track=round_obj.track, age_category=round_obj.age_category)
+            jury_for_pool = await get_jury_for_pool(pool, session=s)
+            if not jury_for_pool:
+                continue
+            submitted_huids = (
+                await s.execute(
+                    select(JuryVote.jury_huid)
+                    .where(
+                        JuryVote.round_id == round_id,
+                        JuryVote.state == JuryVoteState.SUBMITTED,
+                    )
+                    .group_by(JuryVote.jury_huid)
+                )
+            ).scalars().all()
+            pool_huids = {m.huid for m in jury_for_pool}
+            if pool_huids.issubset(set(submitted_huids)):
+                if session is None:
+                    await s.commit()
+                await close_round(round_id, session=session, bot=bot)
+
+
+async def auto_shortlist_undersized_pool(
+    pool: PoolKey,
+    *,
+    session: Optional[AsyncSession] = None,
+    bot: "Bot | None" = None,
+) -> int:
+    """Закрыть пул без голосования (< TOP_N работ). Возвращает число работ."""
+    async with _open_session_ctx(session) as s:
+        fixed = await _count_fixed_top_in_pool(
+            track=pool.track,
+            age_category=pool.age_category,
+            session=s,
+        )
+        if fixed > 0:
+            logger.info(
+                "auto_shortlist_undersized_pool: уже финализирован",
+                pool=pool.as_label(),
+                fixed=fixed,
+            )
+            return fixed
+
+        apps = await get_pool_applications(
+            pool,
+            session=s,
+            status_filter=ModerationStatus.DOPUSHCHENO,
+        )
+        if not apps:
+            return 0
+
+        apps_sorted = sorted(apps, key=lambda a: (a.created_at, a.id))
+        for position, app in enumerate(apps_sorted, start=1):
+            await s.execute(
+                update(Application)
+                .where(Application.id == app.id)
+                .values(
+                    jury_status=JuryStatus.V_TOP_10,
+                    pool_position=position,
+                    jury_final_round=None,
+                    jury_decided_by_lot=False,
+                )
+            )
+
+        if session is None:
+            await s.commit()
+
+        count = len(apps_sorted)
+        logger.info(
+            "auto_shortlist_undersized_pool: пул закрыт без голосования",
+            pool=pool.as_label(),
+            works=count,
+        )
+
+    if bot is not None:
+        from services import notifications
+
+        await notifications.notify_moderation_chat_undersized_pool(
+            bot,
+            pool_label=pool.as_label(),
+            works_n=count,
+            top_n=TOP_N,
+        )
+        await maybe_notify_shortlist_ready(bot, session=session)
+    return count
+
+
+async def _notify_round_opened(
+    bot: "Bot | None",
+    *,
+    pool: PoolKey,
+    round_obj: JuryRound,
+    session: AsyncSession,
+    is_new_round: bool,
+) -> None:
+    if bot is None:
+        logger.info(
+            "round_opened без bot — пропуск нотификаций",
+            pool=pool.as_label(),
+            round_no=round_obj.round_no,
+        )
+        return
+
+    candidates = await _get_round_candidates(round_obj, session=session)
+    fixed = await _count_fixed_top_in_pool(
+        track=pool.track,
+        age_category=pool.age_category,
+        session=session,
+    )
+    slots = TOP_N - fixed
+    from services import notifications
+
+    await notifications.notify_moderation_chat_jury_event(
+        bot,
+        event_kind="round_opened",
+        pools=[(pool.track.value, pool.age_category.value)],
+        round_no=round_obj.round_no,
+        candidates_n=len(candidates),
+        slots_n=slots,
+    )
+    if is_new_round:
+        from services import jury_notifications
+
+        jury_members = await get_jury_for_pool(pool, session=session)
+        for member in jury_members:
+            await jury_notifications.maybe_announce_next_task_to_judge(
+                bot,
+                jury_huid=member.huid,
+                trigger="open_round",
+                session=session,
+            )
+
+
+async def _build_close_report(
+    round_obj: JuryRound,
+    *,
+    outcome: _RoundOutcome,
+    candidates: list[Application],
+    losers_count: int,
+    fixed_before: int,
+    pool_completed: bool,
+    lot_applied: bool,
+    next_round_opened: bool,
+    session: AsyncSession,
+) -> RoundCloseReport:
+    remaining_after = TOP_N - fixed_before - len(outcome.above_tie_ids)
+    if lot_applied:
+        remaining_after = 0
+    pool_top_n = await _count_fixed_top_in_pool(
+        track=round_obj.track,
+        age_category=round_obj.age_category,
+        session=session,
+    )
+    next_candidates_n = 0
+    next_slots_n = 0
+    if next_round_opened:
+        next_round = await _get_round_by_pool_no(
+            track=round_obj.track,
+            age_category=round_obj.age_category,
+            round_no=round_obj.round_no + 1,
+            session=session,
+        )
+        if next_round is not None:
+            next_candidates = await _get_round_candidates(next_round, session=session)
+            next_fixed = await _count_fixed_top_in_pool(
+                track=round_obj.track,
+                age_category=round_obj.age_category,
+                session=session,
+            )
+            next_candidates_n = len(next_candidates)
+            next_slots_n = TOP_N - next_fixed
+
+    return RoundCloseReport(
+        candidates_n=len(candidates),
+        slots_n=TOP_N - fixed_before,
+        fixed_top_n_in_round=len(outcome.above_tie_ids),
+        tie_n=len(outcome.tie_ids),
+        losers_n=losers_count,
+        remaining_slots_after=max(remaining_after, 0),
+        pool_completed=pool_completed,
+        lot_applied=lot_applied,
+        next_round_opened=next_round_opened,
+        next_round_candidates_n=next_candidates_n,
+        next_round_slots_n=next_slots_n,
+        pool_top_n=pool_top_n,
+    )
+
+
+async def _notify_round_closed(
+    bot: "Bot | None",
+    *,
+    pool: PoolKey,
+    round_obj: JuryRound,
+    report: RoundCloseReport,
+) -> None:
+    if bot is None:
+        return
+    from services import notifications
+
+    await notifications.notify_moderation_chat_jury_event(
+        bot,
+        event_kind="round_closed",
+        pools=[(pool.track.value, pool.age_category.value)],
+        round_no=round_obj.round_no,
+        close_report=report,
+    )
+
+
 # =====================================================================
 # Открытие раунда
 # =====================================================================
@@ -453,6 +801,7 @@ async def open_round(
     round_no: int,
     candidates: list[Application],
     session: Optional[AsyncSession] = None,
+    bot: "Bot | None" = None,
 ) -> JuryRound:
     """Открыть новый раунд по пулу.
 
@@ -525,6 +874,14 @@ async def open_round(
             deadline_at=round_obj.deadline_at.isoformat(),
             candidates_hint=len(candidates) if candidates else None,
         )
+        pool = PoolKey(track=track, age_category=age_category)
+        await _notify_round_opened(
+            bot,
+            pool=pool,
+            round_obj=round_obj,
+            session=s,
+            is_new_round=True,
+        )
         return round_obj
 
 
@@ -590,6 +947,7 @@ async def submit_votes(
     jury_huid: UUID,
     votes: Mapping[UUID, JuryVoteValue],
     session: Optional[AsyncSession] = None,
+    bot: "Bot | None" = None,
 ) -> None:
     """Зафиксировать оценки судьи в раунде.
 
@@ -665,6 +1023,14 @@ async def submit_votes(
 
         await s.flush()
 
+        from services.access import is_jury
+
+        if not is_jury(jury_huid):
+            await s.rollback()
+            raise PermissionError(
+                "Судья отозван во время отправки оценок"
+            )
+
         pool = PoolKey(track=round_obj.track, age_category=round_obj.age_category)
         jury_for_pool = await get_jury_for_pool(pool, session=s)
         submitted_huids = (
@@ -692,12 +1058,22 @@ async def submit_votes(
             all_submitted=all_submitted,
         )
 
+    if bot is not None:
+        from services import jury_notifications
+
+        await jury_notifications.maybe_announce_next_task_to_judge(
+            bot,
+            jury_huid=jury_huid,
+            trigger="submit_votes",
+            session=session,
+        )
+
     if all_submitted:
         logger.info(
             "Все назначенные судьи проголосовали — автоматическое закрытие раунда",
             round_id=str(round_id),
         )
-        await close_round(round_id, session=session)
+        await close_round(round_id, session=session, bot=bot)
 
 
 # =====================================================================
@@ -709,6 +1085,7 @@ async def close_round(
     round_id: UUID,
     *,
     session: Optional[AsyncSession] = None,
+    bot: "Bot | None" = None,
 ) -> RoundResult:
     """Закрыть раунд по триггеру (полнота / дедлайн / команда модератора).
 
@@ -814,6 +1191,23 @@ async def close_round(
             and auto_lot
             and round_obj.round_no >= max_round
         )
+        pool = PoolKey(track=round_obj.track, age_category=round_obj.age_category)
+        fixed_after = fixed_before + len(outcome.above_tie_ids)
+        pool_completed = (
+            not outcome.is_tied and fixed_after >= TOP_N
+        ) or will_apply_lot
+
+        close_report = await _build_close_report(
+            round_obj,
+            outcome=outcome,
+            candidates=candidates,
+            losers_count=losers_count,
+            fixed_before=fixed_before,
+            pool_completed=pool_completed,
+            lot_applied=False,
+            next_round_opened=needs_next and not will_apply_lot,
+            session=s,
+        )
 
         if session is None:
             await s.commit()
@@ -835,7 +1229,7 @@ async def close_round(
         )
 
         result_dto = RoundResult(
-            pool=PoolKey(track=round_obj.track, age_category=round_obj.age_category),
+            pool=pool,
             round_no=round_obj.round_no,
             top_ids=tuple(outcome.above_tie_ids),
             tie_ids=tuple(outcome.tie_ids),
@@ -844,8 +1238,16 @@ async def close_round(
             closed_at=now,
         )
 
+    await _notify_round_closed(
+        bot,
+        pool=pool,
+        round_obj=round_obj,
+        report=close_report,
+    )
+
     if will_apply_lot:
-        await apply_lot_if_needed(round_id, session=session)
+        await apply_lot_if_needed(round_id, session=session, bot=bot)
+        await maybe_notify_shortlist_ready(bot, session=session)
         return result_dto
 
     if needs_next:
@@ -855,8 +1257,10 @@ async def close_round(
             round_no=round_obj.round_no + 1,
             candidates=[],
             session=session,
+            bot=bot,
         )
 
+    await maybe_notify_shortlist_ready(bot, session=session)
     return result_dto
 
 
@@ -893,6 +1297,7 @@ async def apply_lot_if_needed(
     round_id: UUID,
     *,
     session: Optional[AsyncSession] = None,
+    bot: "Bot | None" = None,
 ) -> list[Application]:
     """Автоматический жребий на оставшиеся вакансии пула.
 
@@ -987,7 +1392,19 @@ async def apply_lot_if_needed(
             tie_zone_size=len(outcome.tie_ids),
             lot_losers=len(lot_losers),
         )
-        return chosen
+        pool = PoolKey(track=round_obj.track, age_category=round_obj.age_category)
+
+    if bot is not None and chosen:
+        from services import notifications
+
+        await notifications.notify_moderation_chat_jury_event(
+            bot,
+            event_kind="lot_applied",
+            pools=[(pool.track.value, pool.age_category.value)],
+            round_no=round_obj.round_no,
+        )
+        await maybe_notify_shortlist_ready(bot, session=session)
+    return chosen
 
 
 # =====================================================================
@@ -1086,6 +1503,7 @@ async def _finalize_pool(
 async def build_shortlist(
     *,
     session: Optional[AsyncSession] = None,
+    bot: "Bot | None" = None,
 ) -> list[Application]:
     """Собрать шорт-лист по всем пулам.
 
@@ -1122,6 +1540,7 @@ async def build_shortlist(
             pools=len(all_pools()),
             total_works=len(all_shortlist),
         )
+        await maybe_notify_shortlist_ready(bot, session=s)
         return all_shortlist
 
 
@@ -1344,4 +1763,11 @@ __all__ = [
     "get_open_tasks_for_jury",
     "get_jury_progress",
     "get_round_candidates_with_drafts",
+    "purge_inactive_jury_votes_in_open_rounds",
+    "try_auto_close_rounds_after_revoke",
+    "auto_shortlist_undersized_pool",
+    "is_global_shortlist_ready",
+    "is_pool_done",
+    "maybe_notify_shortlist_ready",
+    "_count_dopushcheno_in_pool",
 ]
