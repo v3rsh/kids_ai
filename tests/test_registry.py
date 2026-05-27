@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import uuid as uuid_pkg
 from datetime import datetime
+from io import BytesIO
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
+from openpyxl import load_workbook
 
 from database.models import (
     AgeCategory,
@@ -231,12 +233,17 @@ class TestRenderRegistryWorkbook:
             jury_by_huid={},
             aggregates_by_app={},
         )
-        # XLSX = ZIP-архив, первые 2 байта = "PK".
         assert payload[:2] == b"PK"
-        # 27 колонок основного листа (после объединения 23–25 в одну).
         assert n_cols == 27
-        # 1 шапка + 1 строка данных.
         assert n_rows == 2
+        wb = load_workbook(BytesIO(payload))
+        ws_main = wb["Реестр"]
+        assert ws_main.freeze_panes == "A2"
+        assert "RegistryMain" in ws_main.tables
+        assert ws_main.tables["RegistryMain"].ref.startswith("A1:")
+        ws_jury = wb["Голосование жюри"]
+        assert ws_jury.freeze_panes == "D2"
+        assert "JuryDetail" not in ws_jury.tables
 
     def test_empty_applications_still_produces_header(self):
         payload, n_cols, n_rows = _render_registry_workbook(
@@ -248,7 +255,14 @@ class TestRenderRegistryWorkbook:
         )
         assert payload[:2] == b"PK"
         assert n_cols == 27
-        assert n_rows == 1  # одна только шапка
+        assert n_rows == 1
+        wb = load_workbook(BytesIO(payload))
+        ws_main = wb["Реестр"]
+        assert ws_main.freeze_panes == "A2"
+        assert "RegistryMain" not in ws_main.tables
+        ws_jury = wb["Голосование жюри"]
+        assert ws_jury.freeze_panes == "D2"
+        assert "JuryDetail" not in ws_jury.tables
 
     def test_round_yes_column_formatting(self):
         """Колонка 23 ``Голоса «Достоин» по раундам`` — формат ``r1:N, r2:N``."""

@@ -21,6 +21,7 @@ from loguru import logger
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.worksheet.worksheet import Worksheet
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -327,14 +328,26 @@ def _apply_wrap_text(
             ws.cell(row=row, column=idx).alignment = _WRAP_ALIGN
 
 
-def _set_freeze_and_filter(
-    ws: Worksheet, freeze_at: str, n_cols: int, n_rows: int
-) -> None:
-    """Заморозка шапки и autofilter на весь диапазон."""
+def _set_freeze_panes(ws: Worksheet, freeze_at: str) -> None:
+    """Установить freeze_panes для фиксации шапки при скролле."""
     ws.freeze_panes = freeze_at
-    if n_cols >= 1 and n_rows >= 1:
-        last_letter = get_column_letter(n_cols)
-        ws.auto_filter.ref = f"A1:{last_letter}{n_rows}"
+
+
+def _apply_excel_table(
+    ws: Worksheet, n_cols: int, n_rows: int, display_name: str
+) -> None:
+    if n_rows <= 1:
+        return
+    ref = f"A1:{get_column_letter(n_cols)}{n_rows}"
+    tab = Table(displayName=display_name, ref=ref)
+    tab.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium9",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    ws.add_table(tab)
 
 
 # =====================================================================
@@ -418,7 +431,8 @@ def _build_main_sheet(
         _apply_wrap_text(ws, row_offset, _MAIN_COLUMNS)
     n_cols = len(_MAIN_COLUMNS)
     n_rows = 1 + len(applications)
-    _set_freeze_and_filter(ws, "A2", n_cols, n_rows)
+    ws.freeze_panes = "A2"
+    _apply_excel_table(ws, n_cols, n_rows, "RegistryMain")
     return n_rows, n_cols
 
 
@@ -504,8 +518,8 @@ def _build_jury_detail_sheet(
 
     n_cols = len(columns)
     n_rows = 1 + len(apps_with_votes)
-    # Freeze: шапка + 3 фикс. колонки → D2.
-    _set_freeze_and_filter(ws, "D2", n_cols, n_rows)
+    ws.freeze_panes = "D2"
+    _apply_excel_table(ws, n_cols, n_rows, "JuryDetail")
     return n_rows, n_cols
 
 
@@ -765,7 +779,7 @@ def _build_shortlist_sheet(
             current_row += 1
 
     n_rows = current_row - 1
-    _set_freeze_and_filter(ws, "A2", n_cols, n_rows)
+    _set_freeze_panes(ws, "A2")
     return n_rows, n_cols
 
 
