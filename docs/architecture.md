@@ -47,7 +47,10 @@ app/
 │   ├── jury_tasks.py    # карусель задач, голосование «Да/Нет», кнопка «Отправить оценки»
 │   ├── jury_status.py   # /jury_status — прогресс судьи
 │   ├── admin.py         # /admin, /admin_help, /admin_section, /disk, /intake_mode,
-│   │                    # /admin_state, опасные операции, шорткаты модератора
+│   │                    # /admin_intake_open, /admin_state, опасные операции,
+│   │                    # шорткаты модератора
+│   ├── admin_export.py  # /admin_export_files, /admin_export_shortlist_files,
+│   │                    # /admin_export_app — архивная выгрузка через bot DM
 │   ├── admin_roles.py   # discovery-кнопки, /admin_role_add, /admin_roles,
 │   │                    # /admin_role_revoke (+ confirm), welcome-DM
 │   ├── admin_chat.py    # раздел «Чат модерации»: status / test / rediscover
@@ -68,6 +71,9 @@ app/
 │   ├── jury.py          # алгоритм раундов + формирование шорт-листа
 │   ├── pools.py         # пулы (Track × AgeCategory) + sync_pool_assignments_from_config
 │   ├── intake_mode.py   # переключение files/links + maybe_auto_switch_to_links
+│   ├── intake_state.py  # is_intake_open / set_intake_open (закрытие приёма после 15.06)
+│   ├── attachments_export.py # архивная выгрузка папки data/attachments в памяти
+│   │                    # (selector ALL/SHORTLIST, ZIP-per-BR-ID, manifest.csv, links.txt)
 │   ├── moderation.py    # /queue / /status / /comment, агрегаты /stats
 │   └── admin.py         # overview_counters, build_admin_stats_report (админ-меню)
 ├── database/            # SQLAlchemy
@@ -299,6 +305,9 @@ Env-seed (`MODERATOR_HUIDS` / `JURY_HUIDS`) **отключён** — соста�
 |---|---|
 | `moderation_chat_id` | UUID группового чата «Безопасные рисунки — модерация». Назначается через `/admin_chat_approve` (карточка прилетает админу, когда бота добавляют в новый групповой чат). На старте бот валидирует чат через `bot.chat_info`; если не участник — настройка сбрасывается. |
 | `intake_mode` | Текущий режим приёма заявок (FILES / LINKS). |
+| `intake_open` | `true`/`false`. Флаг «приём заявок открыт». Управляется командой `/admin_intake_open` (см. `services/intake_state`). При `false` `cmd_apply` блокирует создание новых анкет; уже созданные LINKS-черновики (без `cloud_link`) могут продолжать слать ссылку. Дефолт при отсутствии записи — `true`. |
+| `jury_max_round` | Порог раундов жюри (см. `unlimited_jury_rounds`). |
+| `jury_auto_lot` | `on`/`off`: автоматический жребий после порога раундов. |
 
 ### jury_pool_assignments
 
@@ -346,9 +355,11 @@ Env-seed (`MODERATOR_HUIDS` / `JURY_HUIDS`) **отключён** — соста�
 
 ### app_settings
 
-Key-value runtime-настройки. Минимум — `intake_mode` (`files`/`links`),
-чтобы переключение `/intake_mode` или автопереход на 95 % диска
-переживало рестарт.
+Key-value runtime-настройки. Кроме `intake_mode`, в таблице живут
+`intake_open` (см. `services/intake_state` — закрытие приёма заявок
+после 15 июня), `moderation_chat_id`, а также параметры жюри
+(`jury_max_round`, `jury_auto_lot`). Все ключи переживают рестарт
+контейнера и кэшируются in-process на 30 секунд.
 
 ### disk_alerts
 
@@ -497,7 +508,7 @@ discovery: команды `/moderator` и `/jury` отправляют адми�
 |---|---|
 | 👥 Роли | `/admin_roles`, `/admin_role_add` (FSM: роль → HUID), `/admin_role_resend_welcome`, отзыв через `/admin_role_revoke` → `/admin_role_revoke_confirm` |
 | 💬 Чат модерации | `/admin_chat_status`, `/admin_chat_test` (FSM: свой текст), `/admin_chat_rediscover`, сброс через опасные операции |
-| 🖥 Система | `/disk`, `/intake_mode`, `/admin_state`, `/admin_disk_alerts`, `/admin_jury_flush` |
+| 🖥 Система | `/disk`, `/intake_mode`, `/admin_intake_open`, `/admin_jury_settings`, `/admin_state`, `/admin_disk_alerts`, `/admin_jury_flush`, `/admin_export_files`, `/admin_export_shortlist_files` |
 | 🙋 Пользователи | `/admin_user_find` (FSM: HUID), карточка с resync / apps / назначением роли |
 | 📊 Статистика | `/admin_stats` + шорткаты `/stats today` / `/stats all` |
 | 🛡 Меню модератора | шорткаты `/queue`, `/browse`, `/admin_shortcut_find` (FSM: BR-ID), `/export`, … |
@@ -667,6 +678,62 @@ ATTACHMENTS_DIR/
 (`services/intake_mode.maybe_auto_switch_to_links`). История
 автопредупреждений — в таблице `disk_alerts` (дедупликация: одно
 сообщение на порог в сутки, а не раз в 30 минут).
+
+### Закрытие приёма заявок
+
+После 15.06 админ закрывает приём через `/admin_intake_open` (раздел
+«🖥 Система»). Источник правды — `app_settings.intake_open` (`true`/`false`,
+дефолт `true`). Сервис: `app/services/intake_state.py`. Влияние:
+
+- `handlers/user.cmd_apply` — гард в начале: показывает
+  `INTAKE_CLOSED_TEXT` + `intake_closed_bubbles` («Мои заявки» / «Контакты»
+  / «Главное меню»);
+- `handlers/user_confirm.cmd_submit` — повторный гард для защиты от гонки
+  (юзер начал анкету до закрытия, заполнял дольше):
+  очищает FSM, рисует тот же экран;
+- LINKS-черновики (`intake_mode=LINKS, cloud_link IS NULL`) **продолжают
+  принимать ссылку**: `/resume_link` и кнопка «🔗 Прислать ссылку» работают,
+  иначе уже поданные заявки нельзя было бы дозавершить;
+- бейдж в `admin_main_menu_bubbles` (`🔒closed` / `open`), отдельная
+  строка в `/admin_state` и `/disk`.
+
+### Архивная выгрузка `data/attachments`
+
+Команды `/admin_export_files` (все заявки) и
+`/admin_export_shortlist_files` (только `JuryStatus.V_TOP_10` —
+шорт-лист) собирают по одному ZIP на `BR-ID` **в памяти** и шлют
+архивы вложениями в DM-чат админа. Цель — забрать каталог даже
+когда диск 95 % занят и SSH-доступа к серверу нет.
+
+Сервис: `app/services/attachments_export.py` —
+`iter_attachments_export(selector)` отдаёт `AsyncIterator[ExportItem]`:
+
+1. ZIP-ы по заявкам (`kind="zip"`). Внутри ZIP сохраняется относительный
+   путь из `ATTACHMENTS_DIR` — при распаковке восстанавливается дерево
+   `<дата>/<трек>/<возраст>/<папка-заявки>/`. Метаданные (`meta.txt`,
+   `description.txt`, `reason.txt`) добавляются всегда, бинарные файлы —
+   если суммарный размер заявки не превышает `EXPORT_MAX_PART_BYTES`
+   (по умолчанию 90 МБ; иначе статус `oversize_meta_only`).
+2. `links.txt` (`kind="links"`) — построчный «BR-ID\\t<cloud_link>» по
+   всем LINKS-заявкам, чтобы админ забирал бинарные файлы из облака
+   вручную.
+3. `manifest.csv` (`kind="manifest"`, UTF-8 + BOM, разделитель `;`) —
+   карта выгрузки: `br_id, track, age_category, intake_mode,
+   moderation_status, jury_status, status, files_count, files_bytes,
+   cloud_link, inner_path, zip_filename`.
+4. `summary` (`kind="summary"`) — итоговая статистика выгрузки.
+
+LINKS-заявки в архиве:
+- с `cloud_link` → mini-ZIP с `meta.txt` и `cloud_link.txt`,
+  `manifest.status=links_only`;
+- без `cloud_link` → ZIP не шлём, `manifest.status=pending_link`.
+
+Запуск — двухшаговый: команда показывает confirm, `cmd_admin_confirm`
+стартует фоновый `asyncio.Task` (`handlers/admin_export.start_export_task`)
+и сразу возвращает «🚀 запущено». Между отправками — пауза
+`config.EXPORT_PAUSE_MS` (дефолт 800 мс), чтобы не упереться в
+rate-limit eXpress-CTS. Точечная переотправка одного архива —
+`/admin_export_app BR-2026-NNNN`.
 
 ### Резервный сценарий приёма по ссылкам (§33.6 ТЗ)
 

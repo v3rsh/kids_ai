@@ -122,6 +122,8 @@
 | `DISK_WARN_PCT` | Порог предупреждения в чат модерации | `80` |
 | `DISK_BLOCK_PCT` | Порог блокировки приёма + автопереключение в режим LINKS | `95` |
 | `DISK_CHECK_INTERVAL_SEC` | Интервал фонового монитора диска (запускается только при `ENABLE_SCHEDULER=true`). Сам алёрт дедуплицируется в БД на 24 ч | `1800` |
+| `EXPORT_PAUSE_MS` | Пауза между отправками отдельных архивов в DM-чат админа в `/admin_export_files` / `/admin_export_shortlist_files`. Защищает CTS от rate-limit | `800` |
+| `EXPORT_MAX_PART_BYTES` | Мягкий лимит размера ZIP по одной заявке. Если сумма файлов больше — в архиве остаются только `meta.txt`/`description.txt`/`reason.txt`, в манифесте статус `oversize_meta_only` | `94371840` (90 МБ) |
 
 ### PostgreSQL
 

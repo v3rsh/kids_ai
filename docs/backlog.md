@@ -12,6 +12,56 @@
 
 ## Done
 
+### Закрытие приёма заявок и архивный экспорт каталога — ✅ выполнено
+
+Реализовано двумя независимыми, но идущими в одном PR блоками — в
+ответ на требования заказчика «после 15.06 закрыть приём» и «забрать
+весь каталог при 95 % занятого диска без SSH к серверу». См.
+[`architecture.md`](architecture.md) → разделы «Закрытие приёма
+заявок» и «Архивная выгрузка `data/attachments`».
+
+Состав изменений:
+
+- `app/services/intake_state.py` — UPSERT/READ ключа `intake_open` в
+  `app_settings` (дефолт — открыт); тесты `tests/test_intake_state.py`.
+- Гарды: `handlers/user.cmd_apply` и `handlers/user_confirm.cmd_submit`
+  показывают `INTAKE_CLOSED_TEXT` + `intake_closed_bubbles`. LINKS-черновики
+  (cloud_link=NULL) продолжают работать через `/resume_link`.
+- Команда `/admin_intake_open` (раздел «🖥 Система»), ветки
+  `close_intake`/`reopen_intake` в `cmd_admin_confirm`, бейдж
+  `🔒closed`/`open` в `admin_main_menu_bubbles`, строки в `/admin_state`
+  и `/disk`.
+- `app/services/attachments_export.py` — `iter_attachments_export(selector)`
+  с пресетами `ALL` / `SHORTLIST` (через
+  `services.registry.fetch_shortlist_applications`), zip-per-BR-ID в
+  памяти, `manifest.csv` (UTF-8+BOM, `;`), `links.txt`, `summary`.
+  LINKS-заявки попадают как mini-ZIP с `meta.txt` + `cloud_link.txt`;
+  без ссылки — `manifest.status=pending_link`. При превышении
+  `EXPORT_MAX_PART_BYTES` — `oversize_meta_only`.
+- `app/handlers/admin_export.py` — `/admin_export_files`,
+  `/admin_export_shortlist_files` (двухшаговое подтверждение,
+  фоновый `asyncio.Task`), `/admin_export_app BR-...` для точечной
+  переотправки. Пауза `EXPORT_PAUSE_MS` между сообщениями.
+- env-параметры: `EXPORT_PAUSE_MS` (800 мс) и
+  `EXPORT_MAX_PART_BYTES` (90 МБ) в [`deployment.md`](deployment.md).
+- Тесты: `tests/test_intake_state.py` (toggle/persistence),
+  `tests/test_attachments_export.py` (FILES/LINKS/oversize/manifest/links).
+
+### Что не вошло (follow-up при необходимости)
+
+1. **Автоматическое закрытие приёма по дате** (cron/scheduler-job на
+   00:00 16.06 МСК → `set_intake_open(False)`). Сейчас закрывается
+   вручную одной кнопкой; явное действие админа полезно для аудита.
+2. **Прогресс-бар выгрузки** (`/admin_export_status`). Сейчас фоновая
+   задача шлёт архивы по одному, summary приходит в конце; для десятков
+   заявок этого хватает, для тысяч можно добавить промежуточные
+   «n/total отправлено» сообщения.
+3. **Хеши + дедупликация ZIP-ов**. Если выгрузка прерывается и
+   запускается повторно — текущая реализация шлёт всё заново.
+   На наших объёмах не критично, но для миграции к большому конкурсу
+   стоит добавить idempotency-key в `manifest.csv` и пропуск
+   уже отправленных BR-ID.
+
 ### LINKS-UX — пользовательский UX режима LINKS — ✅ выполнено
 
 Реализовано по варианту C (submit → BR-ID в БД → инструкция со ссылкой).
