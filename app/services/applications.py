@@ -228,6 +228,109 @@ class MultiSubmissionGroup:
     entries: tuple[MultiSubmissionEntry, ...]
 
 
+@dataclass(frozen=True)
+class ParentTrackEntry:
+    """Заявка внутри группы «родитель + трек» для модератора."""
+
+    br_id: str
+    child_name: str
+    child_age: int
+    title: str
+    moderation_status: str
+    created_at: datetime
+    is_actual_version: bool
+    is_strict_match: bool = False
+
+
+@dataclass(frozen=True)
+class ParentTrackGroup:
+    """Несколько активных заявок одного родителя в одном треке."""
+
+    parent_huid: UUID
+    parent_full_name: str
+    track: Track
+    entries: tuple[ParentTrackEntry, ...]
+
+
+def _application_to_parent_track_entry(
+    app: Application,
+    *,
+    anchor: Application | None = None,
+) -> ParentTrackEntry:
+    is_strict = False
+    if anchor is not None:
+        is_strict = submission_keys_match(
+            child_name_a=anchor.child_name,
+            child_age_a=anchor.child_age,
+            child_name_b=app.child_name,
+            child_age_b=app.child_age,
+        )
+    return ParentTrackEntry(
+        br_id=app.br_id,
+        child_name=app.child_name,
+        child_age=app.child_age,
+        title=app.title,
+        moderation_status=app.moderation_status.value,
+        created_at=app.created_at,
+        is_actual_version=app.is_actual_version,
+        is_strict_match=is_strict,
+    )
+
+
+def _group_by_parent_track(
+    apps: Sequence[Application],
+    *,
+    only_active: bool,
+) -> list[ParentTrackGroup]:
+    """Сгруппировать заявки по (parent, track), оставить count>1."""
+    buckets: dict[tuple[UUID, Track], list[Application]] = {}
+    for app in apps:
+        if only_active and app.moderation_status == ModerationStatus.OTKLONENO:
+            continue
+        key = (app.parent_huid, app.track)
+        buckets.setdefault(key, []).append(app)
+
+    groups: list[ParentTrackGroup] = []
+    for (_parent, _track), members in buckets.items():
+        if len(members) < 2:
+            continue
+        members_sorted = sorted(
+            members, key=lambda a: (a.created_at, str(a.id)), reverse=True
+        )
+        sample = members_sorted[0]
+        entries = tuple(
+            _application_to_parent_track_entry(m) for m in members_sorted
+        )
+        groups.append(
+            ParentTrackGroup(
+                parent_huid=sample.parent_huid,
+                parent_full_name=sample.parent_full_name,
+                track=sample.track,
+                entries=entries,
+            )
+        )
+    groups.sort(
+        key=lambda g: (g.parent_full_name.lower(), g.track.value),
+    )
+    return groups
+
+
+def strict_duplicate_br_ids_in_group(
+    group: ParentTrackGroup,
+) -> set[str]:
+    """BR-ID заявок, входящих в strict-цепочки (≥2 с одним child_key)."""
+    by_child: dict[str, list[ParentTrackEntry]] = {}
+    for entry in group.entries:
+        key = child_submission_key(entry.child_name, entry.child_age)
+        by_child.setdefault(key, []).append(entry)
+    ids: set[str] = set()
+    for members in by_child.values():
+        if len(members) >= 2:
+            for entry in members:
+                ids.add(entry.br_id)
+    return ids
+
+
 def _group_applications(
     apps: Sequence[Application],
     *,
@@ -299,8 +402,76 @@ async def find_multi_submission_groups(
 
 
 async def count_multi_submission_groups(*, only_active: bool = True) -> int:
-    """Число групп с нарушением лимита «1 работа в трек»."""
-    return len(await find_multi_submission_groups(only_active=only_active))
+    """Число групп «несколько заявок у родителя в одном треке»."""
+    return len(await find_parent_track_groups(only_active=only_active))
+
+
+async def find_parent_track_groups(
+    *,
+    only_active: bool = True,
+) -> list[ParentTrackGroup]:
+    """Группы с более чем одной заявкой на (родитель, трек).
+
+    Один SELECT по всем заявкам, группировка в Python (без N+1).
+    """
+    async with get_session()() as session:
+        result = await session.execute(
+            select(Application).order_by(Application.created_at.desc())
+        )
+        apps = list(result.scalars().all())
+    return _group_by_parent_track(apps, only_active=only_active)
+
+
+async def find_related_for_moderator(
+    br_id: str,
+) -> tuple[Application | None, list[ParentTrackEntry]]:
+    """Связанные «живые» заявки того же родителя в том же треке.
+
+    Возвращает anchor-заявку и список других заявок (без текущей).
+    Strict-совпадения (тот же ребёнок) — первыми.
+    """
+    needle = (br_id or "").strip().upper()
+    if not needle:
+        return None, []
+
+    async with get_session()() as session:
+        result = await session.execute(
+            select(Application).where(Application.br_id == needle)
+        )
+        anchor: Application | None = result.scalar_one_or_none()
+        if anchor is None:
+            return None, []
+
+        related_result = await session.execute(
+            select(Application)
+            .where(
+                Application.parent_huid == anchor.parent_huid,
+                Application.track == anchor.track,
+                Application.moderation_status != ModerationStatus.OTKLONENO,
+                Application.br_id != anchor.br_id,
+            )
+            .order_by(Application.created_at.desc())
+        )
+        related: list[ParentTrackEntry] = [
+            _application_to_parent_track_entry(cand, anchor=anchor)
+            for cand in related_result.scalars()
+        ]
+
+    related.sort(
+        key=lambda e: (
+            0 if e.is_strict_match else 1,
+            -e.created_at.timestamp(),
+        )
+    )
+    return anchor, related
+
+
+async def find_related_for_application(
+    app: Application,
+) -> list[ParentTrackEntry]:
+    """Связанные заявки для уже загруженной anchor-заявки."""
+    _, related = await find_related_for_moderator(app.br_id)
+    return related
 
 
 async def find_active_siblings_for_application(
@@ -342,15 +513,26 @@ def multi_submission_br_ids_from_applications(
     *,
     only_active: bool = True,
 ) -> set[str]:
-    """BR-ID заявок, входящих в группы повторной подачи (из уже загруженного списка)."""
-    groups = _group_applications(apps, only_active=only_active)
-    return application_ids_in_multi_submission_groups(groups)
+    """BR-ID заявок в группах «родитель + трек» (из уже загруженного списка)."""
+    groups = _group_by_parent_track(apps, only_active=only_active)
+    return application_ids_in_parent_track_groups(groups)
 
 
 def application_ids_in_multi_submission_groups(
     groups: Sequence[MultiSubmissionGroup],
 ) -> set[str]:
-    """Множество BR-ID всех заявок из групп повторных подач."""
+    """Множество BR-ID всех заявок из strict-групп (ребёнок + трек)."""
+    ids: set[str] = set()
+    for group in groups:
+        for entry in group.entries:
+            ids.add(entry.br_id)
+    return ids
+
+
+def application_ids_in_parent_track_groups(
+    groups: Sequence[ParentTrackGroup],
+) -> set[str]:
+    """Множество BR-ID всех заявок из групп «родитель + трек»."""
     ids: set[str] = set()
     for group in groups:
         for entry in group.entries:
@@ -892,7 +1074,10 @@ __all__ = [
     "MultiSubmissionEntry",
     "MultiSubmissionGroup",
     "ParentApplicationsPage",
+    "ParentTrackEntry",
+    "ParentTrackGroup",
     "application_ids_in_multi_submission_groups",
+    "application_ids_in_parent_track_groups",
     "assign_br_id",
     "child_submission_key",
     "clear_application_work_files",
@@ -900,7 +1085,10 @@ __all__ = [
     "create_application",
     "find_active_siblings_for_application",
     "find_multi_submission_groups",
+    "find_parent_track_groups",
     "find_possible_duplicate",
+    "find_related_for_application",
+    "find_related_for_moderator",
     "get_for_participant",
     "list_by_parent_huid",
     "mark_as_actual_version",
@@ -908,6 +1096,7 @@ __all__ = [
     "normalize_child_name",
     "register_application_files",
     "set_application_cloud_link",
+    "strict_duplicate_br_ids_in_group",
     "submission_keys_match",
     "update_application_for_fix",
 ]

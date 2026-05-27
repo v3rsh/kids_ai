@@ -26,6 +26,7 @@ import pytest
 from services.applications import (
     ApplicationFileSpec,
     _group_applications,
+    _group_by_parent_track,
     _select_next_br_number,
     child_submission_key,
     find_possible_duplicate,
@@ -33,6 +34,7 @@ from services.applications import (
     normalize_child_name,
     register_application_files,
     set_application_cloud_link,
+    strict_duplicate_br_ids_in_group,
     submission_keys_match,
 )
 from database.models import ModerationStatus, Track
@@ -137,6 +139,7 @@ class TestGroupApplications:
                 child_age=7,
                 track=Track.TRADITIONAL,
                 br_id="BR-2026-0001",
+                title="Рисунок 1",
                 moderation_status=ModerationStatus.NA_MODERATSII,
                 created_at=SimpleNamespace(),
                 is_actual_version=True,
@@ -149,6 +152,7 @@ class TestGroupApplications:
                 child_age=7,
                 track=Track.TRADITIONAL,
                 br_id="BR-2026-0002",
+                title="Рисунок 2",
                 moderation_status=ModerationStatus.DOPUSHCHENO,
                 created_at=SimpleNamespace(),
                 is_actual_version=False,
@@ -177,6 +181,7 @@ class TestGroupApplications:
                 child_age=7,
                 track=Track.AI,
                 br_id="BR-2026-0001",
+                title="A",
                 moderation_status=ModerationStatus.OTKLONENO,
                 created_at=datetime(2026, 6, 1),
                 is_actual_version=False,
@@ -189,6 +194,7 @@ class TestGroupApplications:
                 child_age=7,
                 track=Track.AI,
                 br_id="BR-2026-0002",
+                title="B",
                 moderation_status=ModerationStatus.NA_MODERATSII,
                 created_at=datetime(2026, 6, 2),
                 is_actual_version=True,
@@ -196,6 +202,98 @@ class TestGroupApplications:
             ),
         ]
         assert _group_applications(apps, only_active=True) == []
+
+
+class TestGroupByParentTrack:
+    def test_groups_different_child_names_same_parent_track(self):
+        parent = uuid.uuid4()
+        from datetime import datetime
+
+        apps = [
+            SimpleNamespace(
+                parent_huid=parent,
+                parent_full_name="Иванов",
+                child_name="Маша",
+                child_age=7,
+                track=Track.TRADITIONAL,
+                br_id="BR-2026-0001",
+                title="Рисунок 1",
+                moderation_status=ModerationStatus.NA_MODERATSII,
+                created_at=datetime(2026, 6, 1),
+                is_actual_version=True,
+                id=uuid.uuid4(),
+            ),
+            SimpleNamespace(
+                parent_huid=parent,
+                parent_full_name="Иванов",
+                child_name="Мария",
+                child_age=7,
+                track=Track.TRADITIONAL,
+                br_id="BR-2026-0002",
+                title="Рисунок 2",
+                moderation_status=ModerationStatus.DOPUSHCHENO,
+                created_at=datetime(2026, 6, 2),
+                is_actual_version=False,
+                id=uuid.uuid4(),
+            ),
+        ]
+        groups = _group_by_parent_track(apps, only_active=True)
+        assert len(groups) == 1
+        assert len(groups[0].entries) == 2
+        assert multi_submission_br_ids_from_applications(apps) == {
+            "BR-2026-0001",
+            "BR-2026-0002",
+        }
+
+    def test_strict_duplicate_br_ids_only_for_same_child(self):
+        parent = uuid.uuid4()
+        from datetime import datetime
+
+        apps = [
+            SimpleNamespace(
+                parent_huid=parent,
+                parent_full_name="Иванов",
+                child_name="Маша",
+                child_age=7,
+                track=Track.AI,
+                br_id="BR-2026-0001",
+                title="A",
+                moderation_status=ModerationStatus.NA_MODERATSII,
+                created_at=datetime(2026, 6, 1),
+                is_actual_version=True,
+                id=uuid.uuid4(),
+            ),
+            SimpleNamespace(
+                parent_huid=parent,
+                parent_full_name="Иванов",
+                child_name="Маша",
+                child_age=7,
+                track=Track.AI,
+                br_id="BR-2026-0002",
+                title="B",
+                moderation_status=ModerationStatus.NA_MODERATSII,
+                created_at=datetime(2026, 6, 2),
+                is_actual_version=False,
+                id=uuid.uuid4(),
+            ),
+            SimpleNamespace(
+                parent_huid=parent,
+                parent_full_name="Иванов",
+                child_name="Петя",
+                child_age=9,
+                track=Track.AI,
+                br_id="BR-2026-0003",
+                title="C",
+                moderation_status=ModerationStatus.NA_MODERATSII,
+                created_at=datetime(2026, 6, 3),
+                is_actual_version=False,
+                id=uuid.uuid4(),
+            ),
+        ]
+        groups = _group_by_parent_track(apps, only_active=True)
+        assert len(groups) == 1
+        strict_ids = strict_duplicate_br_ids_in_group(groups[0])
+        assert strict_ids == {"BR-2026-0001", "BR-2026-0002"}
 
 
 class TestFindPossibleDuplicate:

@@ -43,6 +43,7 @@ from .moderator_actions import collector as moderator_actions_collector
 from .moderator_export import collector as moderator_export_collector
 from .moderator_jury_admin import collector as moderator_jury_admin_collector
 from .moderator_multi_subs import collector as moderator_multi_subs_collector
+from .moderator_similar import collector as moderator_similar_collector
 
 # Ветка жюри: главное меню, задачи, статус прогресса.
 from .jury import collector as jury_collector
@@ -87,6 +88,7 @@ def get_all_collectors() -> list:
         moderator_export_collector,
         moderator_jury_admin_collector,
         moderator_multi_subs_collector,
+        moderator_similar_collector,
         # Ветка C — жюри
         jury_collector,
         jury_tasks_collector,

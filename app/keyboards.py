@@ -232,7 +232,9 @@ def moderator_menu_bubbles() -> BubbleMarkup:
     bubbles = BubbleMarkup()
     bubbles.add_button(command="/queue", label="📋 Очередь")
     bubbles.add_button(
-        command="/multi_subs", label="⚠️ Повторные заявки", new_row=True
+        command="/multi_subs",
+        label="⚠️ Несколько заявок (родитель + трек)",
+        new_row=True,
     )
     bubbles.add_button(
         command="/m_accepted", label="✅ Принятые заявки", new_row=True

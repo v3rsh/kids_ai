@@ -21,11 +21,25 @@ from fsm.keys import (
 )
 
 ModeratorNavKind = Literal[
-    "queue", "browse", "section", "multi_subs", "admin_find", "direct"
+    "queue",
+    "browse",
+    "section",
+    "multi_subs",
+    "similar_apps",
+    "admin_find",
+    "direct",
 ]
 
 _VALID_KINDS: frozenset[str] = frozenset(
-    {"queue", "browse", "section", "multi_subs", "admin_find", "direct"}
+    {
+        "queue",
+        "browse",
+        "section",
+        "multi_subs",
+        "similar_apps",
+        "admin_find",
+        "direct",
+    }
 )
 
 _BACK_LABELS: dict[ModeratorNavKind, str] = {
@@ -33,6 +47,7 @@ _BACK_LABELS: dict[ModeratorNavKind, str] = {
     "queue": "◀ К очереди",
     "browse": "◀ К карусели",
     "multi_subs": "◀ К повторным",
+    "similar_apps": "◀ К похожим",
     "admin_find": "◀ В админку",
 }
 
@@ -47,6 +62,8 @@ class ModeratorNavOrigin:
     section_age: str | None = None
     section_page: int = 1
     multi_subs_page: int = 1
+    similar_src_br_id: str | None = None
+    anchor_return: ModeratorNavOrigin | None = None
 
     def to_data(self) -> dict[str, str]:
         """Сериализация в payload кнопки pybotx."""
@@ -61,10 +78,18 @@ class ModeratorNavOrigin:
             payload["p"] = str(self.section_page)
         elif self.kind == "multi_subs":
             payload["p"] = str(self.multi_subs_page)
+        elif self.kind == "similar_apps":
+            if self.similar_src_br_id:
+                payload["src"] = self.similar_src_br_id
+            if self.anchor_return is not None:
+                payload.update(_encode_return_origin(self.anchor_return))
         return payload
 
     def to_dict(self) -> dict[str, Any]:
         """Сериализация для FSM-кеша."""
+        anchor_return_dict: dict[str, Any] | None = None
+        if self.anchor_return is not None:
+            anchor_return_dict = self.anchor_return.to_dict()
         return {
             "kind": self.kind,
             "section_status": self.section_status,
@@ -72,6 +97,8 @@ class ModeratorNavOrigin:
             "section_age": self.section_age,
             "section_page": self.section_page,
             "multi_subs_page": self.multi_subs_page,
+            "similar_src_br_id": self.similar_src_br_id,
+            "anchor_return": anchor_return_dict,
         }
 
     @classmethod
@@ -81,6 +108,12 @@ class ModeratorNavOrigin:
         kind = raw.get("kind") or "direct"
         if kind not in _VALID_KINDS:
             kind = "direct"
+        anchor_raw = raw.get("anchor_return")
+        anchor_return = (
+            cls.from_dict(anchor_raw)
+            if isinstance(anchor_raw, dict)
+            else None
+        )
         return cls(
             kind=kind,  # type: ignore[arg-type]
             section_status=raw.get("section_status"),
@@ -88,7 +121,52 @@ class ModeratorNavOrigin:
             section_age=raw.get("section_age"),
             section_page=max(1, int(raw.get("section_page") or 1)),
             multi_subs_page=max(1, int(raw.get("multi_subs_page") or 1)),
+            similar_src_br_id=raw.get("similar_src_br_id"),
+            anchor_return=anchor_return,
         )
+
+
+def _encode_return_origin(origin: ModeratorNavOrigin) -> dict[str, str]:
+    """Закодировать origin «якорной» карточки для экрана похожих работ."""
+    payload: dict[str, str] = {"ret": origin.kind}
+    if origin.kind == "section":
+        if origin.section_status:
+            payload["ret_st"] = origin.section_status
+        if origin.section_track:
+            payload["ret_tr"] = origin.section_track
+        if origin.section_age:
+            payload["ret_ag"] = origin.section_age
+        payload["ret_p"] = str(origin.section_page)
+    elif origin.kind == "multi_subs":
+        payload["ret_p"] = str(origin.multi_subs_page)
+    return payload
+
+
+def _decode_return_origin(data: dict[str, str]) -> ModeratorNavOrigin | None:
+    ret_kind = data.get("ret")
+    if not ret_kind or ret_kind not in _VALID_KINDS:
+        return None
+    page_raw = data.get("ret_p")
+    try:
+        page = max(1, int(page_raw)) if page_raw is not None else 1
+    except (TypeError, ValueError):
+        page = 1
+    if ret_kind == "section":
+        return ModeratorNavOrigin(
+            kind="section",
+            section_status=data.get("ret_st"),
+            section_track=data.get("ret_tr"),
+            section_age=data.get("ret_ag"),
+            section_page=page,
+        )
+    if ret_kind == "multi_subs":
+        return ModeratorNavOrigin(kind="multi_subs", multi_subs_page=page)
+    return ModeratorNavOrigin(kind=ret_kind)  # type: ignore[arg-type]
+
+
+def decode_anchor_return(data: dict[str, str]) -> ModeratorNavOrigin | None:
+    """Разобрать origin якорной карточки из payload ``/similar_apps``."""
+    return _decode_return_origin(data)
 
 
 def parse_origin(data: dict[str, str] | None) -> ModeratorNavOrigin:
@@ -116,12 +194,47 @@ def parse_origin(data: dict[str, str] | None) -> ModeratorNavOrigin:
         )
     if kind == "multi_subs":
         return ModeratorNavOrigin(kind="multi_subs", multi_subs_page=page)
+    if kind == "similar_apps":
+        src = (data.get("src") or "").strip().upper() or None
+        return ModeratorNavOrigin(
+            kind="similar_apps",
+            similar_src_br_id=src,
+            anchor_return=_decode_return_origin(data),
+        )
     return ModeratorNavOrigin(kind=kind)  # type: ignore[arg-type]
 
 
 def find_button_data(br_id: str, origin: ModeratorNavOrigin) -> dict[str, str]:
     """Payload для кнопки открытия карточки ``/find``."""
     return {"br_id": br_id, **origin.to_data()}
+
+
+def similar_apps_open_data(
+    anchor_br_id: str,
+    return_origin: ModeratorNavOrigin,
+) -> dict[str, str]:
+    """Payload для открытия экрана ``/similar_apps`` с якорной карточки."""
+    return {
+        "src": anchor_br_id.strip().upper(),
+        **_encode_return_origin(return_origin),
+    }
+
+
+def similar_apps_find_data(
+    br_id: str,
+    *,
+    anchor_src_br_id: str,
+    anchor_return: ModeratorNavOrigin | None,
+) -> dict[str, str]:
+    """Payload ``/find`` для заявки, открытой с экрана похожих работ."""
+    payload: dict[str, str] = {
+        "br_id": br_id.strip().upper(),
+        "from": "similar_apps",
+        "src": anchor_src_br_id.strip().upper(),
+    }
+    if anchor_return is not None:
+        payload.update(_encode_return_origin(anchor_return))
+    return payload
 
 
 def action_button_data(br_id: str, origin: ModeratorNavOrigin) -> dict[str, str]:
@@ -184,6 +297,14 @@ def _back_command_and_data(
         return "/m_b_refresh", None
     if origin.kind == "multi_subs":
         return "/multi_subs", None
+    if origin.kind == "similar_apps":
+        if not origin.similar_src_br_id:
+            return "/moderator", None
+        payload = similar_apps_open_data(
+            origin.similar_src_br_id,
+            origin.anchor_return or ModeratorNavOrigin(),
+        )
+        return "/similar_apps", payload
     if origin.kind == "admin_find":
         return "/admin", None
     return "/moderator", None
@@ -206,10 +327,24 @@ def card_action_buttons(
     origin: ModeratorNavOrigin,
     *,
     with_navigation: bool = True,
+    related_count: int = 0,
 ) -> BubbleMarkup:
     """Инлайн-кнопки карточки заявки + опциональная навигация."""
     bubbles = BubbleMarkup()
     action_data = action_button_data(app.br_id, origin)
+
+    if related_count > 0:
+        return_origin = (
+            origin.anchor_return
+            if origin.kind == "similar_apps"
+            else origin
+        )
+        bubbles.add_button(
+            command="/similar_apps",
+            label=f"🔍 Похожие работы ({related_count})",
+            data=similar_apps_open_data(app.br_id, return_origin),
+            new_row=True,
+        )
 
     if app.moderation_status is ModerationStatus.OTKLONENO:
         bubbles.add_button(
@@ -330,7 +465,10 @@ __all__ = [
     "ModeratorNavKind",
     "ModeratorNavOrigin",
     "parse_origin",
+    "decode_anchor_return",
     "find_button_data",
+    "similar_apps_open_data",
+    "similar_apps_find_data",
     "action_button_data",
     "append_context_back_button",
     "append_moderator_menu_button",

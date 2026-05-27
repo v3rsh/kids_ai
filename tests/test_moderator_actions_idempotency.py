@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from pybotx import BubbleMarkup
 
 from database.models import ModerationStatus, Track
 from handlers.moderator_actions import _apply_reject, _send_notify_fix, cmd_status
@@ -110,6 +111,9 @@ class TestApplyRejectIdempotency:
         ), patch(
             "handlers.moderator_actions.build_full_card",
             new=AsyncMock(return_value="card"),
+        ), patch(
+            "handlers.moderator_actions.card_bubbles_for_app",
+            new=AsyncMock(return_value=BubbleMarkup()),
         ), patch(
             "handlers.moderator_actions.reply_to_user",
             new=AsyncMock(),

@@ -65,6 +65,13 @@ class TestCmdFind:
             "handlers.moderator_actions.find_by_br_id",
             new=AsyncMock(return_value=app),
         ), patch(
+            "handlers.moderator_actions.card_bubbles_for_app",
+            new=AsyncMock(
+                return_value=post_action_bubbles(
+                    parse_origin({"from": "queue"})
+                )
+            ),
+        ), patch(
             "handlers.moderator_actions.render_application_card",
             new=AsyncMock(),
         ) as render_mock, patch(

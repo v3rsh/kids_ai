@@ -1,5 +1,5 @@
 """
-Повторные заявки: один ребёнок — несколько работ в одном треке.
+Повторные заявки: несколько работ одного родителя в одном треке.
 
 Команда ``/multi_subs`` — сводный отчёт для модератора.
 """
@@ -13,28 +13,34 @@ from keyboards import back_to_moderator_menu_bubbles
 from services import applications as applications_service
 from services.access import moderator_only
 from utils.bot_utils import reply_to_user
-from utils.moderator_nav import ModeratorNavOrigin, find_button_data
+from utils.moderator_nav import (
+    ModeratorNavOrigin,
+    find_button_data,
+    similar_apps_open_data,
+)
 
 collector = HandlerCollector()
 
 PAGE_SIZE = 5
 
 
-def _format_group(group: applications_service.MultiSubmissionGroup) -> str:
+def _format_group(group: applications_service.ParentTrackGroup) -> str:
     lines = [
-        f"**{group.child_name}**, {group.child_age} лет · "
-        f"{group.track.value}",
-        f"Родитель: {group.parent_full_name}",
+        f"**{group.parent_full_name}** · {group.track.value} "
+        f"({len(group.entries)} заявок)",
     ]
     for entry in group.entries:
         actual = " · **актуальная**" if entry.is_actual_version else ""
-        lines.append(f"  • {entry.br_id} — {entry.moderation_status}{actual}")
+        lines.append(
+            f"  • {entry.br_id} — {entry.child_name}, {entry.child_age} — "
+            f"«{entry.title}» — {entry.moderation_status}{actual}"
+        )
     return "\n".join(lines)
 
 
 def _multi_subs_bubbles(
     *,
-    groups: list[applications_service.MultiSubmissionGroup],
+    groups: list[applications_service.ParentTrackGroup],
     page: int,
     total_pages: int,
 ) -> BubbleMarkup:
@@ -45,10 +51,15 @@ def _multi_subs_bubbles(
     for group in page_groups:
         primary_br = group.entries[0].br_id
         bubbles.add_button(
+            command="/similar_apps",
+            label=f"🔍 Группа ({len(group.entries)})",
+            data=similar_apps_open_data(primary_br, multi_origin),
+            new_row=True,
+        )
+        bubbles.add_button(
             command="/find",
             label=f"📄 {primary_br}",
             data=find_button_data(primary_br, multi_origin),
-            new_row=True,
         )
         for entry in group.entries:
             if entry.br_id == primary_br:
@@ -58,12 +69,17 @@ def _multi_subs_bubbles(
                 label=f"↳ {entry.br_id}",
                 data=find_button_data(entry.br_id, multi_origin),
             )
-        bubbles.add_button(
-            command="/multi_subs_mark_actual",
-            label="✓ Актуальная: " + primary_br,
-            data={"br_id": primary_br},
-            new_row=True,
+        strict_ids = applications_service.strict_duplicate_br_ids_in_group(
+            group
         )
+        if strict_ids:
+            mark_br = group.entries[0].br_id
+            bubbles.add_button(
+                command="/multi_subs_mark_actual",
+                label="✓ Актуальная: " + mark_br,
+                data={"br_id": mark_br},
+                new_row=True,
+            )
     if page > 1:
         bubbles.add_button(
             command="/multi_subs_page",
@@ -91,7 +107,7 @@ async def _render_multi_subs(
     *,
     page: int,
 ) -> None:
-    groups = await applications_service.find_multi_submission_groups(
+    groups = await applications_service.find_parent_track_groups(
         only_active=True
     )
     total = len(groups)
@@ -100,8 +116,8 @@ async def _render_multi_subs(
             message,
             bot,
             (
-                "**Повторные заявки**\n\n"
-                "Нарушений правила «1 работа в трек» не найдено."
+                "**Несколько заявок (родитель + трек)**\n\n"
+                "Групп с более чем одной активной заявкой не найдено."
             ),
             bubbles=back_to_moderator_menu_bubbles(),
         )
@@ -115,7 +131,7 @@ async def _render_multi_subs(
     chunk = groups[start : start + PAGE_SIZE]
     blocks = [_format_group(g) for g in chunk]
     body = (
-        f"**Повторные заявки** ({total} групп)\n"
+        f"**Несколько заявок (родитель + трек)** ({total} групп)\n"
         f"Страница {page} из {total_pages}\n\n"
         + "\n\n".join(blocks)
     )
@@ -131,7 +147,7 @@ async def _render_multi_subs(
 
 @collector.command(
     "/multi_subs",
-    description="Повторные заявки (ребёнок + трек)",
+    description="Несколько заявок (родитель + трек)",
     visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )

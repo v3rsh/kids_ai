@@ -13,6 +13,8 @@ from utils.moderator_nav import (
     find_button_data,
     parse_origin,
     post_action_bubbles,
+    similar_apps_find_data,
+    similar_apps_open_data,
 )
 
 
@@ -65,6 +67,53 @@ class TestParseOrigin:
         origin = parse_origin({"from": "multi_subs", "p": "3"})
         assert origin.kind == "multi_subs"
         assert origin.multi_subs_page == 3
+
+    def test_similar_apps_origin(self) -> None:
+        origin = parse_origin(
+            {
+                "from": "similar_apps",
+                "src": "BR-2026-0001",
+                "ret": "queue",
+            }
+        )
+        assert origin.kind == "similar_apps"
+        assert origin.similar_src_br_id == "BR-2026-0001"
+        assert origin.anchor_return is not None
+        assert origin.anchor_return.kind == "queue"
+
+
+class TestSimilarAppsNav:
+    def test_open_data_encodes_return_origin(self) -> None:
+        data = similar_apps_open_data(
+            "BR-2026-0042",
+            ModeratorNavOrigin(kind="queue"),
+        )
+        assert data["src"] == "BR-2026-0042"
+        assert data["ret"] == "queue"
+
+    def test_find_from_similar_carries_anchor(self) -> None:
+        data = similar_apps_find_data(
+            "BR-2026-0002",
+            anchor_src_br_id="BR-2026-0001",
+            anchor_return=ModeratorNavOrigin(kind="queue"),
+        )
+        assert data["from"] == "similar_apps"
+        assert data["src"] == "BR-2026-0001"
+        assert data["br_id"] == "BR-2026-0002"
+        assert data["ret"] == "queue"
+
+    def test_similar_apps_back_command(self) -> None:
+        origin = ModeratorNavOrigin(
+            kind="similar_apps",
+            similar_src_br_id="BR-2026-0001",
+            anchor_return=ModeratorNavOrigin(kind="queue"),
+        )
+        bubbles = build_back_bubbles(origin)
+        assert "/similar_apps" in _commands(bubbles)
+        data = _button_data(bubbles, "/similar_apps")
+        assert data is not None
+        assert data["src"] == "BR-2026-0001"
+        assert data["ret"] == "queue"
 
 
 class TestFindButtonData:
@@ -183,6 +232,21 @@ class TestCardActionButtons:
         assert files_data is not None
         assert files_data["from"] == "section"
         assert files_data["br_id"] == "BR-2026-0042"
+
+    def test_shows_similar_button_when_related(self) -> None:
+        origin = ModeratorNavOrigin(kind="queue")
+        bubbles = card_action_buttons(_app(), origin, related_count=2)
+        assert "/similar_apps" in _commands(bubbles)
+        similar_data = _button_data(bubbles, "/similar_apps")
+        assert similar_data is not None
+        assert similar_data["src"] == "BR-2026-0042"
+        assert similar_data["ret"] == "queue"
+
+    def test_hides_similar_button_without_related(self) -> None:
+        bubbles = card_action_buttons(
+            _app(), ModeratorNavOrigin(kind="queue"), related_count=0
+        )
+        assert "/similar_apps" not in _commands(bubbles)
 
 
 class TestPostActionBubbles:

@@ -58,7 +58,11 @@ from database.models import Application, IntakeMode, ModerationStatus
 from fsm import cleanup_middleware, fsm_middleware
 from fsm.keys import FSM_KEY_MODERATOR_TARGET_BR_ID
 from handlers.common import register_state_handler
-from handlers.moderator_queue import build_full_card, render_application_card
+from handlers.moderator_queue import (
+    build_full_card,
+    card_bubbles_for_app,
+    render_application_card,
+)
 from services.access import moderator_only
 from services.moderation import (
     add_comment,
@@ -71,7 +75,6 @@ from states import ModeratorAction
 from utils.bot_utils import reply_to_user
 from utils.moderator_nav import (
     ModeratorNavOrigin,
-    card_action_buttons,
     clear_dialog_state,
     fsm_dialog_prompt_bubbles,
     load_dialog_origin,
@@ -338,7 +341,7 @@ async def cmd_find(message: IncomingMessage, bot: Bot) -> None:
         message,
         bot,
         app=app,
-        bubbles=card_action_buttons(app, origin),
+        bubbles=await card_bubbles_for_app(app, origin),
     )
 
 
@@ -453,7 +456,7 @@ async def cmd_status(message: IncomingMessage, bot: Bot) -> None:
         message,
         bot,
         body + "\n\n" + await build_full_card(result.application),
-        bubbles=card_action_buttons(
+        bubbles=await card_bubbles_for_app(
             result.application, parse_origin(message.data)
         ),
     )
@@ -536,7 +539,7 @@ async def _apply_comment(
         message,
         bot,
         body + "\n\n" + await build_full_card(app),
-        bubbles=card_action_buttons(app, nav_origin),
+        bubbles=await card_bubbles_for_app(app, nav_origin),
     )
 
 
@@ -786,7 +789,7 @@ async def _apply_reject(
                 "Повторное уведомление не отправлено.\n\n"
                 + await build_full_card(app)
             ),
-            bubbles=card_action_buttons(app, nav_origin),
+            bubbles=await card_bubbles_for_app(app, nav_origin),
         )
         return
 
@@ -989,7 +992,7 @@ async def cmd_files(message: IncomingMessage, bot: Bot) -> None:
             message,
             bot,
             body,
-            bubbles=card_action_buttons(app, origin),
+            bubbles=await card_bubbles_for_app(app, origin),
         )
         return
 
@@ -998,7 +1001,7 @@ async def cmd_files(message: IncomingMessage, bot: Bot) -> None:
             message,
             bot,
             f"У заявки {app.br_id} нет сохранённых файлов в хранилище.",
-            bubbles=card_action_buttons(app, origin),
+            bubbles=await card_bubbles_for_app(app, origin),
         )
         return
 
@@ -1044,7 +1047,7 @@ async def cmd_files(message: IncomingMessage, bot: Bot) -> None:
         message,
         bot,
         app=app,
-        bubbles=card_action_buttons(app, origin),
+        bubbles=await card_bubbles_for_app(app, origin),
         prefix=prefix,
     )
 

@@ -487,9 +487,9 @@ async def _state_handle_shortcut_find_brid(
     message: IncomingMessage, bot: Bot
 ) -> None:
     """FSM: карточка заявки по BR-ID."""
-    from handlers.moderator_queue import render_application_card
+    from handlers.moderator_queue import card_bubbles_for_app, render_application_card
     from services.moderation import find_by_br_id
-    from utils.moderator_nav import ModeratorNavOrigin, card_action_buttons
+    from utils.moderator_nav import ModeratorNavOrigin
 
     br_id = (message.body or "").strip().upper()
     await message.state.fsm.clear()
@@ -515,7 +515,7 @@ async def _state_handle_shortcut_find_brid(
         message,
         bot,
         app=app,
-        bubbles=card_action_buttons(app, origin),
+        bubbles=await card_bubbles_for_app(app, origin),
     )
 
 

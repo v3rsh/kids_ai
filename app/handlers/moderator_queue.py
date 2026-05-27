@@ -171,25 +171,33 @@ def _short_card(app: Application) -> str:
     )
 
 
-def _format_multi_submission_block(
-    siblings: list,
+def _format_related_warnings(
+    app: Application,
+    related: list,
 ) -> str:
-    """Блок предупреждения о других заявках того же ребёнка в треке."""
-    if not siblings:
+    """Блок предупреждений о связанных заявках (родитель + трек)."""
+    if not related and not app.is_possible_duplicate:
         return ""
-    lines = [
-        "\n\n⚠️ **Повтор по правилу «1 работа в трек»** (другие заявки):"
-    ]
-    for entry in siblings:
-        actual = " · актуальная" if entry.is_actual_version else ""
-        lines.append(f"  • **{entry.br_id}** — {entry.moderation_status}{actual}")
-    return "\n".join(lines)
+    parts: list[str] = []
+    if related:
+        br_ids = ", ".join(f"**{entry.br_id}**" for entry in related)
+        parts.append(
+            f"\n\n⚠️ **Несколько заявок в треке** ({len(related)}): {br_ids}"
+        )
+        strict = [entry for entry in related if entry.is_strict_match]
+        if strict:
+            strict_ids = ", ".join(f"**{entry.br_id}**" for entry in strict)
+            parts.append(f"\n   Тот же ребёнок: {strict_ids}")
+    if app.is_possible_duplicate:
+        related_id = app.related_application_br_id or "—"
+        parts.append(f"\n   Возможный дубль → **{related_id}**")
+    return "".join(parts)
 
 
 def _full_card(
     app: Application,
     *,
-    siblings: list | None = None,
+    related: list | None = None,
 ) -> str:
     """Развёрнутая карточка для ``/browse`` и ``/find``.
 
@@ -212,12 +220,6 @@ def _full_card(
         contact = f"@{app.parent_ad_login}"
     else:
         contact = f"HUID: {app.parent_huid}"
-    duplicate_line = ""
-    if app.is_possible_duplicate:
-        related = app.related_application_br_id or "—"
-        duplicate_line = (
-            f"\n\n⚠️ **Возможный дубль** (связанная: {related})"
-        )
     comment_line = ""
     if app.moderator_comment:
         comment_line = (
@@ -250,20 +252,35 @@ def _full_card(
         f"**Статус модерации:** {app.moderation_status.value}\n"
         f"**Статус жюри:** {app.jury_status.value}\n"
         f"**Статус голосования:** {app.voting_status.value}"
-        f"{duplicate_line}"
-        f"{_format_multi_submission_block(siblings or [])}"
+        f"{_format_related_warnings(app, related or [])}"
         f"{comment_line}{intake_line}"
     )
 
 
 async def build_full_card(app: Application) -> str:
-    """Карточка с подгруженным блоком повторных заявок."""
+    """Карточка с подгруженным блоком связанных заявок."""
     from services import applications as applications_service
 
-    siblings = await applications_service.find_active_siblings_for_application(
-        app
+    related = await applications_service.find_related_for_application(app)
+    return _full_card(app, related=related)
+
+
+async def card_bubbles_for_app(
+    app: Application,
+    origin: ModeratorNavOrigin,
+    *,
+    with_navigation: bool = True,
+) -> BubbleMarkup:
+    """Кнопки карточки с учётом числа похожих работ."""
+    from services import applications as applications_service
+
+    related = await applications_service.find_related_for_application(app)
+    return card_action_buttons(
+        app,
+        origin,
+        with_navigation=with_navigation,
+        related_count=len(related),
     )
-    return _full_card(app, siblings=siblings)
 
 
 def _format_dt(dt: datetime) -> str:
@@ -460,7 +477,7 @@ async def cmd_queue_next(message: IncomingMessage, bot: Bot) -> None:
         message,
         bot,
         app=app,
-        bubbles=card_action_buttons(app, origin),
+        bubbles=await card_bubbles_for_app(app, origin),
         prefix=f"▶ Следующая заявка в очереди ({page.total} всего):\n\n",
     )
 
@@ -854,7 +871,7 @@ async def _render_browse(
     suffix = pagination_footer(index + 1, total, title="Карусель")
 
     browse_origin = ModeratorNavOrigin(kind="browse")
-    bubbles = card_action_buttons(
+    bubbles = await card_bubbles_for_app(
         app, browse_origin, with_navigation=False
     )
     _browse_navigation_buttons(bubbles, index=index, total=total)
@@ -1193,5 +1210,7 @@ __all__ = [
     "collector",
     "_full_card",
     "_short_card",
+    "build_full_card",
+    "card_bubbles_for_app",
     "render_application_card",
 ]
