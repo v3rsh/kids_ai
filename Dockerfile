@@ -20,7 +20,7 @@ RUN pip install --upgrade pip
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копирование кода приложения
+# Копирование кода приложения (включая app/seed_data/ для импорта заявок)
 COPY app/ .
 
 # Создание директорий для данных, логов и бэкапов

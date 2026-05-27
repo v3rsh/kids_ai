@@ -56,6 +56,13 @@ poetry.lock
 data/
 backup/
 
+# Seed images (локально → в Docker-образ, не в git)
+app/seed_data/images/*.jpg
+app/seed_data/images/*.jpeg
+app/seed_data/images/*.png
+app/seed_data/images/*.webp
+!app/seed_data/images/.gitkeep
+
 # Systemd service files
 *.service
 
