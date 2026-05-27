@@ -405,6 +405,12 @@ def admin_main_menu_bubbles(
     )
     bubbles.add_button(
         command="/admin_section",
+        label="🏆 Конкурс",
+        data={"section": "competition"},
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_section",
         label=(
             f"🖥 Система ({intake_label} · {intake_mode} · "
             f"диск {disk_pct:.0f}%)"
@@ -501,11 +507,6 @@ def admin_system_menu_bubbles() -> BubbleMarkup:
         label="🔒 Приём заявок",
         new_row=True,
     )
-    bubbles.add_button(
-        command="/admin_jury_settings",
-        label="⚖️ Настройки жюри",
-        new_row=True,
-    )
     bubbles.add_button(command="/admin_state", label="🩺 Диагностика", new_row=True)
     bubbles.add_button(
         command="/admin_disk_alerts",
@@ -528,6 +529,188 @@ def admin_system_menu_bubbles() -> BubbleMarkup:
         new_row=True,
     )
     admin_back_bubble(bubbles)
+    return bubbles
+
+
+def admin_competition_menu_bubbles() -> BubbleMarkup:
+    """Раздел «Конкурс»."""
+    bubbles = BubbleMarkup()
+    bubbles.add_button(
+        command="/admin_competition_intake",
+        label="📥 Приём заявок",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_competition_data",
+        label="📊 Данные и выгрузки",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_competition_jury",
+        label="⚖️ Жюри",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_section",
+        label="◀ В админку",
+        data={"section": "back"},
+        new_row=True,
+    )
+    return bubbles
+
+
+def admin_competition_data_bubbles() -> BubbleMarkup:
+    """Подменю «Данные» раздела Конкурс."""
+    bubbles = BubbleMarkup()
+    bubbles.add_button(
+        command="/admin_competition_export_registry",
+        label="📤 Реестр XLSX",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_competition_export_shortlist",
+        label="🏆 Шорт-лист XLSX",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_export_files",
+        label="📦 ZIP всех заявок в чат",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_export_shortlist_files",
+        label="🏆 ZIP шорт-листа в чат",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_competition_archive",
+        label="💾 Архив на диск",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_section",
+        label="◀ К разделу «Конкурс»",
+        data={"section": "competition"},
+        new_row=True,
+    )
+    admin_back_bubble(bubbles)
+    return bubbles
+
+
+def admin_competition_jury_bubbles() -> BubbleMarkup:
+    """Подменю «Жюри» раздела Конкурс."""
+    bubbles = BubbleMarkup()
+    bubbles.add_button(
+        command="/admin_competition_jury_start",
+        label="▶️ Старт голосования",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_competition_jury_pools",
+        label="📋 Пулы",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_competition_jury_state",
+        label="📈 Статус пулов",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_jury_settings",
+        label="⚙️ Настройки жюри",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_competition_jury_finalize",
+        label="🏁 Финализация…",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_section",
+        label="◀ К разделу «Конкурс»",
+        data={"section": "competition"},
+        new_row=True,
+    )
+    admin_back_bubble(bubbles)
+    return bubbles
+
+
+def admin_competition_jury_start_bubbles() -> BubbleMarkup:
+    bubbles = BubbleMarkup()
+    bubbles.add_button(
+        command="/admin_competition_jury_start_all",
+        label="▶️ Все 9 пулов",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_competition_jury_pools",
+        label="📋 Один пул",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_competition_jury",
+        label="◀ К жюри",
+        new_row=True,
+    )
+    return bubbles
+
+
+def admin_competition_pool_bubbles(
+    *,
+    track: str,
+    age: str,
+    can_open: bool,
+    can_auto_shortlist: bool,
+    has_open_round: bool,
+) -> BubbleMarkup:
+    """Карточка одного пула в админке."""
+    bubbles = BubbleMarkup()
+    payload = {"track": track, "age": age}
+    if can_open:
+        bubbles.add_button(
+            command="/admin_competition_jury_open_pool",
+            label="▶️ Открыть раунд 1",
+            data=payload,
+            new_row=True,
+        )
+    if can_auto_shortlist:
+        bubbles.add_button(
+            command="/admin_competition_jury_auto_shortlist",
+            label="⏭ Закрыть пул без голосования",
+            data=payload,
+            new_row=True,
+        )
+    if has_open_round:
+        bubbles.add_button(
+            command="/admin_competition_jury_close_pool",
+            label="⏹ Закрыть раунд",
+            data=payload,
+            new_row=True,
+        )
+    bubbles.add_button(
+        command="/admin_competition_jury_pools",
+        label="◀ К списку пулов",
+        new_row=True,
+    )
+    return bubbles
+
+
+def admin_competition_archive_bubbles(*, blocked: bool) -> BubbleMarkup:
+    """Confirm архивации: без кнопки «Да» при blocked."""
+    bubbles = BubbleMarkup()
+    if not blocked:
+        bubbles.add_button(
+            command="/admin_confirm",
+            label="✅ Да, выполнить",
+            data={"action": "archive_to_disk", "confirm": "yes"},
+            new_row=True,
+        )
+    bubbles.add_button(
+        command="/admin_confirm",
+        label="❌ Отмена",
+        data={"action": "archive_to_disk", "confirm": "no"},
+        new_row=True,
+    )
     return bubbles
 
 
@@ -580,8 +763,13 @@ def admin_jury_settings_bubbles(
         new_row=True,
     )
     bubbles.add_button(
-        command="/jury_state",
+        command="/admin_competition_jury_state",
         label="⚖️ Состояние пулов",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_competition_jury",
+        label="◀ К жюри",
         new_row=True,
     )
     admin_back_bubble(bubbles)
@@ -656,6 +844,12 @@ def admin_dangerous_menu_bubbles() -> BubbleMarkup:
         command="/admin_danger",
         label="🚿 Flush jury aggregator…",
         data={"action": "flush_jury"},
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_danger",
+        label="🔁 Reset shortlist_announced…",
+        data={"action": "reset_shortlist_announced"},
         new_row=True,
     )
     admin_back_bubble(bubbles)
@@ -868,6 +1062,12 @@ __all__ = [
     "admin_roles_menu_bubbles",
     "admin_chat_menu_bubbles",
     "admin_system_menu_bubbles",
+    "admin_competition_menu_bubbles",
+    "admin_competition_data_bubbles",
+    "admin_competition_jury_bubbles",
+    "admin_competition_jury_start_bubbles",
+    "admin_competition_pool_bubbles",
+    "admin_competition_archive_bubbles",
     "intake_open_toggle_bubbles",
     "admin_jury_settings_bubbles",
     "admin_users_menu_bubbles",

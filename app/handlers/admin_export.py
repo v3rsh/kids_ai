@@ -21,7 +21,7 @@ Rate-limit и формат архива контролируются ``services.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from uuid import UUID
 
 from loguru import logger
 from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
@@ -37,9 +37,6 @@ from services.attachments_export import (
     iter_attachments_export,
 )
 from utils.bot_utils import reply_to_user, resolve_bot_id
-
-if TYPE_CHECKING:  # pragma: no cover
-    from pybotx.models.message.incoming_message import UserSender
 
 
 collector = HandlerCollector()
@@ -199,15 +196,16 @@ async def cmd_admin_export_app(
 async def start_export_task(
     *,
     bot: Bot,
-    requester: "UserSender",
+    chat_id: UUID | None,
+    huid: UUID | None,
     selector_action: str,
 ) -> bool:
     """Запустить фоновую выгрузку и сразу вернуть управление.
 
     Args:
         bot: текущий ``Bot``.
-        requester: ``IncomingMessage.sender`` админа, в чей DM-чат
-            будут улетать архивы.
+        chat_id: DM-чат админа (``resolve_dm_chat_id(message)``).
+        huid: HUID админа-инициатора.
         selector_action: значение ``data.action`` из confirm-кнопки
             (``export_files_all`` или ``export_files_shortlist``).
 
@@ -222,8 +220,6 @@ async def start_export_task(
         return False
 
     bot_id = resolve_bot_id(bot)
-    chat_id = getattr(requester, "chat_id", None)
-    huid = getattr(requester, "huid", None)
     if bot_id is None or chat_id is None:
         logger.error(
             "start_export_task: не определены bot_id/chat_id",

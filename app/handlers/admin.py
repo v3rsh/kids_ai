@@ -39,11 +39,14 @@ from sqlalchemy import select
 
 from config import DISK_BLOCK_PCT, DISK_WARN_PCT
 from database.db import get_session
-from database.models import DiskAlert, IntakeMode, JuryMember, Moderator, User
+from database.models import DiskAlert, IntakeMode, JuryMember, JuryRound, Moderator, User
 from fsm import cleanup_middleware, fsm_middleware
 from handlers.common import register_state_handler
 from keyboards import (
     admin_chat_menu_bubbles,
+    admin_competition_data_bubbles,
+    admin_competition_jury_bubbles,
+    admin_competition_menu_bubbles,
     admin_confirm_bubbles,
     admin_dangerous_menu_bubbles,
     admin_main_menu_bubbles,
@@ -73,7 +76,8 @@ from services.storage import (
     get_disk_usage_bytes,
     get_disk_usage_pct,
 )
-from utils.bot_utils import reply_to_user, resolve_bot_id
+from utils.bot_utils import reply_to_user, resolve_bot_id, resolve_dm_chat_id
+from utils.contracts import PoolKey
 
 
 collector = HandlerCollector()
@@ -222,6 +226,11 @@ async def cmd_admin_section(message: IncomingMessage, bot: Bot) -> None:
             "Каждое действие требует подтверждения.",
             admin_dangerous_menu_bubbles(),
         ),
+        "competition": (
+            "**Раздел: конкурс**\n\n"
+            "Приём заявок, выгрузки, архив и управление жюри.",
+            admin_competition_menu_bubbles(),
+        ),
     }
     if section not in section_map:
         await _show_admin_menu(message, bot)
@@ -239,6 +248,7 @@ _DANGER_LABELS = {
     "cleanup_disk_alerts": "очистка disk_alerts старше 30 дней",
     "clear_chat": "сброс moderation_chat_id",
     "flush_jury": "сброс буфера уведомлений жюри",
+    "reset_shortlist_announced": "сброс флага shortlist_announced",
 }
 
 
@@ -269,15 +279,40 @@ async def cmd_admin_danger(message: IncomingMessage, bot: Bot) -> None:
     )
 
 
+_COMPETITION_JURY_CONFIRM_ACTIONS: frozenset[str] = frozenset(
+    {
+        "jury_start_all",
+        "jury_auto_shortlist",
+        "jury_close_pool",
+        "jury_finalize",
+    }
+)
+
+
+def _confirm_return_bubbles(action: str) -> BubbleMarkup:
+    if action in _COMPETITION_JURY_CONFIRM_ACTIONS:
+        return admin_competition_jury_bubbles()
+    if action == "archive_to_disk":
+        return admin_competition_data_bubbles()
+    if action in _SYSTEM_MENU_CONFIRM_ACTIONS:
+        return admin_competition_menu_bubbles()
+    return admin_dangerous_menu_bubbles()
+
+
 _SYSTEM_MENU_CONFIRM_ACTIONS: frozenset[str] = frozenset(
     {
         "close_intake",
         "reopen_intake",
         "export_files_all",
         "export_files_shortlist",
+        "archive_to_disk",
+        "jury_start_all",
+        "jury_auto_shortlist",
+        "jury_close_pool",
+        "jury_finalize",
     }
 )
-"""Действия, возврат после которых идёт в admin_system_menu, а не в dangerous."""
+"""Действия, возврат после которых идёт в admin_system/competition menu."""
 
 
 @collector.command(
@@ -293,11 +328,7 @@ async def cmd_admin_confirm(message: IncomingMessage, bot: Bot) -> None:
     action = (data.get("action") or "").strip()
     confirm = (data.get("confirm") or "").strip().lower()
 
-    return_bubbles = (
-        admin_system_menu_bubbles()
-        if action in _SYSTEM_MENU_CONFIRM_ACTIONS
-        else admin_dangerous_menu_bubbles()
-    )
+    return_bubbles = _confirm_return_bubbles(action)
 
     if confirm != "yes":
         await reply_to_user(
@@ -370,7 +401,8 @@ async def cmd_admin_confirm(message: IncomingMessage, bot: Bot) -> None:
             try:
                 started = await start_export_task(
                     bot=bot,
-                    requester=message.sender,
+                    chat_id=resolve_dm_chat_id(message),
+                    huid=message.sender.huid,
                     selector_action=action,
                 )
             except Exception:
@@ -390,6 +422,118 @@ async def cmd_admin_confirm(message: IncomingMessage, bot: Bot) -> None:
                         "🚀 Выгрузка запущена. Архивы будут приходить "
                         "в этот чат по мере готовности."
                     )
+        elif action == "archive_to_disk":
+            from services.attachments_archive import estimate_archive_budget
+
+            budget = await estimate_archive_budget()
+            if budget.after_pct >= budget.block_pct:
+                body = (
+                    "❌ Архивация заблокирована: после копии диск "
+                    f"превысит порог **{budget.block_pct}%**."
+                )
+            else:
+                bot_id = resolve_bot_id(bot)
+                chat_id = resolve_dm_chat_id(message)
+                if bot_id is None or chat_id is None:
+                    body = "❌ Не удалось определить bot_id/chat_id."
+                else:
+                    import asyncio
+
+                    from services.attachments_archive import start_archive_task
+
+                    asyncio.create_task(
+                        start_archive_task(
+                            bot=bot,
+                            bot_id=bot_id,
+                            chat_id=chat_id,
+                            huid=message.sender.huid,
+                        ),
+                        name="attachments_archive",
+                    )
+                    body = (
+                        "🚀 Архивация на диск запущена. Прогресс — "
+                        "в этом чате."
+                    )
+        elif action == "jury_start_all":
+            from handlers.admin_competition import execute_jury_start_all
+
+            body = await execute_jury_start_all(bot)
+        elif action == "jury_auto_shortlist":
+            from database.models import AgeCategory, Track
+
+            track_name = (data.get("track") or "").strip()
+            age_name = (data.get("age") or "").strip()
+            try:
+                pool = PoolKey(
+                    track=Track[track_name],
+                    age_category=AgeCategory[age_name],
+                )
+            except KeyError:
+                body = "❌ Не удалось определить пул."
+            else:
+                from services import jury as jury_service
+
+                count = await jury_service.auto_shortlist_undersized_pool(
+                    pool, bot=bot
+                )
+                if count > 0:
+                    body = (
+                        f"✅ Пул **{pool.as_label()}**: "
+                        f"**{count}** работ в шорт-листе без голосования."
+                    )
+                else:
+                    body = (
+                        f"ℹ️ Пул **{pool.as_label()}** уже закрыт "
+                        "или нет допущенных работ."
+                    )
+        elif action == "jury_close_pool":
+            from database.models import AgeCategory, JuryRoundStatus, Track
+
+            track_name = (data.get("track") or "").strip()
+            age_name = (data.get("age") or "").strip()
+            try:
+                pool_track = Track[track_name]
+                pool_age = AgeCategory[age_name]
+            except KeyError:
+                body = "❌ Не удалось определить пул."
+            else:
+                async with get_session()() as session:
+                    open_round = (
+                        await session.execute(
+                            select(JuryRound).where(
+                                JuryRound.track == pool_track,
+                                JuryRound.age_category == pool_age,
+                                JuryRound.status == JuryRoundStatus.OPEN,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                if open_round is None:
+                    body = "ℹ️ В этом пуле нет открытого раунда."
+                else:
+                    from services import jury as jury_service
+
+                    await jury_service.close_round(
+                        open_round.id, bot=bot
+                    )
+                    body = (
+                        f"✅ Раунд **{open_round.round_no}** закрыт "
+                        f"({pool_track.value} / {pool_age.value})."
+                    )
+        elif action == "jury_finalize":
+            from services import jury as jury_service
+
+            result = await jury_service.build_shortlist(bot=bot)
+            body = (
+                f"🏁 Финализация завершена. В шорт-листе: **{len(result)}** работ."
+            )
+        elif action == "reset_shortlist_announced":
+            from services.jury_settings import reset_shortlist_announced
+
+            await reset_shortlist_announced(by_huid=message.sender.huid)
+            body = (
+                "✅ Флаг shortlist_announced сброшен. "
+                "Событие shortlist_ready можно отправить повторно."
+            )
         else:
             body = "❌ Неизвестная операция."
     except Exception:

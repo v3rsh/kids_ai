@@ -62,6 +62,7 @@ from .admin_users import collector as admin_users_collector
 from .admin_stats import collector as admin_stats_collector
 from .admin_jury_settings import collector as admin_jury_settings_collector
 from .admin_export import collector as admin_export_collector
+from .admin_competition import collector as admin_competition_collector
 
 
 def get_all_collectors() -> list:
@@ -101,6 +102,7 @@ def get_all_collectors() -> list:
         admin_stats_collector,
         admin_jury_settings_collector,
         admin_export_collector,
+        admin_competition_collector,
     ]
 
 
