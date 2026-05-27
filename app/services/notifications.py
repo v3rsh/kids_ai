@@ -153,6 +153,12 @@ JURY_LOT_TEMPLATE = (
 )
 """Чат модерации: срабатывание жребия (НЕ агрегируется, индивидуально)."""
 
+JURY_POOL_COMPLETED_TEMPLATE = (
+    "Пул `{pool}` завершён: топ-10 определён в раунде {round_no} "
+    "(жребий: {lot_label})."
+)
+"""Чат модерации: пул закрыт (топ-10 собран). НЕ агрегируется."""
+
 JURY_SHORTLIST_READY_TEMPLATE = (
     "**Шорт-лист сформирован**, доступен по команде `/export_shortlist`."
 )
@@ -624,6 +630,7 @@ JuryEventKind = Literal[
     "round_opened",
     "round_closed",
     "lot_applied",
+    "pool_completed",
     "shortlist_ready",
 ]
 
@@ -637,6 +644,7 @@ class _JuryEvent:
     round_no: int | None
     deadline_text: str | None = None
     extra: str | None = None
+    lot_applied: bool = False  # для pool_completed: пул закрыт жребием?
 
 
 @dataclass
@@ -676,7 +684,7 @@ async def _flush_aggregator() -> None:
     # Группируем round_opened и round_closed по (kind, round_no).
     grouped: dict[tuple[str, int | None], list[_JuryEvent]] = {}
     for ev in pending:
-        if ev.kind in ("lot_applied", "shortlist_ready"):
+        if ev.kind in ("lot_applied", "shortlist_ready", "pool_completed"):
             # Эти типы не агрегируем — шлём как есть, по одному.
             await _send_jury_event_single(bot, ev)
             continue
@@ -725,7 +733,7 @@ async def _flush_aggregator() -> None:
 
 
 async def _send_jury_event_single(bot: "Bot", ev: _JuryEvent) -> None:
-    """Не-агрегируемые события (жребий, шорт-лист)."""
+    """Не-агрегируемые события (жребий, завершение пула, шорт-лист)."""
     pool_label = f"{ev.pool[0]} / {ev.pool[1]}"
     if ev.kind == "lot_applied":
         body = JURY_LOT_TEMPLATE.format(
@@ -735,6 +743,17 @@ async def _send_jury_event_single(bot: "Bot", ev: _JuryEvent) -> None:
             bot,
             body,
             purpose="moderation_jury_lot",
+        )
+    elif ev.kind == "pool_completed":
+        body = JURY_POOL_COMPLETED_TEMPLATE.format(
+            pool=pool_label,
+            round_no=ev.round_no or 1,
+            lot_label="да" if ev.lot_applied else "нет",
+        )
+        await _send_to_moderation_chat(
+            bot,
+            body,
+            purpose="moderation_jury_pool_completed",
         )
     elif ev.kind == "shortlist_ready":
         await _send_to_moderation_chat(
@@ -787,23 +806,28 @@ async def notify_moderation_chat_jury_event(
       секунд (если за это время прилетят ещё события того же типа и
       номера раунда — они склеятся в одно сообщение).
     - ``lot_applied`` — индивидуально, без агрегации.
+    - ``pool_completed`` — индивидуально; ``extra`` передаётся как
+      ``"lot"`` или ``"no_lot"`` (используется в шаблоне).
     - ``shortlist_ready`` — индивидуально, без агрегации; ``pools``
       игнорируется.
 
     Args:
         event_kind: ``round_opened`` / ``round_closed`` / ``lot_applied`` /
-            ``shortlist_ready``.
-        pools: ``[(track_label, age_label), ...]`` — для жребия достаточно
-            одного элемента; для шорт-листа можно передать пустой список.
-        round_no: номер раунда (1..3) или None для shortlist_ready.
+            ``pool_completed`` / ``shortlist_ready``.
+        pools: ``[(track_label, age_label), ...]`` — для жребия и
+            завершения пула достаточно одного элемента; для шорт-листа
+            можно передать пустой список.
+        round_no: номер раунда (1..N) или None для shortlist_ready.
         deadline_text: человекочитаемый дедлайн раунда — для round_opened.
         extra: произвольная строка для шаблона (например, число претендентов
-            при одиночном round_opened).
+            при одиночном round_opened; для ``pool_completed`` — ``"lot"``
+            если пул закрыт жребием, иначе ``"no_lot"``).
     """
     if event_kind not in (
         "round_opened",
         "round_closed",
         "lot_applied",
+        "pool_completed",
         "shortlist_ready",
     ):
         logger.warning(
@@ -833,6 +857,21 @@ async def notify_moderation_chat_jury_event(
                 kind="lot_applied",
                 pool=pools[0],
                 round_no=round_no,
+            ),
+        )
+        return
+
+    if event_kind == "pool_completed":
+        if not pools:
+            logger.warning("pool_completed без указания пула; пропускаем")
+            return
+        await _send_jury_event_single(
+            bot,
+            _JuryEvent(
+                kind="pool_completed",
+                pool=pools[0],
+                round_no=round_no,
+                lot_applied=(extra or "").strip().lower() == "lot",
             ),
         )
         return
@@ -883,6 +922,7 @@ __all__ = [
     "JURY_ROUND_CLOSED_TEMPLATE",
     "JURY_ROUND_CLOSED_SINGLE_TEMPLATE",
     "JURY_LOT_TEMPLATE",
+    "JURY_POOL_COMPLETED_TEMPLATE",
     "JURY_SHORTLIST_READY_TEMPLATE",
     "DISK_ALERT_80_TEMPLATE",
     "DISK_ALERT_95_TEMPLATE",
