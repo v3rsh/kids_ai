@@ -26,18 +26,30 @@ from pybotx import Bot, BubbleMarkup, HandlerCollector, IncomingMessage
 from database.db import get_session
 from database.models import Application, JuryVoteValue
 from fsm import cleanup_middleware, fsm_middleware
-from fsm.keys import FSM_KEY_JURY_TASK_INDEX, FSM_KEY_JURY_TASK_ROUND_ID
+from fsm.keys import (
+    FSM_KEY_JURY_TASK_ANCHOR_SYNC_ID,
+    FSM_KEY_JURY_TASK_INDEX,
+    FSM_KEY_JURY_TASK_ROUND_ID,
+)
 from keyboards import back_to_jury_menu_bubbles
 from services import jury as jury_service
 from services import storage as storage_service
 from services.access import jury_only
 from states import JuryTaskFlow
 from utils.bot_utils import (
+    delete_jury_anchor,
+    delete_source_message,
+    edit_jury_anchor_caption,
     reply_to_user,
+    resolve_bot_id,
     safe_answer_transient,
-    send_application_files_with_card,
+    send_jury_carousel,
 )
 from utils.contracts import PoolKey
+from utils.message_tracking import (
+    clear_transient_messages,
+    get_transient_messages,
+)
 
 collector = HandlerCollector()
 
@@ -217,16 +229,121 @@ def _compute_submit_eligibility(
     return JuryVoteValue.YES in values and JuryVoteValue.NO in values
 
 
+# =====================================================================
+# Lifecycle photo-якоря карусели жюри
+# =====================================================================
+
+
+async def _read_anchor_sync_id(fsm) -> Optional[UUID]:
+    """Прочитать sync_id текущего photo-якоря из FSM (или None)."""
+    fsm_data = await fsm.get_data()
+    return _safe_uuid(fsm_data.get(FSM_KEY_JURY_TASK_ANCHOR_SYNC_ID))
+
+
+async def _write_anchor_sync_id(fsm, sync_id: Optional[UUID]) -> None:
+    """Записать (или очистить) sync_id photo-якоря в FSM."""
+    await fsm.update_data(
+        **{
+            FSM_KEY_JURY_TASK_ANCHOR_SYNC_ID: (
+                str(sync_id) if sync_id is not None else None
+            )
+        }
+    )
+
+
+async def _drop_old_anchor(message: IncomingMessage, bot: Bot, fsm) -> Optional[UUID]:
+    """Удалить старый photo-якорь, если он сохранён в FSM.
+
+    Если ``source_sync_id == anchor_sync_id`` (типичный кейс при клике
+    по кнопкам якоря — `/jt_nav`, `/jt_back`, выходные ветки),
+    дополнительно выставляет ``message.state.transient_source_deleted``,
+    чтобы ``reply_to_user`` не пытался ``edit_message`` на удалённом
+    сообщении (CTS такой edit молча игнорирует).
+
+    Возвращает sync_id удалённого якоря (для логов/тестов) или ``None``,
+    если якорь не был установлен.
+    """
+    anchor_sync_id = await _read_anchor_sync_id(fsm)
+    if anchor_sync_id is None:
+        return None
+
+    bot_id = resolve_bot_id(bot)
+    if bot_id is None:
+        logger.error("_drop_old_anchor: bot_id не определяется")
+        return None
+
+    await delete_jury_anchor(bot, bot_id=bot_id, anchor_sync_id=anchor_sync_id)
+
+    if message.source_sync_id == anchor_sync_id:
+        message.state.transient_source_deleted = True
+
+    return anchor_sync_id
+
+
+async def _force_cleanup_transient(message: IncomingMessage, bot: Bot) -> None:
+    """Принудительно удалить трекаемые transient-сообщения судьи.
+
+    Используется в fallback-ветке ``cmd_jt_vote``: если ``edit_message``
+    провалился и мы вынужденно делаем полный рендер, нужно вычистить
+    хвост вручную (cleanup_middleware на /jt_vote отключён).
+    """
+    huid = message.sender.huid
+    bot_id = resolve_bot_id(bot)
+    try:
+        sync_ids = await get_transient_messages(huid)
+    except Exception:
+        logger.exception("_force_cleanup_transient: get_transient_messages")
+        return
+    if not sync_ids:
+        return
+    for sid in sync_ids:
+        if bot_id is None:
+            break
+        try:
+            await bot.delete_message(bot_id=bot_id, sync_id=sid)
+        except Exception as exc:
+            logger.debug(
+                "_force_cleanup_transient: delete_message failed: {}",
+                repr(exc),
+                sync_id=str(sid),
+            )
+    try:
+        await clear_transient_messages(huid)
+    except Exception:
+        logger.exception("_force_cleanup_transient: clear_transient_messages")
+
+
+async def _exit_carousel_with_reply(
+    message: IncomingMessage,
+    bot: Bot,
+    body: str,
+    bubbles: Optional[BubbleMarkup] = None,
+) -> None:
+    """Выйти из карусели жюри: удалить якорь, очистить FSM, прислать сообщение.
+
+    Используется во всех ветках выхода: «Раунд закрыт», «Раунд недоступен»,
+    «Нет работ», «Состояние карусели потеряно», ошибки submit и т.п.
+    """
+    fsm = message.state.fsm
+    await _drop_old_anchor(message, bot, fsm)
+    await fsm.clear()
+    await reply_to_user(message, bot, body, bubbles=bubbles)
+
+
 async def _render_current_view(
     message: IncomingMessage,
     bot: Bot,
     round_id: UUID,
     requested_index: int = 0,
 ) -> None:
-    """Отрисовать текущую позицию карусели.
+    """Полностью перерисовать текущую позицию карусели (jt_open / jt_nav).
 
-    Делает три SQL-запроса (round + candidates + drafts) одной
-    транзакцией через ``get_round_candidates_with_drafts``.
+    1. Читает раунд + кандидатов + черновики (одна транзакция).
+    2. Удаляет старый photo-якорь (если был в FSM) и source-сообщение.
+    3. Шлёт новый persistent photo-якорь + transient хвост через
+       ``send_jury_carousel``.
+    4. Сохраняет sync_id нового якоря в FSM
+       (``FSM_KEY_JURY_TASK_ANCHOR_SYNC_ID``).
     """
     huid = message.sender.huid
     async with get_session()() as session:
@@ -235,38 +352,35 @@ async def _render_current_view(
                 round_id, huid, session=session
             )
         except LookupError:
-            await reply_to_user(
+            await _exit_carousel_with_reply(
                 message,
                 bot,
                 "Этот раунд больше не доступен — возможно, он закрыт. "
                 "Откройте список задач заново.",
                 bubbles=_back_to_tasks_bubbles(),
             )
-            await message.state.fsm.clear()
             return
 
         from database.models import JuryRoundStatus
 
         if round_obj.status != JuryRoundStatus.OPEN:
-            await reply_to_user(
+            await _exit_carousel_with_reply(
                 message,
                 bot,
                 "Раунд закрыт — ваши оценки больше не принимаются. "
                 "Список задач обновлён.",
                 bubbles=_back_to_tasks_bubbles(),
             )
-            await message.state.fsm.clear()
             return
 
         total = len(candidates)
         if total == 0:
-            await reply_to_user(
+            await _exit_carousel_with_reply(
                 message,
                 bot,
                 "В этом раунде нет работ для оценки.",
                 bubbles=_back_to_tasks_bubbles(),
             )
-            await message.state.fsm.clear()
             return
 
         index = _clamp_index(requested_index, total)
@@ -277,7 +391,8 @@ async def _render_current_view(
         progress_no = sum(1 for v in drafts.values() if v == JuryVoteValue.NO)
         pool = PoolKey(track=round_obj.track, age_category=round_obj.age_category)
 
-    await message.state.fsm.update_data(
+    fsm = message.state.fsm
+    await fsm.update_data(
         **{
             FSM_KEY_JURY_TASK_ROUND_ID: str(round_id),
             FSM_KEY_JURY_TASK_INDEX: index,
@@ -318,17 +433,28 @@ async def _render_current_view(
         attachment_count=attachment_count,
     )
 
-    sent = await send_application_files_with_card(
+    # Снять старый якорь (если был в FSM) и source-сообщение.
+    # source может быть либо старым якорем (повторный nav), либо menu-сообщением
+    # «список задач» (первый jt_open) — оба удаляются безопасно.
+    await _drop_old_anchor(message, bot, fsm)
+    await delete_source_message(message, bot)
+
+    new_anchor_sync_id = await send_jury_carousel(
         message,
         bot,
-        app=current_app,
         body=text,
         bubbles=bubbles,
-        anonymous_extra_captions=True,
         attachments=attachments,
     )
-    if not sent:
+    if new_anchor_sync_id is None:
+        # Не удалось отправить ни photo-якорь, ни text-fallback — последний
+        # шанс достучаться до судьи: persistent text через reply_to_user
+        # (без edit, т.к. transient_source_deleted уже True).
         await reply_to_user(message, bot, text, bubbles=bubbles)
+        await _write_anchor_sync_id(fsm, None)
+        return
+
+    await _write_anchor_sync_id(fsm, new_anchor_sync_id)
 
 
 def _back_to_tasks_bubbles() -> BubbleMarkup:
@@ -380,7 +506,14 @@ async def cmd_jt_open(message: IncomingMessage, bot: Bot) -> None:
 )
 @jury_only
 async def cmd_jt_nav(message: IncomingMessage, bot: Bot) -> None:
-    """Перейти на следующую/предыдущую работу карусели."""
+    """Перейти на следующую/предыдущую работу карусели.
+
+    ``cleanup_middleware`` удаляет хвост 1..N предыдущей работы.
+    Старый photo-якорь снимается внутри ``_render_current_view``
+    через ``_drop_old_anchor`` (он же выставляет
+    ``transient_source_deleted``, чтобы reply_to_user в ошибочных
+    ветках не пытался edit на удалённом сообщении).
+    """
     data = message.data or {}
     direction = data.get("dir")
     fsm = message.state.fsm
@@ -388,7 +521,7 @@ async def cmd_jt_nav(message: IncomingMessage, bot: Bot) -> None:
     round_id = _safe_uuid(fsm_data.get(FSM_KEY_JURY_TASK_ROUND_ID))
     index = _safe_int(fsm_data.get(FSM_KEY_JURY_TASK_INDEX), 0)
     if round_id is None:
-        await reply_to_user(
+        await _exit_carousel_with_reply(
             message,
             bot,
             "Состояние карусели потеряно. Откройте задачу заново.",
@@ -408,11 +541,22 @@ async def cmd_jt_nav(message: IncomingMessage, bot: Bot) -> None:
     "/jt_vote",
     description="Оценить работу (Да/Нет)",
     visible=False,
-    middlewares=[fsm_middleware, cleanup_middleware],
+    middlewares=[fsm_middleware],
 )
 @jury_only
 async def cmd_jt_vote(message: IncomingMessage, bot: Bot) -> None:
-    """Сохранить черновик голоса для текущей работы карусели."""
+    """Сохранить черновик голоса для текущей работы карусели.
+
+    Главная цель — **не двигать viewport** на самом частом клике судьи:
+    после ``upsert_draft_vote`` обновляем только caption и кнопки
+    photo-якоря через ``edit_jury_anchor_caption`` (`bot.edit_message`
+    с body+bubbles без file). Фото и хвост из доп. файлов остаются
+    на месте.
+
+    ``cleanup_middleware`` намеренно снят с этой команды — иначе он
+    удалил бы хвост ещё до хендлера, и файлы 2..N исчезали бы при
+    каждом голосе.
+    """
     data = message.data or {}
     vote_name = data.get("vote")
     if vote_name not in JuryVoteValue.__members__:
@@ -425,7 +569,7 @@ async def cmd_jt_vote(message: IncomingMessage, bot: Bot) -> None:
     round_id = _safe_uuid(fsm_data.get(FSM_KEY_JURY_TASK_ROUND_ID))
     index = _safe_int(fsm_data.get(FSM_KEY_JURY_TASK_INDEX), 0)
     if round_id is None:
-        await reply_to_user(
+        await _exit_carousel_with_reply(
             message,
             bot,
             "Состояние карусели потеряно. Откройте задачу заново.",
@@ -436,26 +580,36 @@ async def cmd_jt_vote(message: IncomingMessage, bot: Bot) -> None:
     huid = message.sender.huid
     async with get_session()() as session:
         try:
-            round_obj, candidates, _ = await jury_service.get_round_candidates_with_drafts(
+            round_obj, candidates, drafts = await jury_service.get_round_candidates_with_drafts(
                 round_id, huid, session=session
             )
         except LookupError:
-            await reply_to_user(
+            await _exit_carousel_with_reply(
                 message,
                 bot,
                 "Этот раунд больше не доступен.",
                 bubbles=_back_to_tasks_bubbles(),
             )
-            await fsm.clear()
             return
         if not candidates:
-            await reply_to_user(
+            await _exit_carousel_with_reply(
                 message,
                 bot,
                 "В этом раунде нет работ для оценки.",
                 bubbles=_back_to_tasks_bubbles(),
             )
-            await fsm.clear()
+            return
+
+        from database.models import JuryRoundStatus
+
+        if round_obj.status != JuryRoundStatus.OPEN:
+            await _exit_carousel_with_reply(
+                message,
+                bot,
+                "Раунд закрыт — ваши оценки больше не принимаются. "
+                "Список задач обновлён.",
+                bubbles=_back_to_tasks_bubbles(),
+            )
             return
 
         clamped = _clamp_index(index, len(candidates))
@@ -480,7 +634,77 @@ async def cmd_jt_vote(message: IncomingMessage, bot: Bot) -> None:
             )
             return
 
-    await _render_current_view(message, bot, round_id, requested_index=index)
+        # Перечитываем drafts с актуальным голосом для пересборки caption/bubbles.
+        drafts = dict(drafts)
+        drafts[target_app.id] = vote_value
+
+        total = len(candidates)
+        current_app = candidates[clamped]
+        current_vote = drafts.get(current_app.id)
+        can_submit = _compute_submit_eligibility(drafts, candidates)
+        progress_yes = sum(1 for v in drafts.values() if v == JuryVoteValue.YES)
+        progress_no = sum(1 for v in drafts.values() if v == JuryVoteValue.NO)
+        pool = PoolKey(track=round_obj.track, age_category=round_obj.age_category)
+
+    # Атрибут вне сессии — для caption нужно знать число файлов работы,
+    # чтобы корректно показать notice о доп. файлах.
+    try:
+        attachment_count_list = await storage_service.get_application_files_for_chat(
+            current_app
+        )
+    except Exception:
+        logger.exception(
+            "/jt_vote: не удалось получить число файлов",
+            br_id=current_app.br_id,
+        )
+        attachment_count_list = None
+    attachment_count = (
+        len(attachment_count_list) if attachment_count_list else 0
+    )
+
+    bubbles = _build_carousel_bubbles(
+        round_id=round_id,
+        index=clamped,
+        total=total,
+        current_vote=current_vote,
+        can_submit=can_submit,
+    )
+    text = _render_task_text(
+        pool=pool,
+        round_no=round_obj.round_no,
+        index=clamped,
+        total=total,
+        app=current_app,
+        current_vote=current_vote,
+        progress_yes=progress_yes,
+        progress_no=progress_no,
+        cloud_link=current_app.cloud_link,
+        can_submit=can_submit,
+        attachment_count=attachment_count,
+    )
+
+    anchor_sync_id = await _read_anchor_sync_id(fsm)
+    bot_id = resolve_bot_id(bot)
+
+    if anchor_sync_id is not None and bot_id is not None:
+        ok = await edit_jury_anchor_caption(
+            bot,
+            bot_id=bot_id,
+            anchor_sync_id=anchor_sync_id,
+            body=text,
+            bubbles=bubbles,
+        )
+        if ok:
+            return
+        logger.warning(
+            "/jt_vote: edit_jury_anchor_caption провалился — fallback на полный рендер",
+            anchor_sync_id=str(anchor_sync_id),
+        )
+
+    # Fallback: якоря нет в FSM (рестарт / истёкший FSM) или edit не прошёл.
+    # cleanup_middleware на /jt_vote отключён, поэтому хвост чистим вручную.
+    await _force_cleanup_transient(message, bot)
+    await _render_current_view(message, bot, round_id, requested_index=clamped)
 
 
 # =====================================================================
@@ -499,9 +723,13 @@ async def cmd_jt_back(message: IncomingMessage, bot: Bot) -> None:
     """Вернуться к списку задач («В меню задач»).
 
     Черновики НЕ сбрасываются — они в БД. FSM-данные карусели
-    очищаются, чтобы при возврате стартовать с позиции 0.
+    очищаются, чтобы при возврате стартовать с позиции 0. Photo-якорь
+    удаляется явно, чтобы не оставлять «висящую» карточку с
+    устаревшими кнопками.
     """
-    await message.state.fsm.clear()
+    fsm = message.state.fsm
+    await _drop_old_anchor(message, bot, fsm)
+    await fsm.clear()
     await cmd_jury_tasks_internal(message, bot)
 
 
@@ -561,7 +789,7 @@ async def cmd_jt_submit(message: IncomingMessage, bot: Bot) -> None:
     fsm_data = await fsm.get_data()
     round_id = _safe_uuid(fsm_data.get(FSM_KEY_JURY_TASK_ROUND_ID))
     if round_id is None:
-        await reply_to_user(
+        await _exit_carousel_with_reply(
             message,
             bot,
             "Состояние карусели потеряно. Откройте задачу заново.",
@@ -576,13 +804,12 @@ async def cmd_jt_submit(message: IncomingMessage, bot: Bot) -> None:
                 round_id, huid, session=session
             )
         except LookupError:
-            await reply_to_user(
+            await _exit_carousel_with_reply(
                 message,
                 bot,
                 "Раунд больше не доступен.",
                 bubbles=_back_to_tasks_bubbles(),
             )
-            await fsm.clear()
             return
         if not _compute_submit_eligibility(drafts, candidates):
             await safe_answer_transient(
@@ -624,8 +851,7 @@ async def cmd_jt_submit(message: IncomingMessage, bot: Bot) -> None:
                 round_id=str(round_id),
                 jury_huid=str(huid),
             )
-            await fsm.clear()
-            await reply_to_user(
+            await _exit_carousel_with_reply(
                 message,
                 bot,
                 "Вы были отозваны из жюри, голоса не сохранены.",
@@ -638,6 +864,7 @@ async def cmd_jt_submit(message: IncomingMessage, bot: Bot) -> None:
         round_id=str(round_id),
         jury_huid=str(huid),
     )
+    await _drop_old_anchor(message, bot, fsm)
     await fsm.clear()
     await safe_answer_transient(
         message,

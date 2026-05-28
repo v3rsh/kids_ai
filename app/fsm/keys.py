@@ -33,6 +33,7 @@ FSM_KEY_FILE_UPLOAD_ALLOWED = "file_upload_allowed"
 # --- jury task carousel ---
 FSM_KEY_JURY_TASK_ROUND_ID = "jury_task_round_id"
 FSM_KEY_JURY_TASK_INDEX = "jury_task_index"
+FSM_KEY_JURY_TASK_ANCHOR_SYNC_ID = "jury_task_anchor_sync_id"
 
 # --- admin roles ---
 FSM_KEY_ADMIN_ADD_ROLE = "admin_add_role"
@@ -54,5 +55,6 @@ __all__ = [
     "FSM_KEY_FILE_UPLOAD_ALLOWED",
     "FSM_KEY_JURY_TASK_ROUND_ID",
     "FSM_KEY_JURY_TASK_INDEX",
+    "FSM_KEY_JURY_TASK_ANCHOR_SYNC_ID",
     "FSM_KEY_ADMIN_ADD_ROLE",
 ]

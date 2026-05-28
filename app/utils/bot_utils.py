@@ -449,6 +449,179 @@ def pagination_footer(current: int, total: int, *, title: str | None = None) -> 
     return f"\n\n{text}"
 
 
+# =====================================================================
+# Хелперы карусели жюри (photo-якорь + edit caption на голосе)
+# =====================================================================
+
+# Подстроки в str(exc), при которых delete_message можно тихо
+# проигнорировать (сообщение уже неактуально / удалено / чат недоступен).
+# Совпадает с ``cleanup_middleware._SILENT_DELETE_PATTERNS``.
+_JURY_ANCHOR_SILENT_DELETE_PATTERNS = (
+    "not found",
+    "already deleted",
+    "event_not_found",
+    "chat_not_found",
+)
+
+
+async def send_jury_carousel(
+    message: IncomingMessage,
+    bot: Bot,
+    *,
+    body: str,
+    bubbles: Optional[BubbleMarkup] = None,
+    attachments: list[OutgoingAttachment] | None = None,
+) -> UUID | None:
+    """Отрисовать карточку текущей работы жюри: persistent photo-якорь + transient хвост.
+
+    В отличие от ``send_application_files_with_card``:
+    - 1-й файл уходит как **persistent** (`send_photo_persistent`) —
+      ``cleanup_middleware`` его не удалит, можно редактировать caption
+      через ``edit_jury_anchor_caption``;
+    - 2..N — как обычно transient (``send_photo_transient``);
+    - **не вызывает** ``delete_source_message`` — снятие старого якоря
+      и source-сообщения отвечает хендлер (через ``delete_jury_anchor``).
+
+    Если ``attachments`` пуст или ``None`` — отправляет текстовый
+    persistent-якорь (через ``bot.answer_message``) с тем же body и bubbles.
+
+    Args:
+        message: входящее сообщение (нужен ``message.sender.huid`` для трекинга
+            хвоста).
+        bot: pybotx-инстанс.
+        body: caption якоря (полный текст карточки).
+        bubbles: ``BubbleMarkup`` якоря.
+        attachments: файлы работы или ``None``.
+
+    Returns:
+        sync_id якоря (для записи в FSM) или ``None``, если отправка
+        провалилась.
+    """
+    truncated = _truncate_body(body)
+
+    if not attachments:
+        send_kwargs = {"wait_callback": False}
+        if bubbles is not None:
+            send_kwargs["bubbles"] = bubbles
+        try:
+            return await bot.answer_message(truncated, **send_kwargs)
+        except Exception:
+            logger.exception("send_jury_carousel: не удалось отправить text-якорь")
+            return None
+
+    first, *rest = attachments
+    try:
+        anchor_sync_id = await send_photo_persistent(
+            message,
+            bot,
+            body=truncated,
+            photo=first,
+            bubbles=bubbles,
+        )
+    except Exception:
+        logger.exception(
+            "send_jury_carousel: не удалось отправить photo-якорь",
+            filename=first.filename,
+        )
+        return None
+
+    total = len(attachments)
+    for idx, attachment in enumerate(rest, start=2):
+        caption = format_anonymous_file_caption(idx, total)
+        try:
+            await send_photo_transient(
+                message,
+                bot,
+                body=caption,
+                photo=attachment,
+            )
+        except Exception:
+            logger.exception(
+                "send_jury_carousel: не удалось отправить файл хвоста",
+                filename=attachment.filename,
+                idx=idx,
+                total=total,
+            )
+
+    return anchor_sync_id
+
+
+async def edit_jury_anchor_caption(
+    bot: Bot,
+    *,
+    bot_id: UUID,
+    anchor_sync_id: UUID,
+    body: str,
+    bubbles: Optional[BubbleMarkup] = None,
+    retries: int = 2,
+    delay: float = 1.0,
+) -> bool:
+    """Отредактировать caption и кнопки photo-якоря карусели жюри.
+
+    Реализует «edit caption» из pybotx 0.76.3: ``body`` и ``bubbles``
+    обновляются, ``file`` **НЕ передаётся** (``Undefined`` → ключа
+    ``file`` нет в JSON → CTS не трогает вложение, фото остаётся на
+    своём месте в истории).
+
+    Эту функцию вызывает ``cmd_jt_vote`` (голос на текущей работе);
+    ``cmd_jt_nav`` пересоздаёт якорь и edit caption не использует.
+
+    Returns:
+        True — edit прошёл за ``retries`` попыток; False — все попытки
+        исчерпаны или ошибка невосстановимая (хендлер должен сделать
+        fallback на полный рендер через ``send_jury_carousel``).
+    """
+    truncated = _truncate_body(body)
+    kwargs: dict = {
+        "bot_id": bot_id,
+        "sync_id": anchor_sync_id,
+        "body": truncated,
+    }
+    if bubbles is not None:
+        kwargs["bubbles"] = bubbles
+
+    return await _try_with_retry(
+        bot.edit_message,
+        kwargs,
+        retries,
+        delay,
+        "edit_jury_anchor_caption",
+    )
+
+
+async def delete_jury_anchor(
+    bot: Bot,
+    *,
+    bot_id: UUID,
+    anchor_sync_id: UUID,
+) -> None:
+    """Безопасно удалить photo-якорь карусели жюри.
+
+    Используется в ``cmd_jt_nav`` (перед отправкой нового якоря),
+    ``cmd_jt_back``, ``cmd_jt_submit`` и всех ветках выхода из карусели,
+    чтобы не оставлять «висящий» якорь с устаревшими кнопками.
+
+    Тихо игнорирует «уже удалено / не найдено» (логирует на DEBUG);
+    остальные ошибки — WARNING.
+    """
+    try:
+        await bot.delete_message(bot_id=bot_id, sync_id=anchor_sync_id)
+    except Exception as exc:
+        text = str(exc).lower()
+        if any(pat in text for pat in _JURY_ANCHOR_SILENT_DELETE_PATTERNS):
+            logger.debug(
+                "delete_jury_anchor: anchor уже удалён или не найден: {}",
+                repr(exc),
+                anchor_sync_id=str(anchor_sync_id),
+            )
+            return
+        logger.warning(
+            "delete_jury_anchor: не удалось удалить anchor: {}",
+            repr(exc),
+            anchor_sync_id=str(anchor_sync_id),
+        )
+
+
 async def send_application_files_with_card(
     message: IncomingMessage,
     bot: Bot,
