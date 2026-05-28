@@ -23,6 +23,25 @@ from fsm.keys import (
 )
 
 
+def _extract_nav_buttons(bubbles) -> list[tuple[str, dict | None]]:
+    """Команды и data кнопок ``/jt_nav`` из ``BubbleMarkup``."""
+    result: list[tuple[str, dict | None]] = []
+    for row in bubbles:
+        for button in row:
+            if button.command == "/jt_nav":
+                result.append((button.label, button.data))
+    return result
+
+
+def _extract_button_labels(bubbles) -> list[str]:
+    """Все подписи кнопок карусели."""
+    labels: list[str] = []
+    for row in bubbles:
+        for button in row:
+            labels.append(button.label)
+    return labels
+
+
 def _round_obj(round_no: int = 1) -> MagicMock:
     obj = MagicMock()
     obj.round_no = round_no
@@ -425,3 +444,339 @@ class TestRenderCurrentViewAnchorLifecycle:
         ]
         assert anchor_writes, "ANCHOR_SYNC_ID не записан в FSM"
         assert anchor_writes[-1] == str(new_anchor)
+
+
+class TestCarouselNavigationHelpers:
+    """Зацикленная навигация, resume и «Следующая без оценки»."""
+
+    def test_wrap_index_first_to_last(self):
+        from handlers.jury_tasks import _wrap_index
+
+        assert _wrap_index(-1, 5) == 4
+        assert _wrap_index(0, 5) == 0
+
+    def test_wrap_index_last_to_first(self):
+        from handlers.jury_tasks import _wrap_index
+
+        assert _wrap_index(5, 5) == 0
+        assert _wrap_index(4, 5) == 4
+
+    def test_wrap_index_zero_total(self):
+        from handlers.jury_tasks import _wrap_index
+
+        assert _wrap_index(5, 0) == 0
+
+    def test_first_unrated_index_partial_drafts(self):
+        from handlers.jury_tasks import _first_unrated_index
+
+        candidates = [_candidate(0), _candidate(1), _candidate(2)]
+        drafts = {candidates[0].id: JuryVoteValue.YES}
+        assert _first_unrated_index(candidates, drafts) == 1
+
+    def test_first_unrated_index_all_rated_returns_zero(self):
+        from handlers.jury_tasks import _first_unrated_index
+
+        candidates = [_candidate(0), _candidate(1)]
+        drafts = {
+            candidates[0].id: JuryVoteValue.YES,
+            candidates[1].id: JuryVoteValue.NO,
+        }
+        assert _first_unrated_index(candidates, drafts) == 0
+
+    def test_find_next_unrated_wraps_around(self):
+        from handlers.jury_tasks import _find_next_unrated_index
+
+        candidates = [_candidate(0), _candidate(1), _candidate(2)]
+        drafts = {candidates[1].id: JuryVoteValue.YES}
+        assert _find_next_unrated_index(candidates, drafts, current_index=2) == 0
+
+    def test_find_next_unrated_none_when_only_current_unrated(self):
+        from handlers.jury_tasks import _find_next_unrated_index
+
+        candidates = [_candidate(0), _candidate(1)]
+        drafts = {candidates[1].id: JuryVoteValue.NO}
+        assert _find_next_unrated_index(candidates, drafts, current_index=0) is None
+
+    def test_build_carousel_bubbles_cyclic_on_first_and_last(self):
+        from handlers.jury_tasks import _build_carousel_bubbles
+
+        candidates = [_candidate(0), _candidate(1), _candidate(2)]
+        round_id = uuid4()
+        # Черновик на работе 1 — skip видна только с index=0 (работа 2 без оценки).
+        drafts = {candidates[1].id: JuryVoteValue.YES}
+
+        first_nav = _extract_nav_buttons(
+            _build_carousel_bubbles(
+                round_id=round_id,
+                index=0,
+                total=3,
+                current_vote=None,
+                can_submit=False,
+                candidates=candidates,
+                drafts=drafts,
+            )
+        )
+        first_dirs = {data["dir"] for _, data in first_nav}
+        assert first_dirs == {"prev", "next", "next_unrated"}
+
+        last_nav = _extract_nav_buttons(
+            _build_carousel_bubbles(
+                round_id=round_id,
+                index=2,
+                total=3,
+                current_vote=None,
+                can_submit=False,
+                candidates=candidates,
+                drafts=drafts,
+            )
+        )
+        last_dirs = {data["dir"] for _, data in last_nav}
+        assert last_dirs == {"prev", "next", "next_unrated"}
+
+    def test_build_carousel_bubbles_skip_visible_when_other_unrated(self):
+        from handlers.jury_tasks import _build_carousel_bubbles
+
+        candidates = [_candidate(0), _candidate(1)]
+        drafts = {candidates[0].id: JuryVoteValue.YES}
+        labels = _extract_button_labels(
+            _build_carousel_bubbles(
+                round_id=uuid4(),
+                index=0,
+                total=2,
+                current_vote=JuryVoteValue.YES,
+                can_submit=False,
+                candidates=candidates,
+                drafts=drafts,
+            )
+        )
+        assert "Следующая без оценки" in labels
+
+    def test_build_carousel_bubbles_skip_hidden_when_only_current_unrated(self):
+        from handlers.jury_tasks import _build_carousel_bubbles
+
+        candidates = [_candidate(0), _candidate(1)]
+        drafts = {candidates[1].id: JuryVoteValue.NO}
+        labels = _extract_button_labels(
+            _build_carousel_bubbles(
+                round_id=uuid4(),
+                index=0,
+                total=2,
+                current_vote=None,
+                can_submit=False,
+                candidates=candidates,
+                drafts=drafts,
+            )
+        )
+        assert "Следующая без оценки" not in labels
+
+    def test_build_carousel_bubbles_no_nav_when_single_work(self):
+        from handlers.jury_tasks import _build_carousel_bubbles
+
+        labels = _extract_button_labels(
+            _build_carousel_bubbles(
+                round_id=uuid4(),
+                index=0,
+                total=1,
+                current_vote=None,
+                can_submit=False,
+                candidates=[_candidate(0)],
+                drafts={},
+            )
+        )
+        assert not any(label.startswith(("←", "Следующая")) for label in labels)
+
+
+@pytest.mark.asyncio
+class TestCarouselNavigationIntegration:
+    """cmd_jt_open / cmd_jt_nav / _render_current_view с навигацией."""
+
+    async def test_render_next_unrated_stale_keeps_index(self, fake_session):
+        from handlers.jury_tasks import _render_current_view
+
+        huid = uuid4()
+        round_id = uuid4()
+        bot_id = uuid4()
+        message = _message(
+            huid=huid,
+            bot_id=bot_id,
+            fsm_data={FSM_KEY_JURY_TASK_INDEX: 1},
+        )
+        bot = MagicMock()
+        get_session_mock, _ = fake_session
+        candidates = [_candidate(0), _candidate(1)]
+        drafts = {
+            candidates[0].id: JuryVoteValue.YES,
+            candidates[1].id: JuryVoteValue.NO,
+        }
+
+        with (
+            patch("handlers.jury_tasks.get_session", get_session_mock),
+            patch(
+                "handlers.jury_tasks.jury_service.get_round_candidates_with_drafts",
+                new=AsyncMock(return_value=(_round_obj(), candidates, drafts)),
+            ),
+            patch(
+                "handlers.jury_tasks.storage_service.get_application_files_for_chat",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch("handlers.jury_tasks.resolve_bot_id", return_value=bot_id),
+            patch("handlers.jury_tasks.delete_jury_anchor", new=AsyncMock()),
+            patch("handlers.jury_tasks.delete_source_message", new=AsyncMock()),
+            patch(
+                "handlers.jury_tasks.send_jury_carousel",
+                new=AsyncMock(return_value=uuid4()),
+            ) as send_mock,
+            patch(
+                "handlers.jury_tasks.safe_answer_transient",
+                new=AsyncMock(),
+            ) as transient_mock,
+        ):
+            await _render_current_view(
+                message, bot, round_id, nav_direction="next_unrated"
+            )
+
+        index_writes = [
+            call.kwargs.get(FSM_KEY_JURY_TASK_INDEX)
+            for call in message.state.fsm.update_data.await_args_list
+            if FSM_KEY_JURY_TASK_INDEX in call.kwargs
+        ]
+        assert index_writes[-1] == 1
+        bubbles = send_mock.await_args.kwargs["bubbles"]
+        assert "Следующая без оценки" not in _extract_button_labels(bubbles)
+        transient_mock.assert_awaited_once()
+        assert "уже оценены" in transient_mock.await_args.args[2]
+
+    async def test_cmd_jt_open_resumes_first_unrated(self, fake_session):
+        from handlers.jury_tasks import cmd_jt_open
+
+        huid = uuid4()
+        round_id = uuid4()
+        message = _message(
+            huid=huid,
+            data={"round_id": str(round_id)},
+        )
+        bot = MagicMock()
+
+        with (
+            _patch_jury_role(huid),
+            patch(
+                "handlers.jury_tasks._render_current_view",
+                new=AsyncMock(),
+            ) as render_mock,
+        ):
+            await cmd_jt_open(message, bot)
+
+        render_mock.assert_awaited_once()
+        assert render_mock.await_args.kwargs.get("resume_unrated") is True
+
+    async def test_cmd_jt_open_all_rated_starts_at_zero(self, fake_session):
+        from handlers.jury_tasks import _render_current_view
+
+        huid = uuid4()
+        round_id = uuid4()
+        bot_id = uuid4()
+        message = _message(huid=huid, bot_id=bot_id)
+        bot = MagicMock()
+        get_session_mock, _ = fake_session
+        candidates = [_candidate(0), _candidate(1)]
+        drafts = {
+            candidates[0].id: JuryVoteValue.YES,
+            candidates[1].id: JuryVoteValue.NO,
+        }
+
+        with (
+            patch("handlers.jury_tasks.get_session", get_session_mock),
+            patch(
+                "handlers.jury_tasks.jury_service.get_round_candidates_with_drafts",
+                new=AsyncMock(return_value=(_round_obj(), candidates, drafts)),
+            ),
+            patch(
+                "handlers.jury_tasks.storage_service.get_application_files_for_chat",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch("handlers.jury_tasks.resolve_bot_id", return_value=bot_id),
+            patch("handlers.jury_tasks.delete_jury_anchor", new=AsyncMock()),
+            patch("handlers.jury_tasks.delete_source_message", new=AsyncMock()),
+            patch(
+                "handlers.jury_tasks.send_jury_carousel",
+                new=AsyncMock(return_value=uuid4()),
+            ),
+        ):
+            await _render_current_view(
+                message, bot, round_id, resume_unrated=True
+            )
+
+        index_writes = [
+            call.kwargs.get(FSM_KEY_JURY_TASK_INDEX)
+            for call in message.state.fsm.update_data.await_args_list
+            if FSM_KEY_JURY_TASK_INDEX in call.kwargs
+        ]
+        assert index_writes[-1] == 0
+
+    async def test_cmd_jt_open_partial_drafts_not_at_zero(self, fake_session):
+        from handlers.jury_tasks import _render_current_view
+
+        huid = uuid4()
+        round_id = uuid4()
+        bot_id = uuid4()
+        message = _message(huid=huid, bot_id=bot_id)
+        bot = MagicMock()
+        get_session_mock, _ = fake_session
+        candidates = [_candidate(0), _candidate(1), _candidate(2)]
+        drafts = {candidates[0].id: JuryVoteValue.YES}
+
+        with (
+            patch("handlers.jury_tasks.get_session", get_session_mock),
+            patch(
+                "handlers.jury_tasks.jury_service.get_round_candidates_with_drafts",
+                new=AsyncMock(return_value=(_round_obj(), candidates, drafts)),
+            ),
+            patch(
+                "handlers.jury_tasks.storage_service.get_application_files_for_chat",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch("handlers.jury_tasks.resolve_bot_id", return_value=bot_id),
+            patch("handlers.jury_tasks.delete_jury_anchor", new=AsyncMock()),
+            patch("handlers.jury_tasks.delete_source_message", new=AsyncMock()),
+            patch(
+                "handlers.jury_tasks.send_jury_carousel",
+                new=AsyncMock(return_value=uuid4()),
+            ),
+        ):
+            await _render_current_view(
+                message, bot, round_id, resume_unrated=True
+            )
+
+        index_writes = [
+            call.kwargs.get(FSM_KEY_JURY_TASK_INDEX)
+            for call in message.state.fsm.update_data.await_args_list
+            if FSM_KEY_JURY_TASK_INDEX in call.kwargs
+        ]
+        assert index_writes[-1] == 1
+
+    async def test_cmd_jt_nav_next_unrated_full_coverage(self, fake_session):
+        from handlers.jury_tasks import cmd_jt_nav
+
+        huid = uuid4()
+        round_id = uuid4()
+        message = _message(
+            huid=huid,
+            data={"dir": "next_unrated"},
+            fsm_data={
+                FSM_KEY_JURY_TASK_ROUND_ID: str(round_id),
+                FSM_KEY_JURY_TASK_INDEX: 0,
+            },
+        )
+        bot = MagicMock()
+
+        with (
+            _patch_jury_role(huid),
+            patch(
+                "handlers.jury_tasks._render_current_view",
+                new=AsyncMock(),
+            ) as render_mock,
+        ):
+            await cmd_jt_nav(message, bot)
+
+        render_mock.assert_awaited_once()
+        assert render_mock.await_args.kwargs.get("nav_direction") == "next_unrated"

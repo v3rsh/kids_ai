@@ -5,7 +5,9 @@ Handlers экрана задачи жюри.
 - карусель работ одного пула в одном раунде (файлы работы + текст
   и кнопки на первом фото, анонимность через локальный номер 1..N);
 - кнопки ``Да`` / ``Нет`` (черновик), помечаются эмодзи после выбора;
-- навигация ``← Предыдущая`` / ``Следующая →``;
+- навигация ``← Предыдущая`` / ``Следующая →`` (зацикленная при
+  ``total > 1``), ``Следующая без оценки`` (поиск по кругу);
+- при повторном входе — старт на первой неоценённой работе;
 - ``📋 В меню задач`` — выход к списку задач (черновики сохраняются);
 - ``✓ Отправить оценки`` — активна только когда (а) все работы оценены
   и (б) есть и YES, и NO (правило разброса в одном раунде).
@@ -17,7 +19,7 @@ Handlers экрана задачи жюри.
 """
 from __future__ import annotations
 
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Sequence
 from uuid import UUID
 
 from loguru import logger
@@ -86,6 +88,36 @@ def _clamp_index(index: int, total: int) -> int:
     return max(0, min(index, total - 1))
 
 
+def _wrap_index(index: int, total: int) -> int:
+    """Зацикленный индекс карусели: ``(index ± 1) % total``."""
+    return index % total if total > 0 else 0
+
+
+def _first_unrated_index(
+    candidates: Sequence[Application],
+    drafts: Mapping[UUID, JuryVoteValue],
+) -> int:
+    """Первая работа без черновика; если все оценены — 0."""
+    for idx, app in enumerate(candidates):
+        if app.id not in drafts:
+            return idx
+    return 0
+
+
+def _find_next_unrated_index(
+    candidates: Sequence[Application],
+    drafts: Mapping[UUID, JuryVoteValue],
+    current_index: int,
+) -> Optional[int]:
+    """Следующая неоценённая работа по кругу от ``(current_index + 1)``."""
+    total = len(candidates)
+    for offset in range(1, total):
+        idx = (current_index + offset) % total
+        if candidates[idx].id not in drafts:
+            return idx
+    return None
+
+
 def _vote_label(current: Optional[JuryVoteValue], target: JuryVoteValue) -> str:
     """«Да» / «Нет» с эмодзи, если это текущий черновик."""
     text = "Да" if target == JuryVoteValue.YES else "Нет"
@@ -101,6 +133,8 @@ def _build_carousel_bubbles(
     total: int,
     current_vote: Optional[JuryVoteValue],
     can_submit: bool,
+    candidates: Sequence[Application],
+    drafts: Mapping[UUID, JuryVoteValue],
 ) -> BubbleMarkup:
     """Клавиатура экрана задачи: голос / навигация / выход."""
     bubbles = BubbleMarkup()
@@ -115,19 +149,23 @@ def _build_carousel_bubbles(
         data={"vote": JuryVoteValue.NO.name},
     )
     if total > 1:
-        if index > 0:
+        bubbles.add_button(
+            command="/jt_nav",
+            label="← Предыдущая",
+            data={"dir": "prev"},
+            new_row=True,
+        )
+        bubbles.add_button(
+            command="/jt_nav",
+            label="Следующая →",
+            data={"dir": "next"},
+        )
+        if _find_next_unrated_index(candidates, drafts, index) is not None:
             bubbles.add_button(
                 command="/jt_nav",
-                label="← Предыдущая",
-                data={"dir": "prev"},
+                label="Следующая без оценки",
+                data={"dir": "next_unrated"},
                 new_row=True,
-            )
-        if index < total - 1:
-            bubbles.add_button(
-                command="/jt_nav",
-                label="Следующая →",
-                data={"dir": "next"},
-                new_row=(index == 0),
             )
     bubbles.add_button(
         command="/jt_back",
@@ -334,18 +372,27 @@ async def _render_current_view(
     message: IncomingMessage,
     bot: Bot,
     round_id: UUID,
-    requested_index: int = 0,
+    *,
+    requested_index: int | None = None,
+    nav_direction: str | None = None,
+    resume_unrated: bool = False,
 ) -> None:
     """Полностью перерисовать текущую позицию карусели (jt_open / jt_nav).
 
     1. Читает раунд + кандидатов + черновики (одна транзакция).
-    2. Удаляет старый photo-якорь (если был в FSM) и source-сообщение.
-    3. Шлёт новый persistent photo-якорь + transient хвост через
+    2. Вычисляет индекс: wrap prev/next, ``next_unrated``, resume или clamp.
+    3. Удаляет старый photo-якорь (если был в FSM) и source-сообщение.
+    4. Шлёт новый persistent photo-якорь + transient хвост через
        ``send_jury_carousel``.
-    4. Сохраняет sync_id нового якоря в FSM
+    5. Сохраняет sync_id нового якоря в FSM
        (``FSM_KEY_JURY_TASK_ANCHOR_SYNC_ID``).
     """
     huid = message.sender.huid
+    fsm = message.state.fsm
+    fsm_data = await fsm.get_data()
+    fsm_index = _safe_int(fsm_data.get(FSM_KEY_JURY_TASK_INDEX), 0)
+    next_unrated_stale = False
+
     async with get_session()() as session:
         try:
             round_obj, candidates, drafts = await jury_service.get_round_candidates_with_drafts(
@@ -383,7 +430,24 @@ async def _render_current_view(
             )
             return
 
-        index = _clamp_index(requested_index, total)
+        if nav_direction == "prev":
+            index = _wrap_index(fsm_index - 1, total)
+        elif nav_direction == "next":
+            index = _wrap_index(fsm_index + 1, total)
+        elif nav_direction == "next_unrated":
+            skip_index = _find_next_unrated_index(candidates, drafts, fsm_index)
+            if skip_index is None:
+                index = _clamp_index(fsm_index, total)
+                next_unrated_stale = True
+            else:
+                index = skip_index
+        elif resume_unrated:
+            index = _first_unrated_index(candidates, drafts)
+        elif requested_index is not None:
+            index = _clamp_index(requested_index, total)
+        else:
+            index = _clamp_index(fsm_index, total)
+
         current_app = candidates[index]
         current_vote = drafts.get(current_app.id)
         can_submit = _compute_submit_eligibility(drafts, candidates)
@@ -391,7 +455,6 @@ async def _render_current_view(
         progress_no = sum(1 for v in drafts.values() if v == JuryVoteValue.NO)
         pool = PoolKey(track=round_obj.track, age_category=round_obj.age_category)
 
-    fsm = message.state.fsm
     await fsm.update_data(
         **{
             FSM_KEY_JURY_TASK_ROUND_ID: str(round_id),
@@ -418,6 +481,8 @@ async def _render_current_view(
         total=total,
         current_vote=current_vote,
         can_submit=can_submit,
+        candidates=candidates,
+        drafts=drafts,
     )
     text = _render_task_text(
         pool=pool,
@@ -452,9 +517,22 @@ async def _render_current_view(
         # (без edit, т.к. transient_source_deleted уже True).
         await reply_to_user(message, bot, text, bubbles=bubbles)
         await _write_anchor_sync_id(fsm, None)
+        if next_unrated_stale:
+            await safe_answer_transient(
+                message,
+                bot,
+                "Все работы в этом раунде уже оценены.",
+            )
         return
 
     await _write_anchor_sync_id(fsm, new_anchor_sync_id)
+
+    if next_unrated_stale:
+        await safe_answer_transient(
+            message,
+            bot,
+            "Все работы в этом раунде уже оценены.",
+        )
 
 
 def _back_to_tasks_bubbles() -> BubbleMarkup:
@@ -490,7 +568,7 @@ async def cmd_jt_open(message: IncomingMessage, bot: Bot) -> None:
         )
         return
     await message.state.fsm.set_state(JuryTaskFlow.jury_task_voting)
-    await _render_current_view(message, bot, round_id, requested_index=0)
+    await _render_current_view(message, bot, round_id, resume_unrated=True)
 
 
 # =====================================================================
@@ -516,10 +594,12 @@ async def cmd_jt_nav(message: IncomingMessage, bot: Bot) -> None:
     """
     data = message.data or {}
     direction = data.get("dir")
+    if direction not in ("prev", "next", "next_unrated"):
+        logger.warning("/jt_nav: невалидный dir", data=data)
+        return
     fsm = message.state.fsm
     fsm_data = await fsm.get_data()
     round_id = _safe_uuid(fsm_data.get(FSM_KEY_JURY_TASK_ROUND_ID))
-    index = _safe_int(fsm_data.get(FSM_KEY_JURY_TASK_INDEX), 0)
     if round_id is None:
         await _exit_carousel_with_reply(
             message,
@@ -528,8 +608,7 @@ async def cmd_jt_nav(message: IncomingMessage, bot: Bot) -> None:
             bubbles=_back_to_tasks_bubbles(),
         )
         return
-    delta = -1 if direction == "prev" else 1
-    await _render_current_view(message, bot, round_id, requested_index=index + delta)
+    await _render_current_view(message, bot, round_id, nav_direction=direction)
 
 
 # =====================================================================
@@ -668,6 +747,8 @@ async def cmd_jt_vote(message: IncomingMessage, bot: Bot) -> None:
         total=total,
         current_vote=current_vote,
         can_submit=can_submit,
+        candidates=candidates,
+        drafts=drafts,
     )
     text = _render_task_text(
         pool=pool,
