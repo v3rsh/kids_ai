@@ -1,14 +1,15 @@
 """
-Хендлеры архивной выгрузки папки ``data/attachments`` в чат админа.
+Хендлеры архивной выгрузки шорт-листа в чат админа.
 
 Команды (все ``visible=False``, доступны только админу):
-- ``/admin_export_files`` — запросить выгрузку всех заявок;
-- ``/admin_export_shortlist_files`` — выгрузка только шорт-листа
-  (``JuryStatus.V_TOP_10``);
-- ``/admin_export_app`` — точечная переотправка ZIP по одному BR-ID
-  (на случай, когда часть файлов потерялась в чате).
+- ``/admin_export_shortlist_files`` — выгрузка шорт-листа
+  (``JuryStatus.V_TOP_10``); собирает до 9 tar.gz по пулам
+  ``(track, age_category)`` и шлёт их вместе с
+  ``manifest.csv`` / ``links.txt`` / ``summary``;
+- ``/admin_export_app`` — точечная переотправка tar.gz по одному
+  BR-ID (на случай, когда часть файлов потерялась в чате).
 
-Двухшаговое подтверждение для массовых выгрузок: первая команда
+Двухшаговое подтверждение для массовой выгрузки: первая команда
 показывает экран «Подтвердите?», подтверждение приходит через
 ``cmd_admin_confirm`` (см. ``handlers.admin``). Сама выгрузка
 запускается фоновым ``asyncio.Task`` через ``start_export_task`` —
@@ -43,7 +44,6 @@ collector = HandlerCollector()
 
 
 _ACTION_BY_SELECTOR = {
-    ExportSelector.ALL: "export_files_all",
     ExportSelector.SHORTLIST: "export_files_shortlist",
 }
 _SELECTOR_BY_ACTION = {v: k for k, v in _ACTION_BY_SELECTOR.items()}
@@ -55,34 +55,8 @@ _SELECTOR_BY_ACTION = {v: k for k, v in _ACTION_BY_SELECTOR.items()}
 
 
 @collector.command(
-    "/admin_export_files",
-    description="Архивная выгрузка всех заявок (admin)",
-    visible=False,
-    middlewares=[fsm_middleware, cleanup_middleware],
-)
-@admin_only
-async def cmd_admin_export_files(
-    message: IncomingMessage, bot: Bot
-) -> None:
-    """Подтверждение выгрузки всех заявок."""
-    await reply_to_user(
-        message,
-        bot,
-        (
-            "📦 Архивная выгрузка **всех заявок**.\n\n"
-            "Бот по очереди соберёт ZIP по каждому BR-ID (один ZIP — "
-            "одна заявка) и пришлёт их в этот чат. Файлы готовятся в "
-            "памяти, на диск ничего не пишется. В конце придут "
-            "`links.txt` и `manifest.csv`.\n\n"
-            "Запустить?"
-        ),
-        bubbles=admin_confirm_bubbles(action=_ACTION_BY_SELECTOR[ExportSelector.ALL]),
-    )
-
-
-@collector.command(
     "/admin_export_shortlist_files",
-    description="Архивная выгрузка шорт-листа (admin)",
+    description="Архивная выгрузка шорт-листа в чат (admin)",
     visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
@@ -90,15 +64,20 @@ async def cmd_admin_export_files(
 async def cmd_admin_export_shortlist_files(
     message: IncomingMessage, bot: Bot
 ) -> None:
-    """Подтверждение выгрузки только заявок шорт-листа."""
+    """Подтверждение выгрузки шорт-листа."""
     await reply_to_user(
         message,
         bot,
         (
-            "🏆 Архивная выгрузка **шорт-листа** (заявки в топ-10).\n\n"
-            "Состав определяется по статусу жюри ``в топ-10``. "
-            "Если шорт-лист ещё пуст — придёт только `manifest.csv` с "
-            "summary без архивов.\n\n"
+            "🏆 Архивная выгрузка **шорт-листа** в чат.\n\n"
+            "Бот сгруппирует заявки топ-10 по 9 пулам "
+            "(трек × возрастная категория) и пришлёт по одному "
+            "`tar.gz` на непустой пул. Имена коротко: "
+            "`trad-7-12.tar.gz`, `ai-0-6.tar.gz`, "
+            "`h2ai-13-18.tar.gz`. Если пул больше лимита — режется "
+            "на части `…part01.tar.gz`, `…part02.tar.gz`. "
+            "Архивы готовятся в памяти, на диск ничего не пишется. "
+            "В конце придут `links.txt`, `manifest.csv` и сводка.\n\n"
             "Запустить?"
         ),
         bubbles=admin_confirm_bubbles(
@@ -117,7 +96,7 @@ async def cmd_admin_export_shortlist_files(
 async def cmd_admin_export_app(
     message: IncomingMessage, bot: Bot
 ) -> None:
-    """``/admin_export_app BR-2026-0042`` — повторно прислать ZIP заявки.
+    """``/admin_export_app BR-2026-0042`` — повторно прислать tar.gz заявки.
 
     Без двухшагового подтверждения: операция идемпотентна и обходит
     только одну запись.
@@ -157,7 +136,7 @@ async def cmd_admin_export_app(
         )
         return
 
-    if item.kind == "zip":
+    if item.kind == "tar":
         try:
             await bot.answer_message(
                 item.caption,
@@ -179,7 +158,7 @@ async def cmd_admin_export_app(
             )
         return
 
-    # summary / status
+    # summary / status — заявка без архива (LINKS без ссылки и т.п.)
     await reply_to_user(
         message,
         bot,
@@ -207,7 +186,7 @@ async def start_export_task(
         chat_id: DM-чат админа (``resolve_dm_chat_id(message)``).
         huid: HUID админа-инициатора.
         selector_action: значение ``data.action`` из confirm-кнопки
-            (``export_files_all`` или ``export_files_shortlist``).
+            (только ``export_files_shortlist``).
 
     Returns:
         ``True`` — задача запущена; ``False`` — селектор нераспознан.
@@ -252,7 +231,7 @@ async def _run_export(
 ) -> None:
     """Тело фоновой задачи: гонит поток ExportItem и шлёт админу."""
     pause_sec = max(EXPORT_PAUSE_MS, 0) / 1000.0
-    sent_zip = 0
+    sent_archives = 0
     logger.info(
         "attachments_export: старт",
         selector=selector.value,
@@ -288,8 +267,8 @@ async def _run_export(
                 )
                 continue
 
-            if item.kind == "zip":
-                sent_zip += 1
+            if item.kind == "tar":
+                sent_archives += 1
             if pause_sec > 0:
                 await asyncio.sleep(pause_sec)
     except Exception:
@@ -316,7 +295,7 @@ async def _run_export(
     logger.info(
         "attachments_export: завершено",
         selector=selector.value,
-        sent_zip=sent_zip,
+        sent_archives=sent_archives,
     )
 
 

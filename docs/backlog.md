@@ -31,17 +31,21 @@
   `close_intake`/`reopen_intake` в `cmd_admin_confirm`, бейдж
   `🔒closed`/`open` в `admin_main_menu_bubbles`, строки в `/admin_state`
   и `/disk`.
-- `app/services/attachments_export.py` — `iter_attachments_export(selector)`
-  с пресетами `ALL` / `SHORTLIST` (через
-  `services.registry.fetch_shortlist_applications`), zip-per-BR-ID в
-  памяти, `manifest.csv` (UTF-8+BOM, `;`), `links.txt`, `summary`.
-  LINKS-заявки попадают как mini-ZIP с `meta.txt` + `cloud_link.txt`;
-  без ссылки — `manifest.status=pending_link`. При превышении
-  `EXPORT_MAX_PART_BYTES` — `oversize_meta_only`.
-- `app/handlers/admin_export.py` — `/admin_export_files`,
-  `/admin_export_shortlist_files` (двухшаговое подтверждение,
-  фоновый `asyncio.Task`), `/admin_export_app BR-...` для точечной
-  переотправки. Пауза `EXPORT_PAUSE_MS` между сообщениями.
+- `app/services/attachments_export.py` — `iter_attachments_export(SHORTLIST)`
+  (через `services.registry.fetch_shortlist_applications`), tar.gz на
+  пул `(track, age_category)` в памяти с группировкой и split-ом по
+  `EXPORT_MAX_PART_BYTES`, `manifest.csv` (UTF-8+BOM, `;`), `links.txt`,
+  `summary`. LINKS-заявки попадают в tar.gz пула с `meta.txt` +
+  `cloud_link.txt`; без ссылки — `manifest.status=pending_link`. При
+  превышении лимита на одну заявку — `oversize_meta_only`.
+- `app/services/attachments_archive.py` — полный архив на диск
+  `data/archive/bd-full.tar.gz` со всеми BR-ID-каталогами + manifest +
+  summary внутри tar и рядом. Pre-flight `ArchiveBudgetExceeded` при
+  >= `DISK_BLOCK_PCT`.
+- `app/handlers/admin_export.py` — `/admin_export_shortlist_files`
+  (двухшаговое подтверждение, фоновый `asyncio.Task`),
+  `/admin_export_app BR-...` для точечной переотправки. Пауза
+  `EXPORT_PAUSE_MS` между сообщениями.
 - env-параметры: `EXPORT_PAUSE_MS` (800 мс) и
   `EXPORT_MAX_PART_BYTES` (90 МБ) в [`deployment.md`](deployment.md).
 - Тесты: `tests/test_intake_state.py` (toggle/persistence),
@@ -56,7 +60,7 @@
    задача шлёт архивы по одному, summary приходит в конце; для десятков
    заявок этого хватает, для тысяч можно добавить промежуточные
    «n/total отправлено» сообщения.
-3. **Хеши + дедупликация ZIP-ов**. Если выгрузка прерывается и
+3. **Хеши + дедупликация tar.gz**. Если выгрузка прерывается и
    запускается повторно — текущая реализация шлёт всё заново.
    На наших объёмах не критично, но для миграции к большому конкурсу
    стоит добавить idempotency-key в `manifest.csv` и пропуск

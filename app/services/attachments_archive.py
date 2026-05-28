@@ -1,24 +1,27 @@
 """
 Архивация каталога ``ATTACHMENTS_DIR`` на локальный диск.
 
-Запасной канал к ZIP-выгрузке в DM (``services/attachments_export.py``):
-вместо сборки ZIP в RAM и отправки в чат, копирует структуру
-``ATTACHMENTS_DIR`` в ``ARCHIVE_DIR/BR-{YEAR}_{timestamp}/`` через
-``shutil.copy2`` и пишет рядом ``archive_manifest.json`` + ``summary.txt``.
+Запасной канал к выгрузке шорт-листа в DM
+(``services/attachments_export.py``): пишет один tar.gz-файл
+``ARCHIVE_DIR/bd-full.tar.gz`` со всеми BR-ID-каталогами под общим
+префиксом ``attachments/``. Рядом с архивом и **внутри** него
+сохраняются ``bd-full.manifest.json`` и ``bd-full.summary.txt``
+(чтобы можно было прочитать сводку без распаковки).
 
-Pre-flight: перед стартом копирования сравниваем расчётный занятый
-объём диска ПОСЛЕ копии с ``DISK_BLOCK_PCT``; при превышении —
-``ArchiveBudgetExceeded`` без побочных эффектов.
-
-Phase 1B: только сервис + unit-тесты. Хендлеры/кнопки/confirm-флоу
-подключаются в Phase 2 (см. plan §2, §8.3).
+Pre-flight: перед стартом сравниваем расчётный занятый объём диска
+ПОСЛЕ создания tar.gz с ``DISK_BLOCK_PCT``. Так как tar.gz слабо
+сжимает уже сжатые медиа, в качестве верхней границы берём сырой
+``du(ATTACHMENTS_DIR)`` — это безопасно (будем чуть консервативнее,
+чем в реальности). При превышении — ``ArchiveBudgetExceeded`` без
+побочных эффектов.
 """
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import re
-import shutil
+import tarfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,6 +52,18 @@ _BYTES_IN_GB = 1024 ** 3
 #: формируются в ``services.storage._format_application_folder_name``
 #: по детерминированному шаблону ``BR-{YEAR}-NNNN_<Фамилия>…``.
 _BR_ID_RE = re.compile(r"^(BR-\d{4}-\d+)(?:_|$)")
+
+#: Имя итогового tar.gz в ``ARCHIVE_DIR`` (без таймстампа: предыдущий
+#: архив ротируется в ``bd-full.prev.tar.gz``).
+ARCHIVE_FILENAME = "bd-full.tar.gz"
+PREV_ARCHIVE_FILENAME = "bd-full.prev.tar.gz"
+MANIFEST_FILENAME = "bd-full.manifest.json"
+SUMMARY_FILENAME = "bd-full.summary.txt"
+
+#: Префикс пути внутри tar.gz — все BR-ID-каталоги распаковываются в
+#: ``attachments/<rel_path>``, чтобы при `tar -xzf` получался один
+#: понятный корневой каталог рядом с manifest/summary.
+_TAR_ATTACHMENTS_PREFIX = "attachments"
 
 
 # =====================================================================
@@ -109,11 +124,10 @@ class ArchiveBudget:
 
 
 class ArchiveBudgetExceeded(RuntimeError):
-    """Pre-flight отказ: копия превышает ``DISK_BLOCK_PCT``.
+    """Pre-flight отказ: tar.gz не помещается под ``DISK_BLOCK_PCT``.
 
     Несёт исходную ``ArchiveBudget`` для UI — хендлер показывает её
-    в confirm-приглашении и не выводит кнопку «Да, выполнить»
-    (см. plan §8.3).
+    в confirm-приглашении и не выводит кнопку «Да, выполнить».
     """
 
     def __init__(self, budget: ArchiveBudget) -> None:
@@ -125,7 +139,7 @@ class ArchiveBudgetExceeded(RuntimeError):
 
 
 # ``progress_cb(index, total, br_id, size_bytes)`` — callback по факту
-# завершения копирования одного BR-ID-каталога. Может быть sync или async.
+# упаковки одного BR-ID-каталога в tar.gz. Может быть sync или async.
 ProgressCb = Callable[
     [int, int, str, int],
     Union[Awaitable[None], None],
@@ -157,10 +171,12 @@ def _dir_size_bytes(path: Path) -> int:
 
 
 async def estimate_archive_budget() -> ArchiveBudget:
-    """Оценить объём копии и заполнение диска после архивации.
+    """Оценить объём tar.gz и заполнение диска после архивации.
 
     Подсчёт ``attachments_bytes`` — ``du``-эквивалент по
-    ``ATTACHMENTS_DIR`` (через ``rglob`` + ``stat``).
+    ``ATTACHMENTS_DIR`` (через ``rglob`` + ``stat``). Берётся как
+    верхняя граница для tar.gz: медиа сжимаются плохо, поэтому
+    реальный архив окажется примерно того же размера или чуть меньше.
     Свободное место — через ``services.storage.get_disk_usage_bytes``
     (он отдаёт ``(used, total)`` от ``shutil.disk_usage``).
     """
@@ -181,9 +197,9 @@ async def estimate_archive_budget() -> ArchiveBudget:
 
 
 def format_archive_budget_text(budget: ArchiveBudget) -> str:
-    """Текст экрана-приглашения перед confirm (см. plan §8.3)."""
+    """Текст экрана-приглашения перед confirm."""
     lines = [
-        "📦 Архивация data/attachments на диск.",
+        "📦 Архивация data/attachments в `bd-full.tar.gz`.",
         "",
         f"Объём data/attachments: {budget.attachments_gb:.1f} ГБ.",
         (
@@ -191,7 +207,7 @@ def format_archive_budget_text(budget: ArchiveBudget) -> str:
             f"({budget.free_pct:.0f}%)."
         ),
         (
-            f"После копии:        ≈ {budget.after_used_gb:.1f} ГБ занято "
+            f"После архивации:    ≈ {budget.after_used_gb:.1f} ГБ занято "
             f"({budget.after_pct:.0f}%)."
         ),
         "",
@@ -202,8 +218,8 @@ def format_archive_budget_text(budget: ArchiveBudget) -> str:
             [
                 "",
                 "После архивации диск превысит блокирующий порог. "
-                "Освободите место или используйте ZIP в DM "
-                "(`/admin_export_files`) — он не пишет на диск.",
+                "Освободите место или используйте выгрузку шорт-листа "
+                "в DM — она не пишет на диск.",
             ]
         )
     return "\n".join(lines)
@@ -228,7 +244,7 @@ async def _load_intake_modes() -> dict[str, str]:
 
 
 # =====================================================================
-# Сканирование и копирование
+# Сканирование исходного дерева
 # =====================================================================
 
 
@@ -241,7 +257,7 @@ def _extract_br_id(folder_name: str) -> str | None:
 def _find_br_id_folders(root: Path) -> list[Path]:
     """Все каталоги вида ``BR-YYYY-N…`` внутри ``root``.
 
-    Отсортированно по полному пути — стабильность порядка для манифеста
+    Отсортировано по полному пути — стабильность порядка для манифеста
     и для прогресса в DM админа.
     """
     found: list[Path] = []
@@ -256,25 +272,37 @@ def _find_br_id_folders(root: Path) -> list[Path]:
     return found
 
 
-def _copy_tree_sync(src: Path, dst: Path) -> int:
-    """Скопировать дерево ``src → dst`` через ``shutil.copy2``.
-
-    Сохраняет mtime/permissions. Создаёт промежуточные подкаталоги.
-    Возвращает суммарный размер скопированных файлов в байтах.
-    """
+def _folder_size_bytes(path: Path) -> int:
+    """Сумма размеров всех файлов внутри ``path`` (для манифеста)."""
     total = 0
-    for srcfile in src.rglob("*"):
-        if srcfile.is_dir():
+    for f in path.rglob("*"):
+        if not f.is_file():
             continue
-        rel = srcfile.relative_to(src)
-        dstfile = dst / rel
-        dstfile.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(srcfile, dstfile)
         try:
-            total += dstfile.stat().st_size
+            total += f.stat().st_size
         except OSError:
             continue
     return total
+
+
+# =====================================================================
+# Сборка tar.gz
+# =====================================================================
+
+
+def _add_bytes_to_tar(
+    tar: tarfile.TarFile,
+    *,
+    arcname: str,
+    payload: bytes,
+    mtime: int,
+) -> None:
+    """Положить bytes в открытый tar под именем ``arcname``."""
+    ti = tarfile.TarInfo(name=arcname)
+    ti.size = len(payload)
+    ti.mtime = mtime
+    ti.mode = 0o644
+    tar.addfile(ti, io.BytesIO(payload))
 
 
 async def _invoke_progress(
@@ -299,6 +327,28 @@ async def _invoke_progress(
         )
 
 
+def _rotate_existing(target: Path) -> Path | None:
+    """Перенести существующий архив в ``*.prev.tar.gz``.
+
+    Возвращает путь к ротированному файлу либо None, если ротировать
+    было нечего.
+    """
+    if not target.exists():
+        return None
+    prev = target.parent / PREV_ARCHIVE_FILENAME
+    if prev.exists():
+        try:
+            prev.unlink()
+        except OSError:
+            logger.exception(
+                "archive: не удалось удалить предыдущий .prev",
+                path=str(prev),
+            )
+            raise
+    target.rename(prev)
+    return prev
+
+
 # =====================================================================
 # Основной публичный entrypoint
 # =====================================================================
@@ -306,31 +356,37 @@ async def _invoke_progress(
 
 async def archive_attachments_to_disk(
     *,
-    target_dir: Path | None = None,
+    target: Path | None = None,
     progress_cb: ProgressCb | None = None,
 ) -> Path:
-    """Скопировать ``ATTACHMENTS_DIR`` в архивный подкаталог.
+    """Создать ``bd-full.tar.gz`` со всеми BR-ID-каталогами.
 
     Args:
-        target_dir: явный путь архива. Если None — формируется как
-            ``ARCHIVE_DIR/BR-{COMPETITION_YEAR}_{UTC-timestamp}/``.
-        progress_cb: вызывается по факту копирования каждого
+        target: явный путь архива (``.tar.gz``). Если None — берётся
+            ``ARCHIVE_DIR / "bd-full.tar.gz"``.
+        progress_cb: вызывается по факту упаковки каждого
             BR-ID-каталога: ``cb(index, total, br_id, size_bytes)``.
             Может быть sync или async; исключения в callback логируются,
-            но не прерывают копирование.
+            но не прерывают упаковку.
 
     Returns:
-        Путь созданного архивного каталога.
+        Путь созданного tar.gz.
 
     Raises:
-        ArchiveBudgetExceeded: pre-flight отказ — после копии диск был бы
-            заполнен на ``≥ DISK_BLOCK_PCT``. Каталог не создаётся.
-        RuntimeError: целевой путь уже существует.
+        ArchiveBudgetExceeded: pre-flight отказ — после tar.gz диск был
+            бы заполнен на ``≥ DISK_BLOCK_PCT``. Файл не создаётся.
 
     Notes:
+        - Если в ``ARCHIVE_DIR`` уже лежит ``bd-full.tar.gz``, он
+          ротируется в ``bd-full.prev.tar.gz`` (предыдущий ``.prev``
+          удаляется). Новая запись идёт во временный файл и
+          переименовывается атомарно (``rename``).
+        - Манифест и summary кладутся одновременно ВНУТРЬ tar (под
+          именами ``bd-full.manifest.json`` / ``bd-full.summary.txt``)
+          и РЯДОМ с tar.gz — чтобы можно было прочитать сводку без
+          распаковки.
         - Запись в БД не делается; чтение — одним запросом
           (``_load_intake_modes``), без N+1.
-        - Манифест и summary пишутся даже при нулевом числе BR-ID.
     """
     budget = await estimate_archive_budget()
     if budget.after_pct >= budget.block_pct:
@@ -342,14 +398,15 @@ async def archive_attachments_to_disk(
         )
         raise ArchiveBudgetExceeded(budget)
 
-    if target_dir is None:
-        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
-        target = ARCHIVE_DIR / f"BR-{COMPETITION_YEAR}_{stamp}"
-    else:
-        target = target_dir
+    if target is None:
+        target = ARCHIVE_DIR / ARCHIVE_FILENAME
+    target = Path(target)
+    await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
 
-    if target.exists():
-        raise RuntimeError(f"Каталог архива уже существует: {target}")
+    tmp_target = target.parent / (target.name + ".tmp")
+    if tmp_target.exists():
+        await asyncio.to_thread(tmp_target.unlink)
+    await asyncio.to_thread(_rotate_existing, target)
 
     logger.info(
         "Архивация на диск стартовала",
@@ -362,20 +419,29 @@ async def archive_attachments_to_disk(
     intake_modes = await _load_intake_modes()
     br_folders = await asyncio.to_thread(_find_br_id_folders, ATTACHMENTS_DIR)
 
-    await asyncio.to_thread(target.mkdir, parents=True, exist_ok=False)
-
     manifest_entries: list[dict] = []
     copied_bytes = 0
     total = len(br_folders)
+    now_ts = int(datetime.now(timezone.utc).timestamp())
 
+    tar = await asyncio.to_thread(tarfile.open, tmp_target, "w:gz")
     try:
         for index, src in enumerate(br_folders, start=1):
             rel = src.relative_to(ATTACHMENTS_DIR)
-            dst = target / rel
-            await asyncio.to_thread(
-                dst.parent.mkdir, parents=True, exist_ok=True
-            )
-            size = await asyncio.to_thread(_copy_tree_sync, src, dst)
+            arcname = f"{_TAR_ATTACHMENTS_PREFIX}/{rel.as_posix()}"
+            try:
+                size = await asyncio.to_thread(_folder_size_bytes, src)
+                await asyncio.to_thread(
+                    tar.add, str(src), arcname, True
+                )
+            except Exception:
+                logger.exception(
+                    "archive: не удалось упаковать BR-ID-каталог",
+                    src=str(src),
+                    arcname=arcname,
+                )
+                raise
+
             copied_bytes += size
             br_id = _extract_br_id(src.name) or src.name
             manifest_entries.append(
@@ -387,41 +453,63 @@ async def archive_attachments_to_disk(
                 }
             )
             await _invoke_progress(progress_cb, index, total, br_id, size)
-    except Exception:
-        logger.exception(
-            "Архивация: ошибка копирования",
-            target=str(target),
-            copied_so_far=len(manifest_entries),
+
+        created_at_iso = datetime.now(timezone.utc).isoformat()
+        manifest = {
+            "competition_year": COMPETITION_YEAR,
+            "created_at": created_at_iso,
+            "source": str(ATTACHMENTS_DIR),
+            "destination": str(target),
+            "br_folders_count": len(manifest_entries),
+            "total_bytes": copied_bytes,
+            "entries": manifest_entries,
+        }
+        manifest_bytes = json.dumps(
+            manifest, ensure_ascii=False, indent=2
+        ).encode("utf-8")
+        summary_bytes = (
+            f"Архив BR-{COMPETITION_YEAR}\n"
+            f"Создан: {created_at_iso}\n"
+            f"Источник: {ATTACHMENTS_DIR}\n"
+            f"Назначение: {target}\n"
+            f"BR-каталогов: {len(manifest_entries)}\n"
+            f"Упаковано байт (raw): {copied_bytes}\n"
+        ).encode("utf-8")
+
+        await asyncio.to_thread(
+            _add_bytes_to_tar,
+            tar,
+            arcname=MANIFEST_FILENAME,
+            payload=manifest_bytes,
+            mtime=now_ts,
         )
+        await asyncio.to_thread(
+            _add_bytes_to_tar,
+            tar,
+            arcname=SUMMARY_FILENAME,
+            payload=summary_bytes,
+            mtime=now_ts,
+        )
+    except Exception:
+        await asyncio.to_thread(tar.close)
+        if tmp_target.exists():
+            try:
+                tmp_target.unlink()
+            except OSError:
+                logger.exception(
+                    "archive: не удалось удалить tmp после ошибки",
+                    tmp=str(tmp_target),
+                )
         raise
+    else:
+        await asyncio.to_thread(tar.close)
 
-    created_at_iso = datetime.now(timezone.utc).isoformat()
-    manifest = {
-        "competition_year": COMPETITION_YEAR,
-        "created_at": created_at_iso,
-        "source": str(ATTACHMENTS_DIR),
-        "destination": str(target),
-        "br_folders_count": len(manifest_entries),
-        "total_bytes": copied_bytes,
-        "entries": manifest_entries,
-    }
-    manifest_path = target / "archive_manifest.json"
-    summary_path = target / "summary.txt"
+    manifest_beside = target.parent / MANIFEST_FILENAME
+    summary_beside = target.parent / SUMMARY_FILENAME
+    await asyncio.to_thread(manifest_beside.write_bytes, manifest_bytes)
+    await asyncio.to_thread(summary_beside.write_bytes, summary_bytes)
 
-    await asyncio.to_thread(
-        manifest_path.write_text,
-        json.dumps(manifest, ensure_ascii=False, indent=2),
-        "utf-8",
-    )
-    summary = (
-        f"Архив BR-{COMPETITION_YEAR}\n"
-        f"Создан: {created_at_iso}\n"
-        f"Источник: {ATTACHMENTS_DIR}\n"
-        f"Назначение: {target}\n"
-        f"BR-каталогов: {len(manifest_entries)}\n"
-        f"Скопировано байт: {copied_bytes}\n"
-    )
-    await asyncio.to_thread(summary_path.write_text, summary, "utf-8")
+    await asyncio.to_thread(tmp_target.rename, target)
 
     logger.info(
         "Архивация на диск завершена",
@@ -459,7 +547,7 @@ async def start_archive_task(*, bot, bot_id, chat_id, huid) -> None:
                 f"📦 Архивация: {index}/{total} ({br_id}, {mb:.0f} МБ)…"
             )
 
-    await _notify("🚀 Архивация на диск запущена…")
+    await _notify("🚀 Архивация в `bd-full.tar.gz` запущена…")
     try:
         dest = await archive_attachments_to_disk(progress_cb=progress_cb)
     except ArchiveBudgetExceeded as exc:
@@ -470,16 +558,26 @@ async def start_archive_task(*, bot, bot_id, chat_id, huid) -> None:
         await _notify(f"❌ Архивация не выполнена: {exc}")
         return
 
+    try:
+        size_bytes = dest.stat().st_size
+    except OSError:
+        size_bytes = 0
+    size_gb = size_bytes / _BYTES_IN_GB
     budget = await estimate_archive_budget()
     await _notify(
         "✅ Архивация завершена.\n\n"
-        f"Путь: `{dest}`\n"
+        f"Файл: `{dest}`\n"
+        f"Размер архива: {size_gb:.2f} ГБ\n"
         f"Свободно на разделе: {budget.free_gb:.1f} ГБ "
         f"({budget.free_pct:.0f}%)."
     )
 
 
 __all__ = [
+    "ARCHIVE_FILENAME",
+    "MANIFEST_FILENAME",
+    "PREV_ARCHIVE_FILENAME",
+    "SUMMARY_FILENAME",
     "ArchiveBudget",
     "ArchiveBudgetExceeded",
     "archive_attachments_to_disk",

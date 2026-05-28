@@ -1,34 +1,37 @@
 """
-Архивная выгрузка папки ``data/attachments`` без записи на диск.
+Архивная выгрузка шорт-листа из папки ``data/attachments``.
 
 Назначение
 ----------
 Запасной канал для случая «диск 95% занят, SSH к серверу нет».
-Админ запускает выгрузку из бот-меню; сервис обходит заявки одну
-за другой, для каждой собирает ZIP в памяти и yield-ит его в
+Админ запускает выгрузку из бот-меню; сервис группирует заявки
+шорт-листа по пулам ``(track, age_category)`` и для каждого
+непустого пула собирает tar.gz в памяти и yield-ит его в
 вызывающий слой (``handlers.admin_export``), который шлёт архив
 вложением в DM-чат админа.
 
-Идея — никогда не писать ZIP на диск: между ``zipfile.ZipFile`` и
-``OutgoingAttachment`` живёт только bytes-буфер. Если в кадре
-ATTACHMENTS_DIR действительно почти не осталось места — единственное
-ограничение по памяти, и оно регулируется `EXPORT_MAX_PART_BYTES`.
+Идея — никогда не писать tar.gz на диск: между
+``tarfile.open(fileobj=..., mode="w:gz")`` и ``OutgoingAttachment``
+живёт только bytes-буфер. Если в кадре ``ATTACHMENTS_DIR``
+действительно почти не осталось места — единственное ограничение по
+памяти, и оно регулируется ``EXPORT_MAX_PART_BYTES`` (если суммарный
+размер пула превышает лимит, пул режется на части
+``trad-7-12.part01.tar.gz``, ``…part02.tar.gz`` и т.д.).
 
-Селекторы
----------
-- ``ALL`` — все заявки (``Application.is_actual_version`` не учитываем
-  специально: модератор может счесть нужной любую исходную загрузку).
+Селектор
+--------
 - ``SHORTLIST`` — только заявки в топ-10 (``JuryStatus.V_TOP_10``).
   Источник правды — ``services.registry.fetch_shortlist_applications``.
 
 LINKS-режим
 -----------
 Хранилище для ``IntakeMode.LINKS`` пустое — файлы лежат в облаке у
-родителя. Поэтому ZIP по такой заявке содержит только ``meta.txt``
-(на лету собирается с указанием ``cloud_link``), а в манифесте
-ставится статус ``links_only`` или ``pending_link`` (если ссылку
-ещё не прислали). Параллельно собирается единый ``links.txt`` со
-списком всех ``cloud_link`` — отдельным файлом в конце выгрузки.
+родителя. Поэтому для такой заявки в tar.gz попадает только
+``meta.txt`` (на лету собирается с указанием ``cloud_link``) +
+``cloud_link.txt``, а в манифесте ставится статус ``links_only``
+или ``pending_link`` (если ссылку ещё не прислали). Параллельно
+собирается единый ``links.txt`` со списком всех ``cloud_link`` —
+отдельным файлом в конце выгрузки.
 
 Сервис не отвечает за отправку и rate-limit (этим занимается
 caller); он просто поток ``ExportItem``-ов.
@@ -39,8 +42,7 @@ import asyncio
 import csv
 import enum
 import io
-import time
-import zipfile
+import tarfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -54,9 +56,11 @@ from sqlalchemy.orm import selectinload
 from config import EXPORT_MAX_PART_BYTES
 from database.db import get_session
 from database.models import (
+    AgeCategory,
     Application,
     ApplicationFile,
     IntakeMode,
+    Track,
 )
 from services.registry import fetch_shortlist_applications
 from services.storage import (
@@ -73,7 +77,6 @@ from services.storage import (
 class ExportSelector(str, enum.Enum):
     """Что именно выгружаем."""
 
-    ALL = "all"
     SHORTLIST = "shortlist"
 
 
@@ -86,7 +89,7 @@ class ExportItem:
     ``kind`` — тип элемента, чтобы caller мог по-разному оформить caption.
     """
 
-    kind: str  # "zip" | "manifest" | "links" | "summary"
+    kind: str  # "tar" | "manifest" | "links" | "summary"
     filename: str
     payload: bytes
     caption: str = ""
@@ -107,6 +110,8 @@ class ExportSummary:
     apps_pending_link: int = 0
     apps_oversize_meta_only: int = 0
     apps_failed: int = 0
+    pools_emitted: int = 0
+    parts_emitted: int = 0
     bytes_emitted: int = 0
 
     def as_text(self) -> str:
@@ -116,6 +121,8 @@ class ExportSummary:
             "📊 Итоги выгрузки\n"
             f"- селектор: **{self.selector.value.upper()}**\n"
             f"- всего заявок: **{self.apps_total}**\n"
+            f"- пулов отдано: {self.pools_emitted}\n"
+            f"- частей tar.gz: {self.parts_emitted}\n"
             f"- с файлами: {self.apps_with_files}\n"
             f"- только-ссылки: {self.apps_links_only}\n"
             f"- ждут ссылку: {self.apps_pending_link}\n"
@@ -125,6 +132,28 @@ class ExportSummary:
             f"- начало: {started.isoformat(sep=' ')}Z\n"
             f"- окончание: {finished.isoformat(sep=' ')}Z"
         )
+
+
+# =====================================================================
+# Соответствие кодов треков и возрастов для имён архивов
+# =====================================================================
+
+_TRACK_CODE: dict[Track, str] = {
+    Track.TRADITIONAL: "trad",
+    Track.AI: "ai",
+    Track.HANDMADE_TO_AI: "h2ai",
+}
+
+_AGE_CODE: dict[AgeCategory, str] = {
+    AgeCategory.AGE_0_6: "0-6",
+    AgeCategory.AGE_7_12: "7-12",
+    AgeCategory.AGE_13_18: "13-18",
+}
+
+
+def _pool_archive_basename(track: Track, age: AgeCategory) -> str:
+    """``trad-7-12`` / ``ai-0-6`` / ``h2ai-13-18``."""
+    return f"{_TRACK_CODE[track]}-{_AGE_CODE[age]}"
 
 
 # =====================================================================
@@ -153,11 +182,7 @@ async def _load_selected_applications(
                 .order_by(Application.br_id.asc())
             )
         else:
-            stmt = (
-                select(Application)
-                .options(selectinload(Application.files))
-                .order_by(Application.br_id.asc())
-            )
+            raise ValueError(f"Неизвестный селектор выгрузки: {selector!r}")
         return list((await session.scalars(stmt)).all())
 
 
@@ -210,13 +235,13 @@ def _human_bytes(num: int) -> str:
     return f"{num:.1f} PB"
 
 
-def _zip_filename_for(app: Application) -> str:
-    """Имя ZIP — стабильное и понятное в любом проводнике."""
-    return f"{app.br_id}.zip"
+def _archive_filename_for(app: Application) -> str:
+    """Имя tar.gz одной заявки (точечная переотправка через /admin_export_app)."""
+    return f"{app.br_id}.tar.gz"
 
 
-def _zip_inner_dir(app: Application) -> str:
-    """Префикс пути внутри ZIP — повторяет структуру ATTACHMENTS_DIR.
+def _inner_dir(app: Application) -> str:
+    """Префикс пути внутри tar.gz — повторяет структуру ATTACHMENTS_DIR.
 
     Чтобы при распаковке сразу собирался корректный каталог
     ``yyyy-mm-dd/track/age/parent_name/<files>``.
@@ -226,8 +251,23 @@ def _zip_inner_dir(app: Application) -> str:
 
 
 # =====================================================================
-# Сборка одного архива по заявке (в памяти)
+# Низкоуровневые хелперы tar
 # =====================================================================
+
+
+def _add_bytes_to_tar(
+    tar: tarfile.TarFile,
+    *,
+    arcname: str,
+    payload: bytes,
+    mtime: int,
+) -> None:
+    """Положить bytes-payload в открытый tar под именем ``arcname``."""
+    ti = tarfile.TarInfo(name=arcname)
+    ti.size = len(payload)
+    ti.mtime = mtime
+    ti.mode = 0o644
+    tar.addfile(ti, io.BytesIO(payload))
 
 
 def _sum_files_size(files: Sequence[ApplicationFile]) -> int:
@@ -239,18 +279,25 @@ async def _read_file_bytes(path: Path) -> bytes:
         return await fp.read()
 
 
-async def _build_app_zip_bytes(
+# =====================================================================
+# Сборка entries по одной заявке
+# =====================================================================
+
+
+async def _collect_app_entries(
     app: Application,
     *,
     max_part_bytes: int,
-) -> tuple[bytes, dict]:
-    """Собрать ZIP по одной заявке. Возвращает (bytes, info-meta).
+) -> tuple[list[tuple[str, bytes]], dict]:
+    """Собрать список ``(arcname, payload)`` для одной заявки.
 
-    ``info-meta`` — словарь для манифеста и summary: br_id, статус,
-    кол-во файлов, итоговый размер, причины пропуска и т.п.
+    Возвращает кортеж ``(entries, info)``, где ``info`` — словарь
+    для манифеста и summary (br_id, статус, кол-во файлов, итоговый
+    размер, причины пропуска и т.п.). Пустой список entries означает,
+    что заявку не нужно класть в архив (``status = "pending_link"``).
     """
     files = list(app.files)
-    inner_prefix = _zip_inner_dir(app)
+    inner_prefix = _inner_dir(app)
     folder = get_application_folder(app)
 
     info: dict = {
@@ -269,20 +316,22 @@ async def _build_app_zip_bytes(
     if app.intake_mode is IntakeMode.LINKS:
         if not app.cloud_link:
             info["status"] = "pending_link"
-            return b"", info
+            return [], info
 
         info["status"] = "links_only"
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
-            zf.writestr(
-                f"{inner_prefix}/meta.txt",
-                _build_meta_bytes(app, []),
-            )
-            zf.writestr(
-                f"{inner_prefix}/cloud_link.txt",
-                (app.cloud_link.strip() + "\n").encode("utf-8"),
-            )
-        return buf.getvalue(), info
+        return (
+            [
+                (
+                    f"{inner_prefix}/meta.txt",
+                    _build_meta_bytes(app, []),
+                ),
+                (
+                    f"{inner_prefix}/cloud_link.txt",
+                    (app.cloud_link.strip() + "\n").encode("utf-8"),
+                ),
+            ],
+            info,
+        )
 
     # ---- Сценарий FILES ----
     total_bytes = _sum_files_size(files)
@@ -300,58 +349,155 @@ async def _build_app_zip_bytes(
         )
         info["status"] = "oversize_meta_only"
 
-    buf = io.BytesIO()
-    # ZIP_STORED для уже сжатых медиа — нет смысла дважды грызть CPU
-    # на jpg/png; для txt дефлейт всё равно даёт мизер. Берём STORED
-    # чтобы не накручивать CPU и память.
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
-        zf.writestr(f"{inner_prefix}/meta.txt", _build_meta_bytes(app, files))
+    entries: list[tuple[str, bytes]] = [
+        (f"{inner_prefix}/meta.txt", _build_meta_bytes(app, files)),
+    ]
 
-        # description.txt и reason.txt (если есть на диске).
-        for sidecar in ("description.txt", "reason.txt"):
-            sidecar_path = folder / sidecar
+    for sidecar in ("description.txt", "reason.txt"):
+        sidecar_path = folder / sidecar
+        try:
+            exists = await asyncio.to_thread(sidecar_path.exists)
+        except Exception:
+            exists = False
+        if exists:
             try:
-                exists = await asyncio.to_thread(sidecar_path.exists)
+                payload = await _read_file_bytes(sidecar_path)
             except Exception:
-                exists = False
-            if exists:
-                try:
-                    payload = await _read_file_bytes(sidecar_path)
-                except Exception:
-                    logger.exception(
-                        "attachments_export: не удалось прочитать sidecar",
-                        br_id=app.br_id,
-                        sidecar=sidecar,
-                    )
-                    continue
-                zf.writestr(f"{inner_prefix}/{sidecar}", payload)
-
-        if not over_size:
-            for af in files:
-                src = ATTACHMENTS_DIR / af.relative_path
-                try:
-                    payload = await _read_file_bytes(src)
-                except FileNotFoundError:
-                    logger.warning(
-                        "attachments_export: файл отсутствует на диске",
-                        br_id=app.br_id,
-                        path=str(src),
-                    )
-                    info["status"] = "partial_missing_files"
-                    continue
-                except Exception:
-                    logger.exception(
-                        "attachments_export: ошибка чтения файла",
-                        br_id=app.br_id,
-                        path=str(src),
-                    )
-                    info["status"] = "partial_missing_files"
-                    continue
-                zf.writestr(
-                    f"{inner_prefix}/{af.stored_filename}", payload,
+                logger.exception(
+                    "attachments_export: не удалось прочитать sidecar",
+                    br_id=app.br_id,
+                    sidecar=sidecar,
                 )
+                continue
+            entries.append((f"{inner_prefix}/{sidecar}", payload))
 
-    return buf.getvalue(), info
+    if not over_size:
+        for af in files:
+            src = ATTACHMENTS_DIR / af.relative_path
+            try:
+                payload = await _read_file_bytes(src)
+            except FileNotFoundError:
+                logger.warning(
+                    "attachments_export: файл отсутствует на диске",
+                    br_id=app.br_id,
+                    path=str(src),
+                )
+                info["status"] = "partial_missing_files"
+                continue
+            except Exception:
+                logger.exception(
+                    "attachments_export: ошибка чтения файла",
+                    br_id=app.br_id,
+                    path=str(src),
+                )
+                info["status"] = "partial_missing_files"
+                continue
+            entries.append(
+                (f"{inner_prefix}/{af.stored_filename}", payload),
+            )
+
+    return entries, info
+
+
+# =====================================================================
+# Сборка tar.gz по пулу с split на части
+# =====================================================================
+
+
+async def _build_pool_targz(
+    pool_apps: Sequence[Application],
+    *,
+    base_name: str,
+    max_part_bytes: int,
+) -> tuple[list[tuple[str, bytes, int]], list[dict]]:
+    """Упаковать пул в один или несколько tar.gz-частей.
+
+    Возвращает:
+        - parts: список ``(filename, payload_bytes, app_count)``.
+          ``filename`` — ``base_name.tar.gz`` если часть одна или
+          ``base_name.partNN.tar.gz`` при разбиении.
+        - infos: список info-словарей по всем заявкам пула (включая
+          ``pending_link``-заявки, не попавшие в архив). У каждой
+          info выставлен ключ ``archive_filename`` (или ``""``).
+
+    Split-стратегия: оцениваем размер части по сумме сырых
+    payload-байтов добавленных entries. Когда добавление следующей
+    заявки превысит ``max_part_bytes``, текущую часть закрываем и
+    начинаем новую. Для уже сжатых медиа (jpg/png/mp4) сырой ≈
+    сжатый, для txt — заметно больше, и часть выйдет чуть меньше
+    лимита, что безопасно.
+    """
+    pending_parts: list[tuple[bytes, list[dict]]] = []
+    all_infos: list[dict] = []
+    now_ts = int(datetime.utcnow().timestamp())
+
+    current_buf: io.BytesIO | None = None
+    current_tar: tarfile.TarFile | None = None
+    current_raw = 0
+    current_infos: list[dict] = []
+
+    def _start_part() -> None:
+        nonlocal current_buf, current_tar, current_raw, current_infos
+        current_buf = io.BytesIO()
+        current_tar = tarfile.open(fileobj=current_buf, mode="w:gz")
+        current_raw = 0
+        current_infos = []
+
+    def _commit_part() -> None:
+        nonlocal current_buf, current_tar
+        if current_tar is None:
+            return
+        current_tar.close()
+        if current_infos:
+            pending_parts.append((current_buf.getvalue(), list(current_infos)))
+        current_buf = None
+        current_tar = None
+
+    _start_part()
+
+    for app in pool_apps:
+        entries, info = await _collect_app_entries(
+            app, max_part_bytes=max_part_bytes
+        )
+        all_infos.append(info)
+
+        if not entries:
+            info["archive_filename"] = ""
+            continue
+
+        app_raw = sum(len(payload) for _, payload in entries)
+        if current_infos and (current_raw + app_raw) > max_part_bytes:
+            _commit_part()
+            _start_part()
+
+        for arcname, payload in entries:
+            _add_bytes_to_tar(
+                current_tar,
+                arcname=arcname,
+                payload=payload,
+                mtime=now_ts,
+            )
+        current_raw += app_raw
+        current_infos.append(info)
+
+    _commit_part()
+
+    total_parts = len(pending_parts)
+    parts: list[tuple[str, bytes, int]] = []
+    for i, (payload, infos_in_part) in enumerate(pending_parts, start=1):
+        filename = (
+            f"{base_name}.tar.gz"
+            if total_parts == 1
+            else f"{base_name}.part{i:02d}.tar.gz"
+        )
+        for info in infos_in_part:
+            info["archive_filename"] = filename
+        parts.append((filename, payload, len(infos_in_part)))
+
+    for info in all_infos:
+        info.setdefault("archive_filename", "")
+
+    return parts, all_infos
 
 
 # =====================================================================
@@ -371,7 +517,7 @@ _MANIFEST_COLUMNS = [
     "files_bytes",
     "cloud_link",
     "inner_path",
-    "zip_filename",
+    "archive_filename",
 ]
 
 
@@ -405,6 +551,42 @@ def _links_txt_bytes(rows: list[dict]) -> bytes:
     return out.getvalue().encode("utf-8")
 
 
+def _failed_manifest_row(app: Application) -> dict:
+    """Заглушка manifest-строки для заявки, которую не удалось собрать."""
+    return {
+        "br_id": app.br_id,
+        "track": app.track.value,
+        "age_category": app.age_category.value,
+        "intake_mode": app.intake_mode.value,
+        "moderation_status": app.moderation_status.value,
+        "jury_status": app.jury_status.value,
+        "status": "failed",
+        "files_count": 0,
+        "files_bytes": 0,
+        "cloud_link": app.cloud_link or "",
+        "inner_path": _inner_dir(app),
+        "archive_filename": "",
+    }
+
+
+def _manifest_row_from_info(app: Application, info: dict) -> dict:
+    """Сформировать manifest-строку из info, возвращённой _collect_app_entries."""
+    return {
+        "br_id": info["br_id"],
+        "track": app.track.value,
+        "age_category": app.age_category.value,
+        "intake_mode": info["intake_mode"],
+        "moderation_status": info["moderation_status"],
+        "jury_status": info["jury_status"],
+        "status": info["status"],
+        "files_count": info["files_count"],
+        "files_bytes": info["files_bytes"],
+        "cloud_link": info["cloud_link"],
+        "inner_path": info["inner_path"],
+        "archive_filename": info.get("archive_filename", ""),
+    }
+
+
 # =====================================================================
 # Публичный итератор
 # =====================================================================
@@ -415,14 +597,13 @@ async def iter_attachments_export(
     *,
     max_part_bytes: int | None = None,
 ) -> AsyncIterator[ExportItem]:
-    """Итератор архивной выгрузки: ZIP-ы, links.txt, manifest.csv, summary.
+    """Итератор архивной выгрузки: tar.gz по пулам + links.txt + manifest + summary.
 
     Контракт:
-    1. Сначала идут ZIP-ы по заявкам (можно ноль), для каждой — один
-       элемент ``ExportItem(kind="zip")``. У LINKS-без-ссылки ZIP не
-       генерируется (он бы содержал только meta — caller всё равно
-       увидит её через manifest).
-    2. После всех ZIP-ов — ``links.txt`` (kind="links") с агрегатом.
+    1. Сначала идут tar.gz по пулам (один или несколько на пул при
+       split-е), для каждого — ``ExportItem(kind="tar")``. Пустые
+       пулы пропускаются.
+    2. После всех tar.gz — ``links.txt`` (kind="links") с агрегатом.
        Отдаётся всегда; если ссылок нет — файл с одной строкой
        заголовка.
     3. Затем — ``manifest.csv`` (kind="manifest") с одной строкой на
@@ -430,9 +611,9 @@ async def iter_attachments_export(
     4. В конце — ``summary`` (kind="summary"), bytes пустой,
        caption — текст ``ExportSummary.as_text()``.
 
-    Ошибки: если по конкретной заявке упало чтение файлов или сборка
-    ZIP — она помечается ``status="failed"`` в манифесте, ZIP не
-    отдаётся, но процесс продолжается.
+    Ошибки: если по конкретному пулу упала сборка — все его заявки
+    помечаются ``status="failed"`` в манифесте, tar.gz не отдаётся,
+    но процесс продолжается с другими пулами.
     """
     limit = max_part_bytes or EXPORT_MAX_PART_BYTES
     summary = ExportSummary(selector=selector, started_at=datetime.utcnow())
@@ -440,7 +621,6 @@ async def iter_attachments_export(
     summary.apps_total = len(apps)
 
     if not apps:
-        # Эмитим только summary — сообщить «пусто».
         summary.finished_at = datetime.utcnow()
         yield ExportItem(
             kind="summary",
@@ -450,74 +630,74 @@ async def iter_attachments_export(
         )
         return
 
+    groups: dict[tuple[Track, AgeCategory], list[Application]] = {}
+    for app in apps:
+        groups.setdefault((app.track, app.age_category), []).append(app)
+
+    sorted_keys = sorted(groups.keys(), key=lambda k: (k[0].name, k[1].name))
+
     manifest_rows: list[dict] = []
 
-    for app in apps:
+    for key in sorted_keys:
+        track, age = key
+        pool_apps = groups[key]
+        base_name = _pool_archive_basename(track, age)
         try:
-            zip_bytes, info = await _build_app_zip_bytes(app, max_part_bytes=limit)
+            parts, pool_infos = await _build_pool_targz(
+                pool_apps,
+                base_name=base_name,
+                max_part_bytes=limit,
+            )
         except Exception:
             logger.exception(
-                "attachments_export: фатально не удалось собрать заявку",
-                br_id=app.br_id,
+                "attachments_export: фатально не удалось собрать пул",
+                track=track.name,
+                age=age.name,
+                apps=len(pool_apps),
             )
-            manifest_rows.append(
-                {
-                    "br_id": app.br_id,
-                    "track": app.track.value,
-                    "age_category": app.age_category.value,
-                    "intake_mode": app.intake_mode.value,
-                    "moderation_status": app.moderation_status.value,
-                    "jury_status": app.jury_status.value,
-                    "status": "failed",
-                    "files_count": 0,
-                    "files_bytes": 0,
-                    "cloud_link": app.cloud_link or "",
-                    "inner_path": _zip_inner_dir(app),
-                    "zip_filename": "",
-                }
-            )
-            summary.apps_failed += 1
+            for app in pool_apps:
+                manifest_rows.append(_failed_manifest_row(app))
+                summary.apps_failed += 1
             continue
 
-        row = {
-            "br_id": info["br_id"],
-            "track": app.track.value,
-            "age_category": app.age_category.value,
-            "intake_mode": info["intake_mode"],
-            "moderation_status": info["moderation_status"],
-            "jury_status": info["jury_status"],
-            "status": info["status"],
-            "files_count": info["files_count"],
-            "files_bytes": info["files_bytes"],
-            "cloud_link": info["cloud_link"],
-            "inner_path": info["inner_path"],
-            "zip_filename": _zip_filename_for(app) if zip_bytes else "",
-        }
-        manifest_rows.append(row)
-
-        status = info["status"]
-        if status == "pending_link":
-            summary.apps_pending_link += 1
-        elif status == "links_only":
-            summary.apps_links_only += 1
-        elif status == "oversize_meta_only":
-            summary.apps_oversize_meta_only += 1
-        else:
-            summary.apps_with_files += 1
-
-        if zip_bytes:
-            summary.bytes_emitted += len(zip_bytes)
+        emitted_any_part = False
+        for filename, payload, count in parts:
+            summary.bytes_emitted += len(payload)
+            summary.parts_emitted += 1
+            emitted_any_part = True
             yield ExportItem(
-                kind="zip",
-                filename=_zip_filename_for(app),
-                payload=zip_bytes,
+                kind="tar",
+                filename=filename,
+                payload=payload,
                 caption=(
-                    f"📦 {app.br_id} · {app.track.value} / "
-                    f"{app.age_category.value} · "
-                    f"{_human_bytes(len(zip_bytes))}"
+                    f"📦 {filename} · {track.value} / {age.value} · "
+                    f"{_human_bytes(len(payload))} · {count} заявок"
                 ),
-                meta={"br_id": app.br_id, "status": status},
+                meta={
+                    "track": track.name,
+                    "age": age.name,
+                    "filename": filename,
+                },
             )
+        if emitted_any_part:
+            summary.pools_emitted += 1
+
+        apps_by_br = {a.br_id: a for a in pool_apps}
+        for info in pool_infos:
+            app = apps_by_br.get(info["br_id"])
+            if app is None:
+                continue
+            manifest_rows.append(_manifest_row_from_info(app, info))
+
+            status = info["status"]
+            if status == "pending_link":
+                summary.apps_pending_link += 1
+            elif status == "links_only":
+                summary.apps_links_only += 1
+            elif status == "oversize_meta_only":
+                summary.apps_oversize_meta_only += 1
+            else:
+                summary.apps_with_files += 1
 
     links_payload = _links_txt_bytes(manifest_rows)
     summary.bytes_emitted += len(links_payload)
@@ -536,7 +716,7 @@ async def iter_attachments_export(
         payload=manifest_payload,
         caption=(
             "🧾 manifest.csv — карта выгрузки (br_id, статус, размер, "
-            "расположение в каталоге)"
+            "tar.gz, расположение в каталоге)"
         ),
     )
 
@@ -556,7 +736,7 @@ async def iter_attachments_export(
 
 
 async def build_single_app_export(br_id: str) -> ExportItem | None:
-    """Собрать ZIP по одной заявке по её BR-ID.
+    """Собрать tar.gz по одной заявке по её BR-ID.
 
     None — если заявка не найдена. Используется командой
     ``/admin_export_app`` для точечной переотправки, без обхода всего
@@ -571,10 +751,11 @@ async def build_single_app_export(br_id: str) -> ExportItem | None:
         app = (await session.scalars(stmt)).first()
     if app is None:
         return None
-    zip_bytes, info = await _build_app_zip_bytes(
+
+    entries, info = await _collect_app_entries(
         app, max_part_bytes=EXPORT_MAX_PART_BYTES
     )
-    if not zip_bytes:
+    if not entries:
         return ExportItem(
             kind="summary",
             filename=f"{br_id}_status.txt",
@@ -588,13 +769,22 @@ async def build_single_app_export(br_id: str) -> ExportItem | None:
             ),
             meta=info,
         )
+
+    buf = io.BytesIO()
+    now_ts = int(datetime.utcnow().timestamp())
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for arcname, payload in entries:
+            _add_bytes_to_tar(
+                tar, arcname=arcname, payload=payload, mtime=now_ts
+            )
+    archive_bytes = buf.getvalue()
     return ExportItem(
-        kind="zip",
-        filename=_zip_filename_for(app),
-        payload=zip_bytes,
+        kind="tar",
+        filename=_archive_filename_for(app),
+        payload=archive_bytes,
         caption=(
             f"📦 {app.br_id} · {app.track.value} / "
-            f"{app.age_category.value} · {_human_bytes(len(zip_bytes))} · "
+            f"{app.age_category.value} · {_human_bytes(len(archive_bytes))} · "
             f"{info['status']}"
         ),
         meta=info,

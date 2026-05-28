@@ -303,7 +303,6 @@ _SYSTEM_MENU_CONFIRM_ACTIONS: frozenset[str] = frozenset(
     {
         "close_intake",
         "reopen_intake",
-        "export_files_all",
         "export_files_shortlist",
         "archive_to_disk",
         "jury_start_all",
@@ -395,7 +394,7 @@ async def cmd_admin_confirm(message: IncomingMessage, bot: Bot) -> None:
                     reason="admin via /admin_intake_open",
                 )
                 body = "✅ Приём заявок **открыт**."
-        elif action in ("export_files_all", "export_files_shortlist"):
+        elif action == "export_files_shortlist":
             from handlers.admin_export import start_export_task
 
             try:
@@ -419,8 +418,9 @@ async def cmd_admin_confirm(message: IncomingMessage, bot: Bot) -> None:
                     )
                 else:
                     body = (
-                        "🚀 Выгрузка запущена. Архивы будут приходить "
-                        "в этот чат по мере готовности."
+                        "🚀 Выгрузка шорт-листа запущена. Архивы "
+                        "`tar.gz` будут приходить в этот чат по мере "
+                        "готовности."
                     )
         elif action == "archive_to_disk":
             from services.attachments_archive import estimate_archive_budget
@@ -428,8 +428,9 @@ async def cmd_admin_confirm(message: IncomingMessage, bot: Bot) -> None:
             budget = await estimate_archive_budget()
             if budget.after_pct >= budget.block_pct:
                 body = (
-                    "❌ Архивация заблокирована: после копии диск "
-                    f"превысит порог **{budget.block_pct}%**."
+                    "❌ Архивация заблокирована: после создания "
+                    f"`bd-full.tar.gz` диск превысит порог "
+                    f"**{budget.block_pct}%**."
                 )
             else:
                 bot_id = resolve_bot_id(bot)
@@ -451,8 +452,8 @@ async def cmd_admin_confirm(message: IncomingMessage, bot: Bot) -> None:
                         name="attachments_archive",
                     )
                     body = (
-                        "🚀 Архивация на диск запущена. Прогресс — "
-                        "в этом чате."
+                        "🚀 Архивация запущена. Когда `bd-full.tar.gz` "
+                        "будет готов, я пришлю путь к файлу сюда."
                     )
         elif action == "jury_start_all":
             from handlers.admin_competition import execute_jury_start_all

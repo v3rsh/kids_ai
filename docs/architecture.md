@@ -49,8 +49,8 @@ app/
 │   ├── admin.py         # /admin, /admin_help, /admin_section, /disk, /intake_mode,
 │   │                    # /admin_intake_open, /admin_state, опасные операции,
 │   │                    # шорткаты модератора
-│   ├── admin_export.py  # /admin_export_files, /admin_export_shortlist_files,
-│   │                    # /admin_export_app — архивная выгрузка через bot DM
+│   ├── admin_export.py  # /admin_export_shortlist_files, /admin_export_app —
+│   │                    # архивная выгрузка шорт-листа в tar.gz через bot DM
 │   ├── admin_roles.py   # discovery-кнопки, /admin_role_add, /admin_roles,
 │   │                    # /admin_role_revoke (+ confirm), welcome-DM
 │   ├── admin_chat.py    # раздел «Чат модерации»: status / test / rediscover
@@ -72,8 +72,9 @@ app/
 │   ├── pools.py         # пулы (Track × AgeCategory) + sync_pool_assignments_from_config
 │   ├── intake_mode.py   # переключение files/links + maybe_auto_switch_to_links
 │   ├── intake_state.py  # is_intake_open / set_intake_open (закрытие приёма после 15.06)
-│   ├── attachments_export.py # архивная выгрузка папки data/attachments в памяти
-│   │                    # (selector ALL/SHORTLIST, ZIP-per-BR-ID, manifest.csv, links.txt)
+│   ├── attachments_export.py # архивная выгрузка шорт-листа в памяти
+│   │                    # (tar.gz по пулам track×age, manifest.csv, links.txt)
+│   ├── attachments_archive.py # bd-full.tar.gz всего ATTACHMENTS_DIR на диск
 │   ├── moderation.py    # /queue / /status / /comment, агрегаты /stats
 │   └── admin.py         # overview_counters, build_admin_stats_report (админ-меню)
 ├── database/            # SQLAlchemy
@@ -546,8 +547,8 @@ discovery: команды `/moderator` и `/jury` отправляют адми�
 |---|---|
 | 👥 Роли | `/admin_roles`, `/admin_role_add` (FSM: роль → HUID), `/admin_role_resend_welcome`, отзыв через `/admin_role_revoke` → `/admin_role_revoke_confirm` |
 | 💬 Чат модерации | `/admin_chat_status`, `/admin_chat_test` (FSM: свой текст), `/admin_chat_rediscover`, сброс через опасные операции |
-| 🏆 Конкурс | `/admin_competition_*`: приём, выгрузки (XLSX/ZIP/архив на диск), старт жюри (TOP_N gate), статус пулов, настройки жюри |
-| 🖥 Система | `/disk`, `/intake_mode`, `/admin_state`, `/admin_disk_alerts`, `/admin_jury_flush`, `/admin_export_files`, `/admin_export_shortlist_files` |
+| 🏆 Конкурс | `/admin_competition_*`: приём, выгрузки (XLSX, tar.gz шорт-листа, bd-full.tar.gz на диск), старт жюри (TOP_N gate), статус пулов, настройки жюри |
+| 🖥 Система | `/disk`, `/intake_mode`, `/admin_state`, `/admin_disk_alerts`, `/admin_jury_flush`, `/admin_export_shortlist_files` |
 | 🙋 Пользователи | `/admin_user_find` (FSM: HUID), карточка с resync / apps / назначением роли |
 | 📊 Статистика | `/admin_stats` + шорткаты `/stats today` / `/stats all` |
 | 🛡 Меню модератора | шорткаты `/queue`, `/browse`, `/admin_shortcut_find` (FSM: BR-ID), `/export`, … |
@@ -560,7 +561,7 @@ FSM-state `admin:menu` перерисовывается диспетчером �
 
 #### Конкурс и жюри (админ)
 
-- **Раздел «Конкурс»** (`handlers/admin_competition.py`): приём, XLSX/ZIP, архив на диск,
+- **Раздел «Конкурс»** (`handlers/admin_competition.py`): приём, XLSX, tar.gz шорт-листа, `bd-full.tar.gz` на диск,
   старт раунда 1 (TOP_N), auto-shortlist для пулов `< TOP_N`, закрытие раунда.
 - **Уведомления судьям** (`services/jury_notifications.py`): DM только при `0→1` открытых
   задач; пулы открываются последовательно (без `asyncio.gather`).
@@ -748,41 +749,55 @@ ATTACHMENTS_DIR/
 
 ### Архивная выгрузка `data/attachments`
 
-Команды `/admin_export_files` (все заявки) и
-`/admin_export_shortlist_files` (только `JuryStatus.V_TOP_10` —
-шорт-лист) собирают по одному ZIP на `BR-ID` **в памяти** и шлют
-архивы вложениями в DM-чат админа. Цель — забрать каталог даже
-когда диск 95 % занят и SSH-доступа к серверу нет.
+Два независимых сценария:
+
+1. **Шорт-лист в чат** — `/admin_export_shortlist_files`. Собирает
+   до 9 `tar.gz` по пулам `(track, age_category)` и шлёт их
+   вложениями в DM-чат админа. Имена коротко-кодированные:
+   `trad-7-12.tar.gz`, `ai-0-6.tar.gz`, `h2ai-13-18.tar.gz`.
+   Пустые пулы пропускаются. Если суммарный размер пула превышает
+   `EXPORT_MAX_PART_BYTES` (по умолчанию 90 МБ), пул режется на
+   части `…part01.tar.gz`, `…part02.tar.gz`. Цель — забрать только
+   нужное для жюри даже когда диск 95 % занят и SSH-доступа к
+   серверу нет; всё собирается в памяти, на диск ничего не пишется.
+2. **Архив на диск (всё)** — `/admin_competition_archive`. Пишет
+   единый `data/archive/bd-full.tar.gz` со всеми BR-ID-каталогами
+   из `ATTACHMENTS_DIR`. Рядом и **внутри** архива кладёт
+   `bd-full.manifest.json` и `bd-full.summary.txt`. Полная
+   автономная выгрузка для оффлайн-передачи; см. `services.attachments_archive`.
 
 Сервис: `app/services/attachments_export.py` —
-`iter_attachments_export(selector)` отдаёт `AsyncIterator[ExportItem]`:
+`iter_attachments_export(selector)` отдаёт `AsyncIterator[ExportItem]`
+в следующем порядке:
 
-1. ZIP-ы по заявкам (`kind="zip"`). Внутри ZIP сохраняется относительный
-   путь из `ATTACHMENTS_DIR` — при распаковке восстанавливается дерево
+1. `tar.gz` по пулам (`kind="tar"`). Внутри каждого архива заявки
+   складываются по тому же относительному пути, что и в
+   `ATTACHMENTS_DIR` — при распаковке восстанавливается дерево
    `<дата>/<трек>/<возраст>/<папка-заявки>/`. Метаданные (`meta.txt`,
-   `description.txt`, `reason.txt`) добавляются всегда, бинарные файлы —
-   если суммарный размер заявки не превышает `EXPORT_MAX_PART_BYTES`
-   (по умолчанию 90 МБ; иначе статус `oversize_meta_only`).
+   `description.txt`, `reason.txt`) добавляются всегда, бинарные
+   файлы — если суммарный размер заявки не превышает
+   `EXPORT_MAX_PART_BYTES` (иначе статус `oversize_meta_only` по
+   конкретной заявке).
 2. `links.txt` (`kind="links"`) — построчный «BR-ID\\t<cloud_link>» по
    всем LINKS-заявкам, чтобы админ забирал бинарные файлы из облака
    вручную.
 3. `manifest.csv` (`kind="manifest"`, UTF-8 + BOM, разделитель `;`) —
    карта выгрузки: `br_id, track, age_category, intake_mode,
    moderation_status, jury_status, status, files_count, files_bytes,
-   cloud_link, inner_path, zip_filename`.
+   cloud_link, inner_path, archive_filename`.
 4. `summary` (`kind="summary"`) — итоговая статистика выгрузки.
 
 LINKS-заявки в архиве:
-- с `cloud_link` → mini-ZIP с `meta.txt` и `cloud_link.txt`,
-  `manifest.status=links_only`;
-- без `cloud_link` → ZIP не шлём, `manifest.status=pending_link`.
+- с `cloud_link` → попадают в `tar.gz` пула с `meta.txt` и
+  `cloud_link.txt`, `manifest.status=links_only`;
+- без `cloud_link` → в архив не кладутся, `manifest.status=pending_link`.
 
 Запуск — двухшаговый: команда показывает confirm, `cmd_admin_confirm`
 стартует фоновый `asyncio.Task` (`handlers/admin_export.start_export_task`)
 и сразу возвращает «🚀 запущено». Между отправками — пауза
 `config.EXPORT_PAUSE_MS` (дефолт 800 мс), чтобы не упереться в
 rate-limit eXpress-CTS. Точечная переотправка одного архива —
-`/admin_export_app BR-2026-NNNN`.
+`/admin_export_app BR-2026-NNNN` → `BR-2026-NNNN.tar.gz`.
 
 ### Резервный сценарий приёма по ссылкам (§33.6 ТЗ)
 

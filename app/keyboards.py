@@ -519,13 +519,8 @@ def admin_system_menu_bubbles() -> BubbleMarkup:
         new_row=True,
     )
     bubbles.add_button(
-        command="/admin_export_files",
-        label="📦 Выгрузить все файлы",
-        new_row=True,
-    )
-    bubbles.add_button(
         command="/admin_export_shortlist_files",
-        label="🏆 Выгрузить файлы шорт-листа",
+        label="🏆 Шорт-лист в чат (tar.gz)",
         new_row=True,
     )
     admin_back_bubble(bubbles)
@@ -573,18 +568,13 @@ def admin_competition_data_bubbles() -> BubbleMarkup:
         new_row=True,
     )
     bubbles.add_button(
-        command="/admin_export_files",
-        label="📦 ZIP всех заявок в чат",
-        new_row=True,
-    )
-    bubbles.add_button(
         command="/admin_export_shortlist_files",
-        label="🏆 ZIP шорт-листа в чат",
+        label="🏆 Шорт-лист в чат (tar.gz)",
         new_row=True,
     )
     bubbles.add_button(
         command="/admin_competition_archive",
-        label="💾 Архив на диск",
+        label="💾 Архив на диск (bd-full.tar.gz)",
         new_row=True,
     )
     bubbles.add_button(

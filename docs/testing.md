@@ -68,7 +68,8 @@ python -m pytest tests/test_application_flow.py tests/test_jury_flow.py -q
 | `tests/test_keyboards.py` | `keyboards`: `back_to_*_menu_bubbles`, `fix_needed_notification_bubbles` — команды кнопок возврата | [`architecture.md`](architecture.md) → «Навигация в одном сообщении» |
 | `tests/test_notifications.py` | `services.notifications`: проактивные DM участнику (`notify_participant_*`) всегда передают `bubbles` (`/start`, для fix — ещё `/menu_contacts`) | [`architecture.md`](architecture.md) → «Навигация в одном сообщении» |
 | `tests/test_intake_state.py` | `services.intake_state`: дефолт «открыт» при пустой записи, persistence/idempotency, парсинг truthy/falsy/мусора | [`architecture.md`](architecture.md) → «Закрытие приёма заявок» |
-| `tests/test_attachments_export.py` | `services.attachments_export`: meta.txt, manifest CSV (UTF-8+BOM, `;`), links.txt, ZIP-сборка для FILES/LINKS-ссылка/LINKS-черновик/oversize, пустой селектор | [`architecture.md`](architecture.md) → «Архивная выгрузка `data/attachments`» |
+| `tests/test_attachments_export.py` | `services.attachments_export`: meta.txt, manifest CSV (UTF-8+BOM, `;`), links.txt, сборка entries для FILES/LINKS-ссылка/LINKS-черновик/oversize, группировка пула в tar.gz и split на части, пустой селектор | [`architecture.md`](architecture.md) → «Архивная выгрузка `data/attachments`» |
+| `tests/test_attachments_archive.py` | `services.attachments_archive`: pre-flight `ArchiveBudgetExceeded`, сборка `bd-full.tar.gz` с manifest+summary (внутри tar и рядом), ротация `bd-full.prev.tar.gz`, пустой источник | [`architecture.md`](architecture.md) → «Архивная выгрузка `data/attachments`» |
 
 ---
 
