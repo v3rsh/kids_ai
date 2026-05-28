@@ -148,6 +148,42 @@ class TestSendApplicationFilesWithCard:
         second_call = send_mock.await_args_list[1].kwargs
         assert second_call["body"] == "📎 Файл 2 из 2"
         assert "BR-" not in second_call["body"]
+
+    async def test_uses_preloaded_attachments_without_storage_call(self):
+        message = MagicMock()
+        bot = MagicMock()
+        app = _app()
+        attachments = [
+            _attachment("BR-2026-0001_original.jpg"),
+            _attachment("BR-2026-0001_angle-1.jpg"),
+        ]
+        storage_mock = AsyncMock()
+
+        with (
+            patch(
+                "services.storage.get_application_files_for_chat",
+                new=storage_mock,
+            ),
+            patch("utils.bot_utils.delete_source_message", new=AsyncMock()),
+            patch(
+                "utils.bot_utils.send_photo_transient",
+                new=AsyncMock(),
+            ) as send_mock,
+        ):
+            sent = await send_application_files_with_card(
+                message,
+                bot,
+                app=app,
+                body="card",
+                bubbles=MagicMock(),
+                attachments=attachments,
+            )
+
+        assert sent is True
+        storage_mock.assert_not_awaited()
+        assert send_mock.await_count == 2
+
+
 class TestResolveDmChatId:
     def test_returns_chat_id_from_message(self):
         chat_id = uuid.uuid4()

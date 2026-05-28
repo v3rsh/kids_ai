@@ -29,6 +29,7 @@ from fsm import cleanup_middleware, fsm_middleware
 from fsm.keys import FSM_KEY_JURY_TASK_INDEX, FSM_KEY_JURY_TASK_ROUND_ID
 from keyboards import back_to_jury_menu_bubbles
 from services import jury as jury_service
+from services import storage as storage_service
 from services.access import jury_only
 from states import JuryTaskFlow
 from utils.bot_utils import (
@@ -39,6 +40,11 @@ from utils.bot_utils import (
 from utils.contracts import PoolKey
 
 collector = HandlerCollector()
+
+_JURY_MULTI_FILES_NOTICE = (
+    "\n\n**Внимание!** В этой работе {n} файла, "
+    "они находятся под меню."
+)
 
 
 # =====================================================================
@@ -137,6 +143,7 @@ def _render_task_text(
     progress_no: int,
     cloud_link: Optional[str],
     can_submit: bool,
+    attachment_count: int = 0,
 ) -> str:
     """Текст экрана задачи: анонимный заголовок + инструкция.
 
@@ -182,6 +189,8 @@ def _render_task_text(
         "— Как минимум одна работа должна иметь оценку, отличную "
         "от других."
     )
+    if attachment_count >= 2:
+        lines.append(_JURY_MULTI_FILES_NOTICE.format(n=attachment_count))
     return "\n".join(lines)
 
 
@@ -275,6 +284,19 @@ async def _render_current_view(
         }
     )
 
+    try:
+        attachments = await storage_service.get_application_files_for_chat(
+            current_app
+        )
+    except Exception:
+        logger.exception(
+            "Не удалось загрузить файлы работы для экрана жюри",
+            br_id=current_app.br_id,
+        )
+        attachments = None
+
+    attachment_count = len(attachments) if attachments else 0
+
     bubbles = _build_carousel_bubbles(
         round_id=round_id,
         index=index,
@@ -293,6 +315,7 @@ async def _render_current_view(
         progress_no=progress_no,
         cloud_link=current_app.cloud_link,
         can_submit=can_submit,
+        attachment_count=attachment_count,
     )
 
     sent = await send_application_files_with_card(
@@ -302,6 +325,7 @@ async def _render_current_view(
         body=text,
         bubbles=bubbles,
         anonymous_extra_captions=True,
+        attachments=attachments,
     )
     if not sent:
         await reply_to_user(message, bot, text, bubbles=bubbles)

@@ -457,29 +457,31 @@ async def send_application_files_with_card(
     body: str,
     bubbles: Optional[BubbleMarkup] = None,
     anonymous_extra_captions: bool = False,
+    attachments: list[OutgoingAttachment] | None = None,
 ) -> bool:
     """Отправить все файлы заявки: первый с карточкой, остальные — с подписью.
 
     Returns:
         True, если хотя бы один файл отправлен; False — fallback на текст.
     """
-    try:
-        from services import storage as storage_service
-    except ImportError:
-        logger.exception(
-            "Не удалось импортировать storage для отправки файлов заявки",
-            br_id=app.br_id,
-        )
-        return False
+    if attachments is None:
+        try:
+            from services import storage as storage_service
+        except ImportError:
+            logger.exception(
+                "Не удалось импортировать storage для отправки файлов заявки",
+                br_id=app.br_id,
+            )
+            return False
 
-    try:
-        attachments = await storage_service.get_application_files_for_chat(app)
-    except Exception:
-        logger.exception(
-            "Не удалось загрузить файлы заявки",
-            br_id=app.br_id,
-        )
-        attachments = None
+        try:
+            attachments = await storage_service.get_application_files_for_chat(app)
+        except Exception:
+            logger.exception(
+                "Не удалось загрузить файлы заявки",
+                br_id=app.br_id,
+            )
+            attachments = None
 
     if not attachments:
         return False
