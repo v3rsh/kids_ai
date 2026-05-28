@@ -435,6 +435,7 @@ async def handler(message: IncomingMessage, bot: Bot) -> None:
 | `user:my_apps:page` | `user_applications.py` | Страница «Мои заявки» |
 | `file_upload_allowed` | `user_files.py` | Флаг шага загрузки файлов |
 | `jury_task_round_id`, `jury_task_index` | `jury_tasks.py` | Позиция в карусели жюри |
+| `jury_task_anchor_sync_id` | `jury_tasks.py` | sync_id photo-якоря карусели жюри (для edit caption на голосе и delete на выходе) |
 | `admin_add_role` | `admin_roles.py` | Выбранная роль при добавлении |
 
 ### Навигация модератора: контекст происхождения
@@ -632,6 +633,41 @@ Beeline-пример: `https://link.buzz.beeline.ru/open/profile/{bot_id}?ets_id
 При следующем `source_sync_id` `cleanup_middleware` удаляет все трекаемые сообщения и очищает список.
 
 Подробности — в правиле `.cursor/rules/message-navigation.mdc`. Формат текстов пользователю — `.cursor/rules/user-messages.mdc`.
+
+### Карусель жюри: photo-якорь + edit caption на голосовании
+
+Чтобы при клике «Да / Нет» в карусели задач жюри **не двигался viewport**
+(eXpress на мобильном при `delete + answer_message` подтягивает чат вверх,
+а новое сообщение приходит вниз → судья теряет фокус), используется
+гибридная схема **«photo-якорь + edit caption»**:
+
+| Слой | Тип | Содержимое | При `/jt_vote` | При `/jt_nav` |
+|------|-----|-----------|---------------|---------------|
+| **Якорь** | `send_photo_persistent` (1-й файл работы); `sync_id` в FSM (`FSM_KEY_JURY_TASK_ANCHOR_SYNC_ID`) | Файл + caption + `BubbleMarkup` | `bot.edit_message(body, bubbles)` без `file` — **на месте** | `delete_message(anchor)` + новый `send_photo_persistent` |
+| **Хвост** | `send_photo_transient` | Файлы 2..N с подписью «📎 Файл i из N» | `cleanup_middleware` снят — остаётся на месте | `cleanup_middleware` снимает перед хендлером, далее новые transient |
+
+Помощники: [`utils/bot_utils.py`](../app/utils/bot_utils.py) →
+`send_jury_carousel`, `edit_jury_anchor_caption`, `delete_jury_anchor`.
+Lifecycle якоря (`_drop_old_anchor`, `_exit_carousel_with_reply`,
+`_force_cleanup_transient`) — в [`handlers/jury_tasks.py`](../app/handlers/jury_tasks.py).
+
+**Почему `cleanup_middleware` снят с `/jt_vote`:** иначе он удалит хвост
+(transient photo 2..N) ещё до хендлера, и при каждом голосе судья будет
+терять файлы 2..N до повторной подгрузки. Источник кнопки `/jt_vote`
+всегда совпадает с photo-якорем, и `edit_message(body, bubbles)`
+безопасно меняет caption и кнопки, **не трогая `file`** (pybotx 0.76.3:
+`file=Undefined` → ключ не уходит в JSON → CTS оставляет вложение).
+
+**Навигация (`/jt_nav`)** остаётся `delete + send`-схемой — eXpress
+не поддерживает `edit_message(file=...)` для замены фото. Видимый
+«прыжок» на навигации сохраняется, но не на самом частом клике судьи
+(голосовании).
+
+**Выходные ветки** (`/jt_back`, `/jt_submit`, «Раунд закрыт», «LookupError»,
+«Состояние карусели потеряно», «Нет работ») идут через
+`_exit_carousel_with_reply` — он удаляет якорь явно
+(`delete_jury_anchor`), ставит `transient_source_deleted = True`
+(чтобы `reply_to_user` не пытался edit на удалённом якоре) и очищает FSM.
 
 ---
 
