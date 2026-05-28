@@ -44,7 +44,7 @@ from services.attachments_archive import (
 )
 from services.intake_mode import get_intake_mode
 from services.intake_state import is_intake_open
-from services.pools import all_pools, get_pool_applications
+from services.pools import all_pools, count_jury_by_pool, get_pool_applications
 from utils.bot_utils import reply_to_user, resolve_bot_id
 from utils.contracts import PoolKey
 
@@ -541,17 +541,7 @@ async def cmd_admin_competition_jury_state(
             row[0]: int(row[1])
             for row in (await session.execute(votes_stmt)).all()
         }
-        from database.models import JuryPoolAssignment
-
-        assign_stmt = select(
-            JuryPoolAssignment.track,
-            JuryPoolAssignment.age_category,
-            func.count(),
-        ).group_by(JuryPoolAssignment.track, JuryPoolAssignment.age_category)
-        assignments_count = {
-            (track, age): int(cnt)
-            for track, age, cnt in (await session.execute(assign_stmt)).all()
-        }
+        assignments_count = await count_jury_by_pool(session=session)
 
     latest: dict[tuple[Track, AgeCategory], JuryRound] = {}
     for r in all_rounds:

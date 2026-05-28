@@ -46,7 +46,6 @@ from sqlalchemy import func, select
 from database.db import get_session
 from database.models import (
     AgeCategory,
-    JuryPoolAssignment,
     JuryRound,
     JuryRoundStatus,
     JuryVote,
@@ -57,6 +56,7 @@ from fsm import cleanup_middleware, fsm_middleware
 from keyboards import back_to_moderator_menu_bubbles
 from services.access import moderator_only
 from services.jury_settings import get_jury_auto_lot, get_jury_max_round
+from services.pools import count_jury_by_pool
 from utils.bot_utils import reply_to_user
 
 
@@ -191,14 +191,7 @@ async def cmd_jury_state(message: IncomingMessage, bot: Bot) -> None:
         rounds_stmt = select(JuryRound)
         all_rounds = list((await session.execute(rounds_stmt)).scalars().all())
 
-        assign_stmt = select(JuryPoolAssignment.track, JuryPoolAssignment.age_category, func.count())
-        assign_stmt = assign_stmt.group_by(
-            JuryPoolAssignment.track, JuryPoolAssignment.age_category
-        )
-        assignments_count: dict[tuple[Track, AgeCategory], int] = {
-            (track, age): int(cnt)
-            for track, age, cnt in (await session.execute(assign_stmt)).all()
-        }
+        assignments_count = await count_jury_by_pool(session=session)
 
         votes_stmt = (
             select(

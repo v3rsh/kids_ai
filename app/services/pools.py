@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Optional
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import (
@@ -124,6 +124,49 @@ async def get_jury_for_pool(
     )
     result = await session.execute(fallback_stmt)
     return list(result.scalars().all())
+
+
+async def count_jury_by_pool(
+    *,
+    session: AsyncSession,
+) -> dict[tuple[Track, AgeCategory], int]:
+    """Число судей по каждому пулу — та же семантика, что ``get_jury_for_pool``.
+
+    Два запроса: активные назначения по пулам и общее число активных судей
+    для fallback при пустом ``JURY_POOLS_CONFIG``.
+    """
+    assign_stmt = (
+        select(
+            JuryPoolAssignment.track,
+            JuryPoolAssignment.age_category,
+            func.count(func.distinct(JuryPoolAssignment.jury_huid)),
+        )
+        .join(JuryMember, JuryMember.huid == JuryPoolAssignment.jury_huid)
+        .where(JuryMember.is_active.is_(True))
+        .group_by(JuryPoolAssignment.track, JuryPoolAssignment.age_category)
+    )
+    assigned_per_pool = {
+        (track, age): int(cnt)
+        for track, age, cnt in (await session.execute(assign_stmt)).all()
+    }
+
+    active_count = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(JuryMember)
+                .where(JuryMember.is_active.is_(True))
+            )
+        ).scalar_one()
+    )
+
+    return {
+        (pool.track, pool.age_category): (
+            assigned_per_pool.get((pool.track, pool.age_category), 0)
+            or active_count
+        )
+        for pool in all_pools()
+    }
 
 
 # =====================================================================
@@ -298,6 +341,7 @@ async def sync_pool_assignments_from_config(
 
 __all__ = [
     "all_pools",
+    "count_jury_by_pool",
     "get_pool_applications",
     "get_jury_for_pool",
     "sync_pool_assignments_from_config",
