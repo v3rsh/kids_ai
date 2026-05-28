@@ -26,6 +26,7 @@ wheels/
 
 # Virtual environment
 venv/
+.venv/
 env/
 ENV/
 
@@ -35,8 +36,11 @@ ENV/
 *.swp
 *.swo
 
-# Environment variables
+# Environment variables (секреты — не коммитить; шаблоны — .env-example, .env.sanity)
 .env
+.env.*
+!.env-example
+!.env.sanity
 
 # Database
 *.db
