@@ -180,6 +180,7 @@ async def lifespan(app: Starlette):
     app.state.bot = bot
 
     disk_monitor_task: asyncio.Task | None = None
+    delete_retry_task: asyncio.Task | None = None
     async with lifespan_wrapper(bot) as bot_wrapper:
         # Валидация чата модерации: если в БД лежит UUID, проверяем
         # фактическое членство бота через chat_info. Это ловит «болванки»
@@ -192,6 +193,7 @@ async def lifespan(app: Starlette):
         # выше уже бросается RuntimeError.
         if ENABLE_SCHEDULER:
             from services.storage import start_disk_monitor_task
+            from services.delete_retry import start_delete_retry_task
 
             disk_monitor_task = start_disk_monitor_task(
                 bot, DISK_CHECK_INTERVAL_SEC
@@ -200,10 +202,17 @@ async def lifespan(app: Starlette):
                 "Фоновый монитор диска включён (ENABLE_SCHEDULER=true)",
                 interval_sec=DISK_CHECK_INTERVAL_SEC,
             )
+
+            # Воркер повторных попыток delete_message при сбое CTS.
+            # См. app/services/delete_retry.py — кладёт sync_id из
+            # cleanup_middleware при transient-ошибках CTS и пробует
+            # удалить ещё раз с экспоненциальным backoff.
+            delete_retry_task = start_delete_retry_task(bot)
         else:
             logger.info(
-                "ENABLE_SCHEDULER=false → фоновый монитор диска НЕ запущен; "
-                "используй ручную команду /disk и помни про auto-switch в LINKS"
+                "ENABLE_SCHEDULER=false → фоновый монитор диска и delete-retry "
+                "НЕ запущены; используй ручную команду /disk и помни про "
+                "auto-switch в LINKS"
             )
 
         logger.info("Бот успешно запущен и готов к работе!")
@@ -211,10 +220,12 @@ async def lifespan(app: Starlette):
 
     # Shutdown: остановить фоновые задачи и flush'нуть aggregator
     # уведомлений жюри (иначе теряем pending-event'ы агрегации).
-    if disk_monitor_task is not None:
-        disk_monitor_task.cancel()
+    for task in (disk_monitor_task, delete_retry_task):
+        if task is None:
+            continue
+        task.cancel()
         try:
-            await disk_monitor_task
+            await task
         except (asyncio.CancelledError, Exception):
             pass
 
@@ -228,6 +239,12 @@ async def lifespan(app: Starlette):
     await close_fsm_storage()
     from utils.message_tracking import close_redis
     await close_redis()
+    try:
+        from services.delete_retry import close_redis as close_delete_retry_redis
+
+        await close_delete_retry_redis()
+    except Exception:
+        logger.exception("Не удалось закрыть Redis-клиент delete_retry")
     app.state.bot = None
     logger.info("Завершение работы приложения...")
 

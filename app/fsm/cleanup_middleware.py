@@ -25,6 +25,49 @@ from utils.message_tracking import (
 IncomingMessageHandlerFunc = Callable[[IncomingMessage, Bot], Any]
 
 
+# Подстроки в str(exc), означающие что delete_message можно тихо
+# проигнорировать. Делятся на две группы:
+#
+# - SILENT — сообщение уже неактуально / удалено / чат недоступен;
+#   ставить в очередь повторных попыток бессмысленно.
+# - TRANSIENT — сторона CTS временно недоступна (502/5xx);
+#   эти кейсы кандидаты на retry-delete (services/delete_retry.py).
+_SILENT_DELETE_PATTERNS = (
+    "not found",
+    "already deleted",
+    "event_not_found",
+    "chat_not_found",
+)
+_TRANSIENT_DELETE_PATTERNS = (
+    "code 500",
+    "code 502",
+    "code 503",
+    "code 504",
+    "unexpected_error",
+    "bad gateway",
+    "gateway timeout",
+    "service unavailable",
+    "readtimeout",
+    "connecttimeout",
+)
+
+
+def _classify_delete_error(exc: BaseException) -> str:
+    """Возвращает 'silent' | 'transient' | 'unknown' для ``exc``.
+
+    Используется чтобы:
+    - silent: писать в DEBUG (сообщение уже неактуально, ретрай бессмыслен);
+    - transient: писать в DEBUG + (в будущем) ставить в очередь повторов;
+    - unknown: писать в WARNING с ``repr(exc)`` (нужен взгляд разработчика).
+    """
+    text = str(exc).lower()
+    if any(pat in text for pat in _SILENT_DELETE_PATTERNS):
+        return "silent"
+    if any(pat in text for pat in _TRANSIENT_DELETE_PATTERNS):
+        return "transient"
+    return "unknown"
+
+
 async def cleanup_middleware(
     message: IncomingMessage,
     bot: Bot,
@@ -120,17 +163,43 @@ async def _cleanup_transient_messages(
                 if sync_id == source_sync_id:
                     message.state.transient_source_deleted = True
             except Exception as e:
-                # Сообщение могло быть уже удалено или недоступно
-                error_str = str(e).lower()
-                if "not found" in error_str or "already deleted" in error_str:
+                category = _classify_delete_error(e)
+                if category == "silent":
                     logger.debug(
-                        "Transient message already deleted or not found",
+                        "Transient message already deleted or not found: {}",
+                        repr(e),
                         sync_id=str(sync_id),
                     )
+                elif category == "transient":
+                    # CTS временно недоступен — это не наша ошибка.
+                    # Кладём в очередь повторных попыток
+                    # (services.delete_retry), пишем DEBUG, чтобы не
+                    # шуметь в логах. Воркер сам подчистит, когда CTS
+                    # оживёт.
+                    logger.debug(
+                        "CTS transient error on delete_message: {}",
+                        repr(e),
+                        sync_id=str(sync_id),
+                    )
+                    try:
+                        from services.delete_retry import enqueue_delete_retry
+
+                        await enqueue_delete_retry(
+                            bot_id=message.bot.id,
+                            user_huid=user_huid,
+                            sync_id=sync_id,
+                        )
+                    except Exception as enqueue_exc:
+                        logger.warning(
+                            "Не удалось поставить sync_id в очередь "
+                            "retry-delete: {}",
+                            repr(enqueue_exc),
+                            sync_id=str(sync_id),
+                        )
                 else:
                     logger.warning(
                         "Failed to delete transient message: {}",
-                        e,
+                        repr(e),
                         sync_id=str(sync_id),
                     )
         
@@ -147,6 +216,6 @@ async def _cleanup_transient_messages(
     except Exception as e:
         logger.error(
             "Error during transient messages cleanup: {}",
-            e,
+            repr(e),
             user_huid=str(user_huid),
         )

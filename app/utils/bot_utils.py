@@ -24,6 +24,49 @@ if TYPE_CHECKING:
     from database.models import Application
 
 
+# Лимит длины тела сообщения в eXpress/BotX (4096 символов).
+# Превышение даёт `Message body length exceeds 4096 symbols` без
+# возможности ретрая. Урезаем заранее с маркером, чтобы не падать.
+MAX_MESSAGE_BODY = 4096
+_TRUNCATE_MARKER = "\n…"
+
+# Подстроки в str(exc), означающие невосстановимую ошибку CTS:
+# ретраи только удлинят хендлер и снова получат 4xx. Распознаём
+# заранее и сразу падаем в fallback / возвращаем False.
+_NON_RETRYABLE_PATTERNS = (
+    "message body length exceeds",
+    "malformed_request",
+    "code 400",
+    "and payload",  # pybotx форматирует 4xx как "POST ... failed with code 400 and payload"
+)
+
+
+def _truncate_body(body: str) -> str:
+    """Обрезает ``body`` до ``MAX_MESSAGE_BODY`` символов с маркером.
+
+    eXpress принимает максимум 4096 символов в сообщении. Если уперлись
+    в лимит — отдадим первые ``MAX_MESSAGE_BODY - len(marker)`` символов
+    и допишем ``\\n…``, чтобы UI показал, что текст обрезан.
+
+    Безопасна для не-str: вернёт аргумент как есть (pybotx сам отвалит
+    с понятным типом-эксепшеном).
+    """
+    if not isinstance(body, str):
+        return body
+    if len(body) <= MAX_MESSAGE_BODY:
+        return body
+    cut = MAX_MESSAGE_BODY - len(_TRUNCATE_MARKER)
+    return body[:cut] + _TRUNCATE_MARKER
+
+
+def _is_non_retryable(exc: BaseException) -> bool:
+    """True для 4xx/length-ошибок CTS, которые ретраить бесполезно."""
+    text = str(exc).lower()
+    if not text:
+        return False
+    return any(pat in text for pat in _NON_RETRYABLE_PATTERNS)
+
+
 def resolve_bot_id(bot: Bot) -> UUID | None:
     """UUID первого bot account из ``Bot.bot_accounts``.
 
@@ -107,12 +150,23 @@ async def _try_with_retry(
     delay: float,
     label: str,
 ) -> bool:
-    """Вызывает async-функцию с retry. Возвращает True при успехе."""
+    """Вызывает async-функцию с retry. Возвращает True при успехе.
+
+    Невосстановимые ошибки CTS (400 malformed, превышение лимита тела)
+    распознаются ``_is_non_retryable`` и прекращают цикл сразу: повторять
+    бесполезно, а каждый ретрай — лишняя задержка хендлера.
+    """
     for attempt in range(retries):
         try:
             await coro_fn(**kwargs)
             return True
         except Exception as exc:
+            if _is_non_retryable(exc):
+                logger.warning(
+                    "Невосстановимая ошибка {} (ретраи пропущены): {}",
+                    label, exc,
+                )
+                return False
             if attempt < retries - 1:
                 logger.warning(
                     "Попытка {} {}/{} не удалась: {}. Повтор через {}с...",
@@ -155,6 +209,7 @@ async def reply_to_user(
     
     Для transient-сообщений (информационных, без навигации) используй safe_answer_transient().
     """
+    body = _truncate_body(body)
     source_deleted = getattr(message.state, 'transient_source_deleted', False)
 
     if message.source_sync_id and not source_deleted:
@@ -200,6 +255,7 @@ async def safe_answer(
     Returns:
         sync_id отправленного сообщения
     """
+    body = _truncate_body(body)
     send_kwargs = {"wait_callback": False, **kwargs}
     if bubbles is not None:
         send_kwargs["bubbles"] = bubbles
@@ -233,6 +289,7 @@ async def safe_answer_transient(
     Returns:
         sync_id отправленного сообщения
     """
+    body = _truncate_body(body)
     send_kwargs = {"wait_callback": False, **kwargs}
     if bubbles is not None:
         send_kwargs["bubbles"] = bubbles
@@ -269,6 +326,7 @@ async def send_photo_transient(
     Returns:
         sync_id отправленного сообщения
     """
+    body = _truncate_body(body)
     send_kwargs = {"wait_callback": False, "file": photo, **kwargs}
     if bubbles is not None:
         send_kwargs["bubbles"] = bubbles
@@ -293,6 +351,7 @@ async def send_photo_persistent(
     В отличие от ``send_photo_transient``, сообщение не трекается и не
     удаляется ``cleanup_middleware`` при следующей навигации.
     """
+    body = _truncate_body(body)
     send_kwargs = {"wait_callback": False, "file": photo, **kwargs}
     if bubbles is not None:
         send_kwargs["bubbles"] = bubbles
@@ -332,15 +391,21 @@ async def send_with_retry(
     Returns:
         True если отправка успешна, False если все попытки исчерпаны
     """
+    body = _truncate_body(body)
     send_kwargs = {"wait_callback": False, **kwargs}
     if bubbles is not None:
         send_kwargs["bubbles"] = bubbles
-    
+
     for attempt in range(retries):
         try:
             await bot.answer_message(body, **send_kwargs)
             return True
         except Exception as exc:
+            if _is_non_retryable(exc):
+                logger.error(
+                    "Невосстановимая ошибка отправки (ретраи пропущены): {}", exc,
+                )
+                return False
             if attempt < retries - 1:
                 logger.warning(
                     "Попытка отправки {}/{} не удалась: {}. Повтор через {} сек...",

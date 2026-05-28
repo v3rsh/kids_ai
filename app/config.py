@@ -74,6 +74,16 @@ DEBUG = os.getenv("DEBUG", "False").lower() == "true"
 ENABLE_SCHEDULER = os.getenv("ENABLE_SCHEDULER", "false").lower() == "true"
 UVICORN_WORKERS = max(1, int(os.getenv("UVICORN_WORKERS", "1")))
 
+# ===== Retry delete (повторные попытки удаления transient-сообщений) =====
+# При сбое CTS на endpoint `delete_event` (502/500/timeout) sync_id
+# попадает в Redis-ZSET `bot_delete_retry`, а фоновая задача периодически
+# пробует удалить ещё раз с экспоненциальным backoff.
+# Запускается только под ENABLE_SCHEDULER=true (тот же гард, что у
+# disk_monitor) — в multi-worker деплое не дублируется.
+DELETE_RETRY_INTERVAL_SEC = int(os.getenv("DELETE_RETRY_INTERVAL_SEC", "30"))
+DELETE_RETRY_MAX_ATTEMPTS = int(os.getenv("DELETE_RETRY_MAX_ATTEMPTS", "5"))
+DELETE_RETRY_MAX_AGE_SEC = int(os.getenv("DELETE_RETRY_MAX_AGE_SEC", "300"))
+
 # ===== Безопасные рисунки =====
 # Конвенция env-переменных проекта — UPPER_SNAKE_CASE без общего префикса
 # (см. ADMIN_HUID, REDIS_URL и т.п.). Все имена ниже подчиняются ей.
@@ -148,19 +158,24 @@ JURY_POOLS_CONFIG = os.getenv("JURY_POOLS_CONFIG", "")
 # Год проведения конкурса — используется в формировании BR-ID.
 COMPETITION_YEAR = int(os.getenv("COMPETITION_YEAR", "2026"))
 
-# Параметры выгрузки архива файлов (`/admin_export_files`,
-# `/admin_export_shortlist_files`).
+# Параметры выгрузки шорт-листа в чат (`/admin_export_shortlist_files`)
+# и точечной переотправки (`/admin_export_app`).
 #
 # EXPORT_PAUSE_MS — пауза между отправками отдельных архивов
 # в чат админа. Защищает eXpress-CTS от rate-limit и не даёт
 # бот-сессии «утопиться» в исходящих сообщениях. По умолчанию 800 мс.
 #
-# EXPORT_MAX_PART_BYTES — мягкий ограничитель размера ZIP-файла на
-# заявку. Если суммарный размер вложений превышает этот лимит,
-# в архиве сохраняем только meta.txt + description.txt + reason.txt
-# (без бинарников); в манифесте такая запись помечается
-# ``status=oversize_meta_only``. По умолчанию 90 МБ — берём с запасом
-# к лимиту вложений в eXpress (обычно 100 МБ).
+# EXPORT_MAX_PART_BYTES — мягкий ограничитель размера одной части
+# tar.gz. Применяется к двум сценариям:
+#   1. Пуловые tar.gz (`trad-7-12.tar.gz` и т.п.): если суммарный
+#      размер заявок пула превышает лимит, пул режется на части
+#      `…part01.tar.gz`, `…part02.tar.gz`.
+#   2. Точечный архив одной заявки (`BR-2026-NNNN.tar.gz`): если
+#      сумма вложений > лимита, в архиве оставляем только
+#      meta.txt + description.txt + reason.txt; в манифесте такая
+#      запись помечается ``status=oversize_meta_only``.
+# По умолчанию 90 МБ — берём с запасом к лимиту вложений в
+# eXpress (обычно 100 МБ).
 EXPORT_PAUSE_MS = int(os.getenv("EXPORT_PAUSE_MS", "800"))
 EXPORT_MAX_PART_BYTES = int(os.getenv("EXPORT_MAX_PART_BYTES", str(90 * 1024 * 1024)))
 
