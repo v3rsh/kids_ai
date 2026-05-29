@@ -1189,7 +1189,7 @@ async def cmd_m_review(message: IncomingMessage, bot: Bot) -> None:
 
 @collector.command(
     "/m_rejected",
-    description="Отклонённые заявки (без файлов)",
+    description="Отклонённые заявки",
     visible=False,
     middlewares=[fsm_middleware, cleanup_middleware],
 )
@@ -1197,9 +1197,9 @@ async def cmd_m_review(message: IncomingMessage, bot: Bot) -> None:
 async def cmd_m_rejected(message: IncomingMessage, bot: Bot) -> None:
     """Отклонённые заявки — выбор трека.
 
-    Файлы отклонённых заявок физически удалены с сервера (см.
-    ``services.storage.delete_application_files``), поэтому открытие
-    карточки покажет только метаданные.
+    Папка работы отклонённой заявки переносится в ``99_rejected/`` со
+    всеми файлами (см. ``services.storage.move_to_rejected``), поэтому
+    карточка и ``/files`` остаются доступны.
     """
     await _render_section_track_picker(
         message, bot, status_name=ModerationStatus.OTKLONENO.name

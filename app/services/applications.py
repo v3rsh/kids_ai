@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
 from uuid import UUID
 
@@ -25,7 +26,7 @@ from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
-from config import COMPETITION_YEAR
+from config import ATTACHMENTS_DIR, COMPETITION_YEAR
 from database.db import get_session
 from database.models import (
     AgeCategory,
@@ -1043,6 +1044,60 @@ async def clear_application_work_files(br_id: str) -> Application:
         _ = list(reloaded.files)
         session.expunge(reloaded)
     return reloaded
+
+
+async def remap_application_file_paths(br_id: str, folder: Path) -> int:
+    """Обновить ``relative_path`` файлов заявки на новую папку.
+
+    Вызывается после ``storage.move_to_rejected`` — папка заявки
+    переехала в ``99_rejected/``, поэтому ``relative_path`` в БД должен
+    указывать на новое расположение, иначе ``/files`` не найдёт файлы.
+
+    Новый путь = ``<folder>/<stored_filename>`` относительно
+    ``ATTACHMENTS_DIR``. Обновление в памяти + один ``commit``.
+
+    Args:
+        br_id: ID заявки (``BR-2026-XXXX``).
+        folder: новая папка заявки (абсолютный путь внутри
+            ``ATTACHMENTS_DIR``).
+
+    Returns:
+        Число обновлённых записей ``application_files``.
+
+    Raises:
+        ValueError: если заявка не найдена.
+    """
+    needle = (br_id or "").strip().upper()
+    try:
+        base_rel = folder.resolve().relative_to(ATTACHMENTS_DIR.resolve())
+    except ValueError:
+        # folder вне ATTACHMENTS_DIR — оставляем абсолютный путь как есть.
+        base_rel = folder
+
+    async with get_session()() as session:
+        app = (
+            await session.execute(
+                select(Application)
+                .where(Application.br_id == needle)
+                .options(selectinload(Application.files))
+            )
+        ).scalar_one_or_none()
+        if app is None:
+            raise ValueError(f"Заявка не найдена: {needle}")
+
+        updated = 0
+        for file in app.files:
+            file.relative_path = str(base_rel / file.stored_filename)
+            updated += 1
+        await session.commit()
+
+    logger.info(
+        "Пути файлов заявки перенаправлены",
+        br_id=needle,
+        folder=str(folder),
+        files_updated=updated,
+    )
+    return updated
 
 
 async def get_for_participant(

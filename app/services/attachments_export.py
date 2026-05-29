@@ -66,6 +66,7 @@ from services.registry import fetch_shortlist_applications
 from services.storage import (
     ATTACHMENTS_DIR,
     get_application_folder,
+    resolve_application_folder,
 )
 
 
@@ -298,7 +299,7 @@ async def _collect_app_entries(
     """
     files = list(app.files)
     inner_prefix = _inner_dir(app)
-    folder = get_application_folder(app)
+    folder = resolve_application_folder(app)
 
     info: dict = {
         "br_id": app.br_id,

@@ -6,7 +6,8 @@
 - переименование файлов по шаблону
   ``BR_ID-ParentName-ChildName-Track-AgeCategory[-Nx].ext``;
 - генерацию текстовых метаданных (description.txt, meta.txt, reason.txt);
-- физическое удаление файлов работы при отклонении;
+- перенос всей папки работы в ``99_rejected/`` при отклонении
+  (файлы сохраняются для возможных споров);
 - мониторинг занятого места и автопредупреждения по порогам WARN/BLOCK;
 - сбор файлов заявки для модератора (`/files`).
 
@@ -28,9 +29,10 @@ ATTACHMENTS_DIR/
           meta.txt
     02_ai/
     03_refine/
-  99_rejected/                   # отклонённые (только метаданные)
+  99_rejected/                   # отклонённые (полная папка работы)
     <YYYY-MM-DD>/                # дата модерации
       BR-2026-NNNN_.../
+        BR-2026-NNNN_original.jpg  # файлы работы сохраняются
         description.txt
         meta.txt
         reason.txt
@@ -49,6 +51,7 @@ import asyncio
 import io
 import re
 import shutil
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
@@ -59,7 +62,6 @@ from loguru import logger
 
 from config import (
     ATTACHMENTS_DIR,
-    DISK_BLOCK_PCT,
     DISK_WARN_PCT,
 )
 from database.models import (
@@ -91,9 +93,28 @@ DESCRIPTION_TXT = "description.txt"
 META_TXT = "meta.txt"
 REASON_TXT = "reason.txt"
 
-#: "Служебные" txt — те, что НЕ удаляются при move_to_rejected.
+#: "Служебные" txt — исключаются из выдачи файлов (`/files`) и из
+#: очистки изображений отклонённых (``purge_rejected_images``).
 META_FILENAMES: frozenset[str] = frozenset(
     {DESCRIPTION_TXT, META_TXT, REASON_TXT}
+)
+
+#: Расширения файлов-изображений (lower case, с точкой). Используются
+#: в ``purge_rejected_images``/``get_rejected_storage_stats``: при очистке
+#: места удаляются только изображения, метаданные (txt) сохраняются.
+REJECTED_IMAGE_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+        ".gif",
+        ".bmp",
+        ".heic",
+        ".heif",
+        ".tif",
+        ".tiff",
+    }
 )
 
 #: Префиксы треков для имён папок (латиница — стабильно работает на любых ФС
@@ -598,37 +619,76 @@ async def move_to_rejected(
     moderator_full_name: str | None = None,
     moderation_date: datetime | None = None,
 ) -> Path:
-    """Переместить метаданные заявки в ``99_rejected/``.
+    """Перенести всю папку заявки в ``99_rejected/`` (файлы сохраняются).
 
-    Порядок (атомарность относительно БД):
-    1. Создаём папку назначения в ``99_rejected/<дата_модерации>/<имя>/``.
-    2. Пишем туда ``reason.txt`` (с дословным текстом ``reason``, если
-       передан; иначе шапка без причины — её должен поставить вызывающий).
-    3. Переносим ``description.txt`` и ``meta.txt`` из активной папки
-       в папку отклонённых.
-    4. Физически удаляем все файлы работы из активной папки.
-    5. Удаляем пустую активную папку (если в ней не осталось ничего).
+    Порядок:
+    1. Переносим **всю папку заявки** целиком из активного дерева в
+       ``99_rejected/<дата_модерации>/<имя>/`` (work-файлы, превью,
+       метаданные — всё сохраняется для возможных споров).
+    2. Пишем/перезаписываем ``reason.txt`` в папке назначения.
+
+    Файлы работы **не удаляются** — это сознательное решение ради
+    сохранения материалов (см. план «Перенос отклонённых в 99»).
 
     БД-операцию (смена ``moderation_status`` на ``OTKLONENO``) вызывающий
     код коммитит только **после** успешного завершения этого метода.
+    После переноса вызывающий обязан вызвать
+    ``applications.remap_application_file_paths`` — чтобы ``relative_path``
+    в БД указывал на новое расположение в ``99_rejected/``.
 
     Returns:
         Путь к папке заявки внутри ``99_rejected/...``.
 
     Notes:
-        Метод толерантен к повторным вызовам: если папка отклонённых
-        уже существует, метаданные перезаписываются; если активная
-        папка уже удалена — log warning + продолжение.
+        Идемпотентность: если папка назначения уже существует
+        (повторный вызов) — содержимое исходной папки домерживается
+        пофайлово с перезаписью, исходная папка удаляется. Если активная
+        папка отсутствует — log warning + продолжение (только reason.txt).
     """
     src_folder = get_application_folder(app)
     dst_folder = get_rejected_application_folder(
         app, moderation_date=moderation_date
     )
 
-    def _ensure_dst() -> None:
-        dst_folder.mkdir(parents=True, exist_ok=True)
+    def _move_folder() -> None:
+        if not src_folder.exists():
+            logger.warning(
+                "move_to_rejected: исходная папка заявки отсутствует",
+                br_id=app.br_id,
+                folder=str(src_folder),
+            )
+            dst_folder.mkdir(parents=True, exist_ok=True)
+            return
 
-    await asyncio.to_thread(_ensure_dst)
+        dst_folder.parent.mkdir(parents=True, exist_ok=True)
+
+        if not dst_folder.exists():
+            # Быстрый путь: переносим папку целиком одним вызовом.
+            shutil.move(str(src_folder), str(dst_folder))
+            return
+
+        # Merge-фолбэк (повторный вызов / папка уже существует):
+        # переносим содержимое пофайлово с перезаписью.
+        for entry in src_folder.iterdir():
+            target = dst_folder / entry.name
+            try:
+                if target.exists():
+                    target.unlink()
+                shutil.move(str(entry), str(target))
+            except OSError as exc:
+                logger.error(
+                    "move_to_rejected: не удалось перенести файл",
+                    br_id=app.br_id,
+                    file=entry.name,
+                    error=str(exc),
+                )
+        try:
+            src_folder.rmdir()
+        except OSError:
+            # Не пусто (непредвиденный остаток) — оставляем как есть.
+            pass
+
+    await asyncio.to_thread(_move_folder)
 
     if reason is not None:
         await write_reason_txt(
@@ -639,44 +699,6 @@ async def move_to_rejected(
             base_folder=dst_folder,
         )
 
-    def _move_metafiles() -> None:
-        if not src_folder.exists():
-            logger.warning(
-                "move_to_rejected: исходная папка заявки отсутствует",
-                br_id=app.br_id,
-                folder=str(src_folder),
-            )
-            return
-        for name in (DESCRIPTION_TXT, META_TXT):
-            src = src_folder / name
-            if not src.exists():
-                continue
-            dst = dst_folder / name
-            try:
-                shutil.move(str(src), str(dst))
-            except OSError as exc:
-                logger.error(
-                    "Не удалось перенести метафайл",
-                    br_id=app.br_id,
-                    file=name,
-                    error=str(exc),
-                )
-
-    await asyncio.to_thread(_move_metafiles)
-    await delete_application_files(app)
-
-    def _try_remove_empty_src() -> None:
-        if src_folder.exists():
-            try:
-                # rmdir не удалит непустую папку — это безопасно.
-                src_folder.rmdir()
-            except OSError:
-                # Не пусто (например, превью или непредвиденный файл) —
-                # оставляем как есть, отдельный лог не нужен.
-                pass
-
-    await asyncio.to_thread(_try_remove_empty_src)
-
     logger.info(
         "Заявка перенесена в 99_rejected",
         br_id=app.br_id,
@@ -685,8 +707,229 @@ async def move_to_rejected(
     return dst_folder
 
 
+def resolve_application_folder(app: Application) -> Path:
+    """Актуальная папка заявки: активное дерево или ``99_rejected/``.
+
+    Для отклонённых заявок папка перенесена в ``99_rejected/`` —
+    ``get_application_folder`` укажет на уже несуществующий путь. Этот
+    хелпер возвращает фактическое расположение:
+
+    1. ``get_application_folder(app)`` — если существует, вернуть её;
+    2. иначе ищем папку с именем ``_format_application_folder_name(app)``
+       под ``get_rejected_root()`` (рекурсивно по датам модерации);
+    3. если ничего не найдено — возвращаем путь активного дерева
+       (вызывающий сам обработает отсутствие).
+    """
+    active = get_application_folder(app)
+    if active.exists():
+        return active
+
+    target_name = _format_application_folder_name(app)
+    rejected_root = get_rejected_root()
+    if rejected_root.is_dir():
+        for entry in rejected_root.rglob(target_name):
+            if entry.is_dir():
+                return entry
+    return active
+
+
 # =====================================================================
-# Мониторинг диска и автопереход в LINKS
+# Очистка изображений отклонённых работ + счётчик хранилища
+# =====================================================================
+
+
+@dataclass(frozen=True)
+class RejectedStorageStats:
+    """Статистика по содержимому ``99_rejected/``.
+
+    Используется для счётчика в админ-экранах (``/disk``, ``/admin_state``)
+    и в confirm-приглашении перед очисткой изображений.
+    """
+
+    folders_count: int = 0
+    image_files_count: int = 0
+    image_bytes: int = 0
+    meta_files_count: int = 0
+    meta_bytes: int = 0
+    other_files_count: int = 0
+    other_bytes: int = 0
+
+    @property
+    def total_bytes(self) -> int:
+        return self.image_bytes + self.meta_bytes + self.other_bytes
+
+
+@dataclass(frozen=True)
+class PurgeRejectedResult:
+    """Итог очистки изображений отклонённых работ."""
+
+    files_removed: int = 0
+    bytes_freed: int = 0
+    folders_touched: int = 0
+    errors: int = 0
+
+
+def _is_image_file(name: str) -> bool:
+    """True ⇒ имя файла имеет расширение изображения (lower case)."""
+    return Path(name).suffix.lower() in REJECTED_IMAGE_EXTENSIONS
+
+
+def _iter_rejected_app_folders(br_id: str | None = None) -> list[Path]:
+    """BR-папки под ``99_rejected/`` (все или фильтр по ``br_id``).
+
+    ``br_id`` сопоставляется по префиксу имени папки
+    (``BR-2026-NNNN_...``) без учёта регистра.
+    """
+    root = get_rejected_root()
+    if not root.is_dir():
+        return []
+
+    needle = (br_id or "").strip().upper()
+    found: list[Path] = []
+    for entry in root.rglob("*"):
+        if not entry.is_dir():
+            continue
+        if not entry.name.upper().startswith("BR-"):
+            continue
+        if needle and not entry.name.upper().startswith(needle):
+            continue
+        found.append(entry)
+    found.sort()
+    return found
+
+
+async def get_rejected_storage_stats() -> RejectedStorageStats:
+    """Подсчитать объём и состав ``99_rejected/`` (только ФС, без БД).
+
+    Разделяет файлы на изображения / метаданные (txt) / прочие, чтобы
+    показать, сколько места освободит ``purge_rejected_images``.
+    """
+
+    def _scan() -> RejectedStorageStats:
+        folders = _iter_rejected_app_folders()
+        image_count = image_bytes = 0
+        meta_count = meta_bytes = 0
+        other_count = other_bytes = 0
+        for folder in folders:
+            for entry in folder.iterdir():
+                if not entry.is_file():
+                    continue
+                try:
+                    size = entry.stat().st_size
+                except OSError:
+                    size = 0
+                if entry.name in META_FILENAMES:
+                    meta_count += 1
+                    meta_bytes += size
+                elif _is_image_file(entry.name):
+                    image_count += 1
+                    image_bytes += size
+                else:
+                    other_count += 1
+                    other_bytes += size
+        return RejectedStorageStats(
+            folders_count=len(folders),
+            image_files_count=image_count,
+            image_bytes=image_bytes,
+            meta_files_count=meta_count,
+            meta_bytes=meta_bytes,
+            other_files_count=other_count,
+            other_bytes=other_bytes,
+        )
+
+    return await asyncio.to_thread(_scan)
+
+
+async def purge_rejected_images(
+    *,
+    br_id: str | None = None,
+    dry_run: bool = False,
+) -> PurgeRejectedResult:
+    """Удалить изображения из ``99_rejected/`` (метаданные сохраняются).
+
+    Опциональный инструмент на случай нехватки места: физически удаляет
+    только файлы-изображения (``REJECTED_IMAGE_EXTENSIONS``). Текстовые
+    метаданные (``description.txt``/``meta.txt``/``reason.txt``) и прочие
+    не-изображения **не трогаются**.
+
+    Записи ``application_files`` в БД **не изменяются** — после очистки
+    ``/files`` для таких заявок вернёт «файл отсутствует», но карточка,
+    метаданные и причина отклонения остаются доступны.
+
+    Args:
+        br_id: если задан — очистить только эту заявку; иначе весь
+            ``99_rejected/``.
+        dry_run: True ⇒ только подсчёт, без удаления.
+
+    Returns:
+        ``PurgeRejectedResult`` с числом удалённых файлов, освобождённых
+        байт, затронутых папок и ошибок.
+    """
+
+    def _purge() -> PurgeRejectedResult:
+        folders = _iter_rejected_app_folders(br_id)
+        files_removed = bytes_freed = folders_touched = errors = 0
+        for folder in folders:
+            touched = False
+            for entry in folder.iterdir():
+                if not entry.is_file():
+                    continue
+                if entry.name in META_FILENAMES:
+                    continue
+                if not _is_image_file(entry.name):
+                    continue
+                try:
+                    size = entry.stat().st_size
+                except OSError:
+                    size = 0
+                if dry_run:
+                    files_removed += 1
+                    bytes_freed += size
+                    touched = True
+                    continue
+                try:
+                    entry.unlink()
+                    files_removed += 1
+                    bytes_freed += size
+                    touched = True
+                    logger.info(
+                        "Удалено изображение отклонённой работы",
+                        folder=folder.name,
+                        file=entry.name,
+                        bytes_freed=size,
+                    )
+                except OSError as exc:
+                    errors += 1
+                    logger.error(
+                        "Не удалось удалить изображение отклонённой работы",
+                        folder=folder.name,
+                        file=entry.name,
+                        error=str(exc),
+                    )
+            if touched:
+                folders_touched += 1
+        return PurgeRejectedResult(
+            files_removed=files_removed,
+            bytes_freed=bytes_freed,
+            folders_touched=folders_touched,
+            errors=errors,
+        )
+
+    result = await asyncio.to_thread(_purge)
+    logger.info(
+        "Очистка изображений отклонённых работ завершена",
+        br_id=br_id or "ALL",
+        dry_run=dry_run,
+        files_removed=result.files_removed,
+        bytes_freed=result.bytes_freed,
+        folders_touched=result.folders_touched,
+        errors=result.errors,
+    )
+    return result
+
+
+# =====================================================================
+# Мониторинг диска (предупреждение WARN, без авто-действий)
 # =====================================================================
 
 
@@ -713,11 +956,6 @@ def get_disk_usage_pct() -> float:
     if total <= 0:
         return 0.0
     return round((used / total) * 100.0, 2)
-
-
-def should_block_intake() -> bool:
-    """True ⇒ заполнение ≥ ``DISK_BLOCK_PCT`` (триггер авто-перехода в LINKS)."""
-    return get_disk_usage_pct() >= DISK_BLOCK_PCT
 
 
 def estimate_hours_left(
@@ -815,46 +1053,19 @@ def start_disk_monitor_task(bot, interval_sec: int):
 async def check_and_alert_disk(bot=None) -> None:
     """Точка вызова после каждой загрузки файла.
 
-    Действия:
-    - если занято ≥ ``DISK_BLOCK_PCT`` и режим ещё ``FILES`` — переключает
-      его в ``LINKS`` через ``intake_mode.maybe_auto_switch_to_links``
-      и шлёт alert 95 % (если за 24 ч ещё не слали);
-    - если занято ≥ ``DISK_WARN_PCT`` — шлёт alert 80 % (с дедупом 24 ч).
+    Действие: если занято ≥ ``DISK_WARN_PCT`` — шлёт предупреждение в чат
+    модерации (с дедупом 24 ч). Никаких автоматических действий с
+    режимом приёма не выполняется — переключение в ``LINKS`` делает
+    только админ вручную (``/intake_mode`` / ``/admin_danger``).
 
     Если ``bot`` не передан (вызов из smoke-теста или scheduler без
-    инициализированного pybotx) — нотификации пропускаются, остаются
-    только лог + автопереключение режима.
+    инициализированного pybotx) — нотификации пропускаются.
     """
     used, total = get_disk_usage_bytes()
     if total <= 0:
         return
     pct = (used / total) * 100.0
     free_bytes = total - used
-
-    if pct >= DISK_BLOCK_PCT:
-        try:
-            from services.intake_mode import maybe_auto_switch_to_links
-
-            await maybe_auto_switch_to_links()
-        except Exception:
-            logger.exception("Автопереключение в режим LINKS не удалось")
-
-        if bot is not None and not await _was_alert_sent_recently(DISK_BLOCK_PCT):
-            try:
-                from services.notifications import (
-                    notify_moderation_chat_disk_alert,
-                )
-
-                await notify_moderation_chat_disk_alert(
-                    bot,
-                    threshold_pct=DISK_BLOCK_PCT,
-                    free_mb=int(free_bytes / (1024 * 1024)),
-                    hours_left=0.0,
-                )
-                await _record_alert(DISK_BLOCK_PCT)
-            except Exception:
-                logger.exception("Не удалось отправить alert 95 %")
-        return
 
     if pct >= DISK_WARN_PCT:
         if bot is None:
@@ -874,7 +1085,7 @@ async def check_and_alert_disk(bot=None) -> None:
             )
             await _record_alert(DISK_WARN_PCT)
         except Exception:
-            logger.exception("Не удалось отправить alert 80 %")
+            logger.exception("Не удалось отправить disk alert")
 
 
 # =====================================================================
@@ -909,7 +1120,7 @@ async def get_application_files_for_chat(
         logger.error("pybotx не доступен; /files отдать не сможем")
         return []
 
-    folder = get_application_folder(app)
+    folder = resolve_application_folder(app)
     if not folder.exists():
         logger.warning(
             "get_application_files_for_chat: папка заявки не найдена",
@@ -977,11 +1188,13 @@ __all__ = [
     "META_TXT",
     "REASON_TXT",
     "META_FILENAMES",
+    "REJECTED_IMAGE_EXTENSIONS",
     # Пути
     "get_root_dir",
     "get_rejected_root",
     "get_application_folder",
     "get_rejected_application_folder",
+    "resolve_application_folder",
     # CRUD
     "create_application_folder",
     "rename_and_save_file",
@@ -991,10 +1204,14 @@ __all__ = [
     "read_rejection_reason",
     "move_to_rejected",
     "delete_application_files",
+    # Очистка отклонённых
+    "RejectedStorageStats",
+    "PurgeRejectedResult",
+    "get_rejected_storage_stats",
+    "purge_rejected_images",
     # Disk
     "get_disk_usage_bytes",
     "get_disk_usage_pct",
-    "should_block_intake",
     "estimate_hours_left",
     "check_and_alert_disk",
     "start_disk_monitor_task",

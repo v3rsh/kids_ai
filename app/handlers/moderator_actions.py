@@ -11,8 +11,8 @@
   «требуется исправление» (с предупреждением, если до дедлайна приёма
   заявок осталось меньше 24 ч);
 - ``/notify_reject <ID> <причина>`` — уведомление об отклонении
-  + перенос метаданных в ``99_rejected/<дата_модерации>/`` +
-  физическое удаление файлов работы (через ``services.storage``);
+  + перенос всей папки работы в ``99_rejected/<дата_модерации>/``
+  (файлы сохраняются для споров; через ``services.storage``);
 - ``/files <ID>`` — отдать модератору файлы в чат
   (в режиме ``files`` — вложениями, в режиме ``links`` — ссылку
   на папку участника).
@@ -42,6 +42,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import aiofiles
 from loguru import logger
@@ -721,11 +722,11 @@ async def _send_notify_fix(
 )
 @moderator_only
 async def cmd_notify_reject(message: IncomingMessage, bot: Bot) -> None:
-    """Отклонить заявку: перенести метаданные и удалить файлы.
+    """Отклонить заявку: перенести всю папку работы в ``99_rejected/``.
 
-    Причина обязательная и пишется в ``reason.txt`` дословно.
-    Если не указана — модератор переходит в FSM-режим
-    ``moderator_action_reject_reason``.
+    Файлы работы сохраняются (для возможных споров). Причина
+    обязательная и пишется в ``reason.txt`` дословно. Если не указана —
+    модератор переходит в FSM-режим ``moderator_action_reject_reason``.
     """
     arg = _split_command_argument(message)
     br_id_token, rest = _split_id_and_rest(arg)
@@ -799,23 +800,23 @@ async def _apply_reject(
 
     try:
         from services import storage  # runtime-импорт (ветка D)
+        from services.applications import remap_application_file_paths
 
-        await storage.write_reason_txt(app, reason)
-        await storage.move_to_rejected(app)
-        await storage.delete_application_files(app)
+        dst_folder = await storage.move_to_rejected(app, reason=reason)
+        await remap_application_file_paths(br_id, dst_folder)
         storage_done = True
     except NotImplementedError:
         error_lines.append(
-            "Сервис storage ещё не реализован: метаданные "
-            "не перенесены, файлы не удалены."
+            "Сервис storage ещё не реализован: папка работы "
+            "не перенесена в 99_rejected/."
         )
     except Exception:
         logger.exception(
-            "Ошибка переноса/удаления файлов отклонённой заявки",
+            "Ошибка переноса файлов отклонённой заявки в 99_rejected/",
             br_id=br_id,
         )
         error_lines.append(
-            "Ошибка ФС при переносе в 99_rejected/ или удалении файлов "
+            "Ошибка ФС при переносе папки заявки в 99_rejected/ "
             "(см. логи)."
         )
 
@@ -859,7 +860,10 @@ async def _apply_reject(
 
     refreshed = status_result.application or app
     if storage_done and notify_done and not error_lines:
-        headline = "🚫 **Заявка отклонена.** Файлы удалены, участник уведомлён."
+        headline = (
+            "🚫 **Заявка отклонена.** Файлы перенесены в 99_rejected/, "
+            "участник уведомлён."
+        )
     else:
         headline = "🚫 **Заявка отклонена.**"
 
@@ -1005,11 +1009,19 @@ async def cmd_files(message: IncomingMessage, bot: Bot) -> None:
         )
         return
 
+    from services import storage
+
+    fallback_folder = storage.resolve_application_folder(app)
+
     sent = 0
     failed: list[str] = []
     for file in app.files:
         try:
-            attachment = await _read_application_file(file.relative_path, file.stored_filename)
+            attachment = await _read_application_file(
+                file.relative_path,
+                file.stored_filename,
+                fallback_folder=fallback_folder,
+            )
         except FileNotFoundError:
             failed.append(file.stored_filename)
             continue
@@ -1053,7 +1065,10 @@ async def cmd_files(message: IncomingMessage, bot: Bot) -> None:
 
 
 async def _read_application_file(
-    relative_path: str, stored_filename: str
+    relative_path: str,
+    stored_filename: str,
+    *,
+    fallback_folder: "Path | None" = None,
 ) -> OutgoingAttachment:
     """Прочитать файл из ``ATTACHMENTS_DIR`` и завернуть в OutgoingAttachment.
 
@@ -1061,15 +1076,28 @@ async def _read_application_file(
     сервисом storage в момент сохранения файла. Имя
     результирующего вложения берём из ``stored_filename`` для
     консистентности с тем, что лежит на диске.
+
+    ``fallback_folder`` — лёгкая страховка от рассинхрона путей (например,
+    папка перенесена в ``99_rejected/``, но ``relative_path`` ещё не
+    обновлён): если основной путь не найден, пробуем
+    ``fallback_folder / stored_filename``.
     """
-    full_path = (ATTACHMENTS_DIR / relative_path).resolve()
     base = ATTACHMENTS_DIR.resolve()
+    full_path = (ATTACHMENTS_DIR / relative_path).resolve()
     try:
         full_path.relative_to(base)
     except ValueError as exc:
         raise FileNotFoundError(
             f"relative_path вышло за ATTACHMENTS_DIR: {relative_path}"
         ) from exc
+    if not full_path.exists() and fallback_folder is not None:
+        candidate = (fallback_folder / stored_filename).resolve()
+        try:
+            candidate.relative_to(base)
+        except ValueError:
+            candidate = None
+        if candidate is not None and candidate.exists():
+            full_path = candidate
     if not full_path.exists():
         raise FileNotFoundError(str(full_path))
     async with aiofiles.open(full_path, "rb") as f:
