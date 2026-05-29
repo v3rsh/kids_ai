@@ -56,7 +56,7 @@ from utils.message_tracking import (
 collector = HandlerCollector()
 
 _JURY_MULTI_FILES_NOTICE = (
-    "\n\n**Внимание!** В этой работе {n} файла, "
+    "⚠️ **Внимание!** В этой работе {n} файла, "
     "они находятся под меню."
 )
 
@@ -211,13 +211,20 @@ def _render_task_text(
         "",
         f"**Название:** {app.title}",
         f"**Описание:** {app.description}",
-        "",
-        f"**Возрастная категория:** {pool.age_category.value}",
-        f"**Трек:** {pool.track.value}",
-        f"**Раунд:** {round_no}",
-        "",
-        f"**Твоя оценка:** {vote_line}",
     ]
+    if attachment_count >= 2:
+        lines.append("")
+        lines.append(_JURY_MULTI_FILES_NOTICE.format(n=attachment_count))
+    lines.extend(
+        [
+            "",
+            f"**Возрастная категория:** {pool.age_category.value}",
+            f"**Трек:** {pool.track.value}",
+            f"**Раунд:** {round_no}",
+            "",
+            f"**Твоя оценка:** {vote_line}",
+        ]
+    )
     if cloud_link:
         lines.append(f"\n🔗 **Ссылка на работу:** {cloud_link}")
     lines.append(
@@ -239,8 +246,6 @@ def _render_task_text(
         "— Как минимум одна работа должна иметь оценку, отличную "
         "от других."
     )
-    if attachment_count >= 2:
-        lines.append(_JURY_MULTI_FILES_NOTICE.format(n=attachment_count))
     return "\n".join(lines)
 
 

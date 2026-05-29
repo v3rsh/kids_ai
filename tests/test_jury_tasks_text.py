@@ -4,7 +4,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from database.models import AgeCategory, Track
-from handlers.jury_tasks import _render_task_text
+from handlers.jury_tasks import _JURY_MULTI_FILES_NOTICE, _render_task_text
 from utils.contracts import PoolKey
 
 
@@ -48,8 +48,14 @@ class TestRenderTaskTextMultiFilesNotice:
         text = _render(attachment_count=4)
         assert "В этой работе 4 файла, они находятся под меню." in text
 
-    def test_notice_after_instruction(self):
+    def test_notice_after_description_before_instruction(self):
         text = _render(attachment_count=3)
-        instruction_pos = text.index("**Инструкция:**")
+        description_pos = text.index("**Описание:**")
         notice_pos = text.index("**Внимание!**")
-        assert notice_pos > instruction_pos
+        instruction_pos = text.index("**Инструкция:**")
+        assert description_pos < notice_pos < instruction_pos
+
+    def test_notice_surrounded_by_single_blank_lines(self):
+        text = _render(attachment_count=3)
+        notice = _JURY_MULTI_FILES_NOTICE.format(n=3)
+        assert f"\n\n{notice}\n\n" in text
