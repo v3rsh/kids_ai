@@ -131,8 +131,8 @@ def _group_tasks_by_round(
 
 async def _fetch_open_rounds_meta(
     jury_huid: UUID,
-) -> tuple[list[JuryTaskDTO], dict[UUID, datetime]]:
-    """Получить список JuryTaskDTO и дедлайны по их раундам.
+) -> tuple[list[JuryTaskDTO], dict[UUID, datetime], dict[UUID, datetime]]:
+    """Получить список JuryTaskDTO, дедлайны и время открытия по раундам.
 
     Делаем одной сессией, чтобы не плодить транзакции.
     """
@@ -144,7 +144,7 @@ async def _fetch_open_rounds_meta(
             jury_huid, session=session
         )
         if not tasks:
-            return tasks, {}
+            return tasks, {}, {}
         round_ids = list({t.round_id for t in tasks})
         rounds = (
             await session.execute(
@@ -152,21 +152,24 @@ async def _fetch_open_rounds_meta(
             )
         ).scalars().all()
         deadlines = {r.id: r.deadline_at for r in rounds}
-        return tasks, deadlines
+        opened_ats = {r.id: r.opened_at for r in rounds}
+        return tasks, deadlines, opened_ats
 
 
 def _task_list_bubbles(
     grouped: dict[UUID, dict],
     deadlines: dict[UUID, datetime],
+    opened_ats: dict[UUID, datetime],
 ) -> BubbleMarkup:
     """Кнопки списка задач: по одной на каждый (pool, round)."""
     bubbles = BubbleMarkup()
     sorted_round_ids = sorted(
         grouped.keys(),
         key=lambda rid: (
+            opened_ats.get(rid) or datetime.max,
+            grouped[rid]["round_no"],
             grouped[rid]["pool"].track.name,
             grouped[rid]["pool"].age_category.name,
-            grouped[rid]["round_no"],
         ),
     )
     for round_id in sorted_round_ids:
@@ -194,6 +197,7 @@ def _task_list_bubbles(
 def _task_list_text(
     grouped: dict[UUID, dict],
     deadlines: dict[UUID, datetime],
+    opened_ats: dict[UUID, datetime],
 ) -> str:
     """Текстовая часть экрана /jury_tasks."""
     if not grouped:
@@ -209,9 +213,10 @@ def _task_list_text(
     sorted_round_ids = sorted(
         grouped.keys(),
         key=lambda rid: (
+            opened_ats.get(rid) or datetime.max,
+            grouped[rid]["round_no"],
             grouped[rid]["pool"].track.name,
             grouped[rid]["pool"].age_category.name,
-            grouped[rid]["round_no"],
         ),
     )
     for round_id in sorted_round_ids:
@@ -247,7 +252,7 @@ async def cmd_jury_tasks(message: IncomingMessage, bot: Bot) -> None:
         await fsm.clear()
 
     try:
-        tasks, deadlines = await _fetch_open_rounds_meta(huid)
+        tasks, deadlines, opened_ats = await _fetch_open_rounds_meta(huid)
     except Exception:
         logger.exception("/jury_tasks: ошибка получения задач", jury_huid=str(huid))
         await reply_to_user(
@@ -259,8 +264,8 @@ async def cmd_jury_tasks(message: IncomingMessage, bot: Bot) -> None:
         return
 
     grouped = _group_tasks_by_round(tasks)
-    text = _task_list_text(grouped, deadlines)
-    bubbles = _task_list_bubbles(grouped, deadlines)
+    text = _task_list_text(grouped, deadlines, opened_ats)
+    bubbles = _task_list_bubbles(grouped, deadlines, opened_ats)
     await reply_to_user(message, bot, text, bubbles=bubbles)
 
 

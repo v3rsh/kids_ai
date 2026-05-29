@@ -830,7 +830,7 @@ async def cmd_jury_tasks_internal(message: IncomingMessage, bot: Bot) -> None:
 
     huid = message.sender.huid
     try:
-        tasks, deadlines = await _fetch_open_rounds_meta(huid)
+        tasks, deadlines, opened_ats = await _fetch_open_rounds_meta(huid)
     except Exception:
         logger.exception("/jt_back: ошибка получения задач", jury_huid=str(huid))
         await reply_to_user(
@@ -841,8 +841,8 @@ async def cmd_jury_tasks_internal(message: IncomingMessage, bot: Bot) -> None:
         )
         return
     grouped = _group_tasks_by_round(tasks)
-    text = _task_list_text(grouped, deadlines)
-    bubbles = _task_list_bubbles(grouped, deadlines)
+    text = _task_list_text(grouped, deadlines, opened_ats)
+    bubbles = _task_list_bubbles(grouped, deadlines, opened_ats)
     await reply_to_user(message, bot, text, bubbles=bubbles)
 
 

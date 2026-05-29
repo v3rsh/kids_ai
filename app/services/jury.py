@@ -1577,9 +1577,10 @@ async def get_open_tasks_for_jury(
     - назначен на пул (через ``JuryPoolAssignment`` или fallback);
     - ещё не отправил оценки в этом раунде.
 
-    Порядок: сначала по пулу (``track`` → ``age_category``), затем по
-    ``round_no``, затем внутри раунда — по ``(created_at ASC, id ASC)``
-    единый для всех судей.
+    Порядок: по времени открытия раунда (``opened_at ASC``), затем по
+    ``round_no`` и ``id`` — самые ранние открытые раунды первыми, каждый
+    новый раунд оказывается в конце списка. Внутри раунда — по
+    ``(created_at ASC, id ASC)`` единый для всех судей.
 
     ``draft_vote`` — текущее значение черновика, чтобы handler мог
     отрисовать эмодзи на кнопке ``Да``/``Нет``.
@@ -1590,9 +1591,9 @@ async def get_open_tasks_for_jury(
         select(JuryRound)
         .where(JuryRound.status == JuryRoundStatus.OPEN)
         .order_by(
-            JuryRound.track,
-            JuryRound.age_category,
+            JuryRound.opened_at,
             JuryRound.round_no,
+            JuryRound.id,
         )
     )
 
