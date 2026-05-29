@@ -4,7 +4,7 @@
 - ``estimate_archive_budget``: арифметика с подменой
   ``get_disk_usage_bytes`` и мини-каталога ``ATTACHMENTS_DIR``;
 - pre-flight ``ArchiveBudgetExceeded`` при превышении
-  ``DISK_BLOCK_PCT`` — ``bd-full.tar.gz`` НЕ создаётся;
+  ``ARCHIVE_DISK_CAP_PCT`` — ``bd-full.tar.gz`` НЕ создаётся;
 - happy path: ``bd-full.tar.gz`` собирается, содержит дерево
   ``attachments/`` + ``bd-full.manifest.json`` + ``bd-full.summary.txt``,
   рядом с архивом лежат те же manifest/summary;
@@ -171,7 +171,7 @@ class TestEstimateArchiveBudget:
         monkeypatch.setattr(
             aa, "get_disk_usage_bytes", lambda: (used, total)
         )
-        monkeypatch.setattr(aa, "DISK_BLOCK_PCT", 95)
+        monkeypatch.setattr(aa, "ARCHIVE_DISK_CAP_PCT", 95)
 
         budget = await estimate_archive_budget()
 
@@ -191,7 +191,7 @@ class TestEstimateArchiveBudget:
         monkeypatch.setattr(
             aa, "get_disk_usage_bytes", lambda: (0, 100)
         )
-        monkeypatch.setattr(aa, "DISK_BLOCK_PCT", 95)
+        monkeypatch.setattr(aa, "ARCHIVE_DISK_CAP_PCT", 95)
 
         budget = await estimate_archive_budget()
         assert budget.attachments_bytes == 0
@@ -213,7 +213,7 @@ class TestEstimateArchiveBudget:
         monkeypatch.setattr(
             aa, "get_disk_usage_bytes", lambda: (used, total)
         )
-        monkeypatch.setattr(aa, "DISK_BLOCK_PCT", 95)
+        monkeypatch.setattr(aa, "ARCHIVE_DISK_CAP_PCT", 95)
 
         budget = await estimate_archive_budget()
         assert budget.after_pct >= budget.block_pct
@@ -275,7 +275,7 @@ class TestHappyPath:
         monkeypatch.setattr(
             aa, "get_disk_usage_bytes", lambda: (0, 10 * 1024 ** 4)
         )
-        monkeypatch.setattr(aa, "DISK_BLOCK_PCT", 95)
+        monkeypatch.setattr(aa, "ARCHIVE_DISK_CAP_PCT", 95)
 
         calls: list[tuple[int, int, str, int]] = []
 
@@ -355,7 +355,7 @@ class TestHappyPath:
         monkeypatch.setattr(
             aa, "get_disk_usage_bytes", lambda: (0, 10 * 1024 ** 4)
         )
-        monkeypatch.setattr(aa, "DISK_BLOCK_PCT", 95)
+        monkeypatch.setattr(aa, "ARCHIVE_DISK_CAP_PCT", 95)
 
         target = fake_archive_dir / ARCHIVE_FILENAME
         prev = fake_archive_dir / PREV_ARCHIVE_FILENAME
@@ -387,7 +387,7 @@ class TestHappyPath:
         monkeypatch.setattr(
             aa, "get_disk_usage_bytes", lambda: (0, 10 * 1024 ** 4)
         )
-        monkeypatch.setattr(aa, "DISK_BLOCK_PCT", 95)
+        monkeypatch.setattr(aa, "ARCHIVE_DISK_CAP_PCT", 95)
 
         result = await archive_attachments_to_disk()
         target = fake_archive_dir / ARCHIVE_FILENAME
