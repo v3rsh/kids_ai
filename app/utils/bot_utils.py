@@ -463,6 +463,13 @@ _JURY_ANCHOR_SILENT_DELETE_PATTERNS = (
     "chat_not_found",
 )
 
+# Пауза (сек) между отправкой сообщений карусели жюри. Сообщения с
+# файлами отправляются с wait_callback=False (проектное правило), и
+# CTS коммитит их асинхронно — без паузы файл хвоста иногда оказывается
+# выше карточки-якоря. Небольшая задержка даёт CTS закоммитить
+# предыдущее сообщение и фиксирует порядок «карточка сверху, файлы под ней».
+_JURY_CAROUSEL_SEND_GAP = 0.5
+
 
 async def send_jury_carousel(
     message: IncomingMessage,
@@ -527,6 +534,9 @@ async def send_jury_carousel(
 
     total = len(attachments)
     for idx, attachment in enumerate(rest, start=2):
+        # Дать CTS закоммитить предыдущее сообщение, чтобы хвост файлов
+        # не «всплывал» выше карточки-якоря (см. _JURY_CAROUSEL_SEND_GAP).
+        await asyncio.sleep(_JURY_CAROUSEL_SEND_GAP)
         caption = format_anonymous_file_caption(idx, total)
         try:
             await send_photo_transient(
