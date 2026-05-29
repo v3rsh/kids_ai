@@ -9,11 +9,11 @@
 (чтобы можно было прочитать сводку без распаковки).
 
 Pre-flight: перед стартом сравниваем расчётный занятый объём диска
-ПОСЛЕ создания tar.gz с ``DISK_BLOCK_PCT``. Так как tar.gz слабо
-сжимает уже сжатые медиа, в качестве верхней границы берём сырой
-``du(ATTACHMENTS_DIR)`` — это безопасно (будем чуть консервативнее,
-чем в реальности). При превышении — ``ArchiveBudgetExceeded`` без
-побочных эффектов.
+ПОСЛЕ создания tar.gz с ``ARCHIVE_DISK_CAP_PCT`` (потолок архива). Так
+как tar.gz слабо сжимает уже сжатые медиа, в качестве верхней границы
+берём сырой ``du(ATTACHMENTS_DIR)`` — это безопасно (будем чуть
+консервативнее, чем в реальности). При превышении —
+``ArchiveBudgetExceeded`` без побочных эффектов.
 """
 from __future__ import annotations
 
@@ -32,9 +32,9 @@ from sqlalchemy import select
 
 from config import (
     ARCHIVE_DIR,
+    ARCHIVE_DISK_CAP_PCT,
     ATTACHMENTS_DIR,
     COMPETITION_YEAR,
-    DISK_BLOCK_PCT,
 )
 from database.db import get_session
 from database.models import Application
@@ -124,7 +124,7 @@ class ArchiveBudget:
 
 
 class ArchiveBudgetExceeded(RuntimeError):
-    """Pre-flight отказ: tar.gz не помещается под ``DISK_BLOCK_PCT``.
+    """Pre-flight отказ: tar.gz не помещается под ``ARCHIVE_DISK_CAP_PCT``.
 
     Несёт исходную ``ArchiveBudget`` для UI — хендлер показывает её
     в confirm-приглашении и не выводит кнопку «Да, выполнить».
@@ -192,7 +192,7 @@ async def estimate_archive_budget() -> ArchiveBudget:
         used_bytes=used_bytes,
         free_bytes=free_bytes,
         after_used_bytes=after_used,
-        block_pct=DISK_BLOCK_PCT,
+        block_pct=ARCHIVE_DISK_CAP_PCT,
     )
 
 
@@ -211,15 +211,16 @@ def format_archive_budget_text(budget: ArchiveBudget) -> str:
             f"({budget.after_pct:.0f}%)."
         ),
         "",
-        f"⚠️ Бот блокирует приём файлов при ≥ {budget.block_pct}%.",
+        f"⚠️ Потолок для архива полной базы: ≥ {budget.block_pct}%.",
     ]
     if budget.after_pct >= budget.block_pct:
         lines.extend(
             [
                 "",
-                "После архивации диск превысит блокирующий порог. "
-                "Освободите место или используйте выгрузку шорт-листа "
-                "в DM — она не пишет на диск.",
+                "После архивации диск превысит потолок. "
+                "Освободите место (например, /admin_purge_rejected_images) "
+                "или используйте выгрузку шорт-листа в DM — она не пишет "
+                "на диск.",
             ]
         )
     return "\n".join(lines)
@@ -374,7 +375,7 @@ async def archive_attachments_to_disk(
 
     Raises:
         ArchiveBudgetExceeded: pre-flight отказ — после tar.gz диск был
-            бы заполнен на ``≥ DISK_BLOCK_PCT``. Файл не создаётся.
+            бы заполнен на ``≥ ARCHIVE_DISK_CAP_PCT``. Файл не создаётся.
 
     Notes:
         - Если в ``ARCHIVE_DIR`` уже лежит ``bd-full.tar.gz``, он

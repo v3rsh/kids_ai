@@ -186,39 +186,14 @@ JURY_SHORTLIST_READY_TEMPLATE = (
 )
 """Чат модерации: готовность шорт-листа (НЕ агрегируется)."""
 
-DISK_ALERT_80_TEMPLATE = (
-    "⚠️ **Хранилище конкурса заполнено на 80 %.**\n\n"
-    "Свободно: {free_mb} МБ. При текущей скорости поступления заявок "
-    "место закончится через {hours_left} ч.\n\n"
-    "Рекомендуется: ужесточить отбор отклонения, рассмотреть "
-    "переключение на резервный сценарий приёма по ссылкам (раздел 33.6)."
+DISK_ALERT_WARN_TEMPLATE = (
+    "⚠️ **Хранилище конкурса заполнено на {pct} %.**\n\n"
+    "Свободно: {free_mb} МБ.\n\n"
+    "Рекомендуется: рассмотреть ручное переключение приёма на ссылки "
+    "(/intake_mode) и/или очистку изображений отклонённых работ "
+    "(/admin_purge_rejected_images)."
 )
-"""Alert 80 % заполнения диска."""
-
-DISK_ALERT_95_TEMPLATE = (
-    "🚨 **Хранилище конкурса заполнено на 95 %.**\n\n"
-    "Свободно: {free_mb} МБ. Приём файлов автоматически переключён "
-    "в режим LINKS (раздел 33.6).\n\n"
-    "Уведомите участников и проверьте свободное место."
-)
-"""Alert 95 % заполнения диска (триггер автопереключения intake_mode)."""
-
-INTAKE_BLOCKED_PARTICIPANT_TEMPLATE = (
-    "К сожалению, приём файлов временно приостановлен — сервер конкурса "
-    "заполнен.\n\n"
-    "Мы уже работаем над этим. Сохраните данные заявки и попробуйте "
-    "отправить файлы позже, либо следите за объявлениями организаторов "
-    "о переключении на приём работ по ссылкам."
-)
-"""Сообщение участнику при попытке загрузить файл на 95 % заполнения."""
-
-INTAKE_MODE_LINKS_NOTICE_TEMPLATE = (
-    "**Из-за технических ограничений** мы временно переходим на приём "
-    "работ по ссылкам.\n\n"
-    "Заявки, уже принятые сервером, не теряются. Новые заявки "
-    "оформляйте по инструкции бота."
-)
-"""Общее уведомление при переключении в режим LINKS."""
+"""Alert заполнения диска (порог WARN). Автоматических действий нет."""
 
 
 # =====================================================================
@@ -610,22 +585,16 @@ async def notify_moderation_chat_disk_alert(
     free_mb: int,
     hours_left: float,
 ) -> None:
-    """Alert о заполнении диска (80 % / 95 %).
+    """Alert о заполнении диска (порог WARN).
 
     Дедупликация (раз в 24 ч на порог) делается в
     ``services.storage.check_and_alert_disk`` через таблицу
-    ``disk_alerts`` — здесь только сама отправка.
+    ``disk_alerts`` — здесь только сама отправка. ``hours_left``
+    оставлен в сигнатуре для обратной совместимости (не используется).
     """
-    if threshold_pct >= 95:
-        body = DISK_ALERT_95_TEMPLATE.format(free_mb=free_mb)
-    else:
-        hours_text = (
-            f"{hours_left:.1f}" if hours_left and hours_left > 0
-            else "—"
-        )
-        body = DISK_ALERT_80_TEMPLATE.format(
-            free_mb=free_mb, hours_left=hours_text
-        )
+    body = DISK_ALERT_WARN_TEMPLATE.format(
+        pct=threshold_pct, free_mb=free_mb
+    )
     await _send_to_moderation_chat(
         bot,
         body,
@@ -1056,8 +1025,6 @@ __all__ = [
     "SHORTLIST_TEMPLATE",
     "JURY_RESULT_IN_TOP10_TEMPLATE",
     "JURY_RESULT_NOT_IN_TOP10_TEMPLATE",
-    "INTAKE_BLOCKED_PARTICIPANT_TEMPLATE",
-    "INTAKE_MODE_LINKS_NOTICE_TEMPLATE",
     # Шаблоны в чат модерации
     "NEW_APPLICATION_MODERATION_TEMPLATE",
     "JURY_ROUND_OPENED_TEMPLATE",
@@ -1070,8 +1037,7 @@ __all__ = [
     "JURY_POOL_COMPLETED_TAIL_TEMPLATE",
     "JURY_UNDERSIZED_POOL_TEMPLATE",
     "JURY_SHORTLIST_READY_TEMPLATE",
-    "DISK_ALERT_80_TEMPLATE",
-    "DISK_ALERT_95_TEMPLATE",
+    "DISK_ALERT_WARN_TEMPLATE",
     # Функции участнику
     "notify_participant_accepted",
     "notify_participant_moderation_passed",

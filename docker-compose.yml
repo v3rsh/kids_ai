@@ -103,8 +103,8 @@ services:
       # через discovery в боте (/moderator, /jury, /admin_chat_approve).
       - ATTACHMENTS_DIR=${ATTACHMENTS_DIR:-/app/data/attachments}
       - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-10}
-      - DISK_WARN_PCT=${DISK_WARN_PCT:-80}
-      - DISK_BLOCK_PCT=${DISK_BLOCK_PCT:-95}
+      - DISK_WARN_PCT=${DISK_WARN_PCT:-45}
+      - ARCHIVE_DISK_CAP_PCT=${ARCHIVE_DISK_CAP_PCT:-90}
       - INTAKE_MODE_DEFAULT=${INTAKE_MODE_DEFAULT:-files}
       - TOP_N=${TOP_N:-10}
       - JURY_ROUNDS=${JURY_ROUNDS:-3}

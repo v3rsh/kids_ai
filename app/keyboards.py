@@ -507,6 +507,11 @@ def admin_system_menu_bubbles() -> BubbleMarkup:
         label="🔒 Приём заявок",
         new_row=True,
     )
+    bubbles.add_button(
+        command="/admin_purge_rejected_images",
+        label="🧹 Очистить файлы отклонённых",
+        new_row=True,
+    )
     bubbles.add_button(command="/admin_state", label="🩺 Диагностика", new_row=True)
     bubbles.add_button(
         command="/admin_disk_alerts",

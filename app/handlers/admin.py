@@ -37,7 +37,7 @@ from pybotx import (
 )
 from sqlalchemy import select
 
-from config import DISK_BLOCK_PCT, DISK_WARN_PCT
+from config import ARCHIVE_DISK_CAP_PCT, DISK_WARN_PCT
 from database.db import get_session
 from database.models import DiskAlert, IntakeMode, JuryMember, JuryRound, Moderator, User
 from fsm import cleanup_middleware, fsm_middleware
@@ -66,7 +66,6 @@ from services.admin import overview_counters
 from services.intake_mode import (
     SYSTEM_HUID,
     get_intake_mode,
-    maybe_auto_switch_to_links,
     set_intake_mode,
 )
 from services.intake_state import is_intake_open, set_intake_open
@@ -294,6 +293,8 @@ def _confirm_return_bubbles(action: str) -> BubbleMarkup:
         return admin_competition_jury_bubbles()
     if action == "archive_to_disk":
         return admin_competition_data_bubbles()
+    if action == "purge_rejected_images":
+        return admin_system_menu_bubbles()
     if action in _SYSTEM_MENU_CONFIRM_ACTIONS:
         return admin_competition_menu_bubbles()
     return admin_dangerous_menu_bubbles()
@@ -535,6 +536,20 @@ async def cmd_admin_confirm(message: IncomingMessage, bot: Bot) -> None:
                 "✅ Флаг shortlist_announced сброшен. "
                 "Событие shortlist_ready можно отправить повторно."
             )
+        elif action == "purge_rejected_images":
+            from services.storage import purge_rejected_images
+
+            target_br_id = (data.get("br_id") or "").strip() or None
+            result = await purge_rejected_images(br_id=target_br_id)
+            scope = f"заявки {target_br_id}" if target_br_id else "всех отклонённых"
+            body = (
+                f"🧹 Очистка изображений {scope} завершена.\n\n"
+                f"Удалено файлов: **{result.files_removed}**\n"
+                f"Освобождено: **{_fmt_gb(result.bytes_freed)}**\n"
+                f"Затронуто папок: **{result.folders_touched}**"
+            )
+            if result.errors:
+                body += f"\nОшибок при удалении: **{result.errors}** (см. логи)."
         else:
             body = "❌ Неизвестная операция."
     except Exception:
@@ -717,18 +732,27 @@ async def _format_disk_block(
         f"- Всего: {_fmt_gb(total)}",
         f"- Занято: {_fmt_gb(used)} ({pct:.1f} %)",
         f"- Свободно: {_fmt_gb(free)}",
-        f"- Пороги: WARN {DISK_WARN_PCT} %, BLOCK {DISK_BLOCK_PCT} %",
+        f"- Порог предупреждения (WARN): {DISK_WARN_PCT} %",
+        f"- Потолок архива полной базы: {ARCHIVE_DISK_CAP_PCT} %",
     ]
 
-    if pct >= DISK_BLOCK_PCT:
+    try:
+        from services.storage import get_rejected_storage_stats
+
+        rej = await get_rejected_storage_stats()
         lines.append(
-            "🚨 Достигнут BLOCK-порог. Приём файлов автоматически "
-            "переключён в режим LINKS (раздел 33.6)."
+            f"- Отклонённые (99_rejected): {rej.image_files_count} "
+            f"изображений, {_fmt_gb(rej.image_bytes)}; "
+            f"метаданные {_fmt_mb(rej.meta_bytes)}"
         )
-    elif pct >= DISK_WARN_PCT:
+    except Exception:
+        logger.exception("Не удалось получить статистику 99_rejected")
+
+    if pct >= DISK_WARN_PCT:
         lines.append(
-            "⚠️ Достигнут WARN-порог. Свободного места осталось мало — "
-            "следите за командой /disk и рассмотрите переход в LINKS."
+            "⚠️ Достигнут WARN-порог. Свободного места мало. "
+            "Рассмотрите ручной переход в LINKS (/intake_mode) или "
+            "очистку изображений отклонённых (/admin_purge_rejected_images)."
         )
 
     if include_prediction:
@@ -873,16 +897,6 @@ async def cmd_disk(message: IncomingMessage, bot: Bot) -> None:
         f"Приём заявок: **{'🔓 открыт' if intake_open_now else '🔒 закрыт'}**",
     ]
 
-    # Активируем фоновую проверку: если диск пересёк BLOCK — авто-переход.
-    try:
-        switched = await maybe_auto_switch_to_links(bot=bot)
-        if switched:
-            body_parts.append(
-                "🔁 Режим только что был переключён в LINKS автоматически."
-            )
-    except Exception:
-        logger.exception("Авто-переключение в LINKS не удалось (вызов из /disk)")
-
     await reply_to_user(
         message,
         bot,
@@ -983,6 +997,64 @@ async def cmd_intake_mode(message: IncomingMessage, bot: Bot) -> None:
             )
         ),
         bubbles=_intake_mode_bubbles(new_mode),
+    )
+
+
+# =====================================================================
+# /admin_purge_rejected_images — очистка изображений отклонённых работ
+# =====================================================================
+
+
+@collector.command(
+    "/admin_purge_rejected_images",
+    description="Очистить изображения отклонённых работ (admin)",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@admin_only
+async def cmd_admin_purge_rejected_images(
+    message: IncomingMessage, bot: Bot
+) -> None:
+    """``/admin_purge_rejected_images [BR-2026-XXXX]`` — очистка изображений.
+
+    Опциональный инструмент на случай нехватки места: удаляет только
+    файлы-изображения из ``99_rejected/`` (метаданные и причина
+    отклонения сохраняются). Показывает статистику и двухшаговый
+    confirm; само удаление — в ``cmd_admin_confirm`` (action
+    ``purge_rejected_images``).
+    """
+    from services.storage import get_rejected_storage_stats
+
+    arg = (getattr(message, "argument", "") or "").strip()
+    target_br_id = arg.split()[0].upper() if arg else None
+
+    stats = await get_rejected_storage_stats()
+    lines = [
+        "🧹 **Очистка изображений отклонённых работ.**",
+        "",
+        f"Папок в 99_rejected: **{stats.folders_count}**",
+        f"Изображений: **{stats.image_files_count}** "
+        f"({_fmt_gb(stats.image_bytes)})",
+        f"Метаданные (txt): {stats.meta_files_count} "
+        f"({_fmt_mb(stats.meta_bytes)}) — сохраняются",
+    ]
+    if target_br_id:
+        lines.append("")
+        lines.append(f"Область очистки: только заявка **{target_br_id}**.")
+    lines.append("")
+    lines.append(
+        "Будут удалены только изображения. Метаданные и причины "
+        "отклонения останутся для возможных споров."
+    )
+
+    payload = {"br_id": target_br_id} if target_br_id else None
+    await reply_to_user(
+        message,
+        bot,
+        "\n".join(lines),
+        bubbles=admin_confirm_bubbles(
+            action="purge_rejected_images", payload=payload
+        ),
     )
 
 

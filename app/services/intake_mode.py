@@ -5,10 +5,10 @@
 - ``FILES`` — основной: файлы загружаются на сервер бота;
 - ``LINKS`` — резервный: родитель присылает ссылку на облако.
 
-Переключение:
-- администратором (``/intake_mode``, см. ``handlers/admin.py``);
-- автоматически при заполнении диска ≥ ``DISK_BLOCK_PCT`` (см.
-  ``services.storage.check_and_alert_disk`` → ``maybe_auto_switch_to_links``).
+Переключение — только администратором вручную (``/intake_mode`` или
+``/admin_danger`` → ``force_links``, см. ``handlers/admin.py``).
+Автоматического переключения по заполнению диска нет: мониторинг диска
+только шлёт предупреждение в чат модерации (``DISK_WARN_PCT``).
 
 Состояние хранится в таблице ``app_settings`` (key=``intake_mode``,
 value=``files`` / ``links``), чтобы переключение пережило рестарт
@@ -109,57 +109,9 @@ async def set_intake_mode(
     )
 
 
-async def maybe_auto_switch_to_links(bot=None) -> bool:
-    """Авто-переход в ``LINKS`` при заполнении диска ≥ ``DISK_BLOCK_PCT``.
-
-    Идемпотентно: если уже в ``LINKS`` — возвращает False, без записи.
-    При переключении отправляет уведомление в чат модерации,
-    если передан ``bot``.
-
-    Returns:
-        True, если режим был сменён; False — если переключать не нужно
-        (порог не достигнут или уже ``LINKS``).
-    """
-    # Локальный импорт, чтобы избежать циклической зависимости с storage.
-    from services.storage import should_block_intake
-
-    if not should_block_intake():
-        return False
-
-    current = await get_intake_mode()
-    if current is IntakeMode.LINKS:
-        return False
-
-    await set_intake_mode(
-        IntakeMode.LINKS,
-        by_huid=SYSTEM_HUID,
-        reason="auto-switch on disk usage >= DISK_BLOCK_PCT",
-    )
-
-    if bot is not None:
-        try:
-            from services.notifications import (
-                INTAKE_MODE_LINKS_NOTICE_TEMPLATE,
-                _send_to_moderation_chat,
-            )
-
-            await _send_to_moderation_chat(
-                bot,
-                INTAKE_MODE_LINKS_NOTICE_TEMPLATE,
-                purpose="auto_switch_to_links",
-            )
-        except Exception:
-            logger.exception(
-                "Не удалось отправить уведомление об автопереключении в LINKS"
-            )
-
-    return True
-
-
 __all__ = [
     "INTAKE_MODE_KEY",
     "SYSTEM_HUID",
     "get_intake_mode",
     "set_intake_mode",
-    "maybe_auto_switch_to_links",
 ]

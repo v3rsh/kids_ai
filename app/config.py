@@ -121,8 +121,12 @@ ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Лимит размера одного файла и пороги мониторинга диска.
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
-DISK_WARN_PCT = int(os.getenv("DISK_WARN_PCT", "80"))
-DISK_BLOCK_PCT = int(os.getenv("DISK_BLOCK_PCT", "95"))
+# Единственный порог-предупреждение: алёрт в чат модерации (без действий).
+# Авто-переключения в LINKS нет — режим меняет только админ вручную.
+DISK_WARN_PCT = int(os.getenv("DISK_WARN_PCT", "45"))
+# Потолок для архива полной базы (bd-full.tar.gz ≈ копия attachments на том
+# же диске): pre-flight отказывает, если после архивации диск ≥ этого %.
+ARCHIVE_DISK_CAP_PCT = int(os.getenv("ARCHIVE_DISK_CAP_PCT", "90"))
 # Интервал фонового мониторинга диска. 1800 c = 30 мин.
 # Сам алёрт дедуплицируется внутри services.storage.check_and_alert_disk
 # (раз в 24 часа на каждый порог), так что 30 мин — безопасный дефолт.
