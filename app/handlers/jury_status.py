@@ -31,20 +31,27 @@ def _format_progress(progress: dict[str, int]) -> str:
     submitted = progress.get("submitted_rounds", 0)
     in_progress = progress.get("in_progress_rounds", 0)
     not_started = progress.get("not_started_rounds", 0)
-    total = submitted + in_progress + not_started
-    if total == 0:
+    open_now = in_progress + not_started
+    if submitted == 0 and open_now == 0:
         return (
             "**У вас нет назначенных открытых раундов.**\n\n"
             "Это значит, что либо ваши пулы ещё не запущены, "
-            "либо все раунды уже закрыты."
+            "либо все раунды уже закрыты, а вы в них не голосовали."
         )
-    return (
-        "**Ваш прогресс по жюри:**\n\n"
-        f"• Отправлено оценок (раундов): {submitted}\n"
-        f"• В работе (есть черновики): {in_progress}\n"
-        f"• Не открыто (без черновиков): {not_started}\n\n"
-        f"**Всего открытых раундов вашего состава:** {total}."
-    )
+
+    lines = [
+        "**Ваш прогресс по жюри:**",
+        "",
+        f"• Отправлено оценок (раундов всего): {submitted}",
+    ]
+    if open_now > 0:
+        lines.append(f"• Сейчас открыто задач: {open_now}")
+        lines.append(f"   — в работе (есть черновики): {in_progress}")
+        lines.append(f"   — не начато: {not_started}")
+    else:
+        lines.append("")
+        lines.append("Открытых раундов сейчас нет — всё назначенное пройдено.")
+    return "\n".join(lines)
 
 
 @collector.command(

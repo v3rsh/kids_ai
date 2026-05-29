@@ -15,6 +15,7 @@
 | [`deployment.md`](deployment.md) | Переменные окружения, docker-compose, offline-сборка, мониторинг, troubleshooting, бэкапы |
 | [`registry-spec.md`](registry-spec.md) | Контракт XLSX-выгрузок `/export` и `/export_shortlist` (состав листов, колонки, форматирование, имя файла) |
 | [`testing.md`](testing.md) | Как запускать `pytest`, что покрыто автотестами, ручной приёмочный чек-лист |
+| [`jury-briefing.md`](jury-briefing.md) | Памятка для инструктажа членов жюри на созвоне (UX бота, правила оценки) |
 | [`backlog.md`](backlog.md) | Отложенные задачи (что сознательно не вошло в текущий релиз) |
 | [`history/`](history/) | Архив: стартовое `ТЗ.md`, исходные «Вопросы…/Ответы разработчика». Read-only, не источник правды |
 

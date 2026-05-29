@@ -568,6 +568,37 @@ async def purge_inactive_jury_votes_in_open_rounds(
     return list(affected)
 
 
+async def _all_pool_ballots_submitted(
+    round_id: UUID,
+    pool: PoolKey,
+    candidate_ids: set[UUID],
+    *,
+    session: AsyncSession,
+) -> bool:
+    """True, если каждый судья пула отправил SUBMITTED по всем кандидатам раунда."""
+    if not candidate_ids:
+        return False
+    jury_for_pool = await get_jury_for_pool(pool, session=session)
+    if not jury_for_pool:
+        return False
+    pool_huids = {m.huid for m in jury_for_pool}
+    required = len(candidate_ids)
+    rows = (
+        await session.execute(
+            select(JuryVote.jury_huid, func.count(JuryVote.id))
+            .where(
+                JuryVote.round_id == round_id,
+                JuryVote.jury_huid.in_(pool_huids),
+                JuryVote.state == JuryVoteState.SUBMITTED,
+                JuryVote.application_id.in_(candidate_ids),
+            )
+            .group_by(JuryVote.jury_huid)
+        )
+    ).all()
+    counts = {huid: int(cnt) for huid, cnt in rows}
+    return all(counts.get(huid, 0) == required for huid in pool_huids)
+
+
 async def try_auto_close_rounds_after_revoke(
     round_ids: list[UUID],
     *,
@@ -583,21 +614,14 @@ async def try_auto_close_rounds_after_revoke(
             if round_obj is None or round_obj.status != JuryRoundStatus.OPEN:
                 continue
             pool = PoolKey(track=round_obj.track, age_category=round_obj.age_category)
-            jury_for_pool = await get_jury_for_pool(pool, session=s)
-            if not jury_for_pool:
-                continue
-            submitted_huids = (
-                await s.execute(
-                    select(JuryVote.jury_huid)
-                    .where(
-                        JuryVote.round_id == round_id,
-                        JuryVote.state == JuryVoteState.SUBMITTED,
-                    )
-                    .group_by(JuryVote.jury_huid)
-                )
-            ).scalars().all()
-            pool_huids = {m.huid for m in jury_for_pool}
-            if pool_huids.issubset(set(submitted_huids)):
+            candidates = await _get_round_candidates(round_obj, session=s)
+            candidate_ids = {a.id for a in candidates}
+            if await _all_pool_ballots_submitted(
+                round_id,
+                pool,
+                candidate_ids,
+                session=s,
+            ):
                 if session is None:
                     await s.commit()
                 await close_round(round_id, session=session, bot=bot)
@@ -1032,20 +1056,12 @@ async def submit_votes(
             )
 
         pool = PoolKey(track=round_obj.track, age_category=round_obj.age_category)
-        jury_for_pool = await get_jury_for_pool(pool, session=s)
-        submitted_huids = (
-            await s.execute(
-                select(JuryVote.jury_huid)
-                .where(
-                    JuryVote.round_id == round_id,
-                    JuryVote.state == JuryVoteState.SUBMITTED,
-                )
-                .group_by(JuryVote.jury_huid)
-            )
-        ).scalars().all()
-        submitted_set = set(submitted_huids)
-        pool_huids = {m.huid for m in jury_for_pool}
-        all_submitted = bool(pool_huids) and pool_huids.issubset(submitted_set)
+        all_submitted = await _all_pool_ballots_submitted(
+            round_id,
+            pool,
+            candidate_ids,
+            session=s,
+        )
 
         if session is None:
             await s.commit()
@@ -1664,9 +1680,16 @@ async def get_jury_progress(
     """Прогресс судьи (для ``/jury_status``).
 
     Возвращает счётчики:
-    - ``submitted_rounds`` — раунды, по которым отправлены оценки;
-    - ``in_progress_rounds`` — раунды, по которым есть черновики;
-    - ``not_started_rounds`` — открытые раунды без единого голоса.
+    - ``submitted_rounds`` — **накопленный итог**: все раунды (любого
+      статуса — OPEN / CLOSED / DRAWN_BY_LOT), по которым судья отправил
+      оценки. Не теряется после автозакрытия раунда;
+    - ``in_progress_rounds`` — **открытые** раунды, по которым есть
+      только черновики (отправки ещё не было);
+    - ``not_started_rounds`` — **открытые** раунды без единого голоса.
+
+    «В работе» и «Не открыто» считаются только по открытым раундам, на
+    пулы которых судья назначен; «Отправлено» — по всем его SUBMITTED-
+    голосам независимо от статуса раунда.
     """
     async with _open_session_ctx(session) as s:
         open_rounds = (
@@ -1699,7 +1722,10 @@ async def get_jury_progress(
                 pool_assignments_cache[pool] = ids
             return jury_huid in ids
 
-        submitted = 0
+        # «Отправлено» — накопленный итог по всем статусам раунда: факт
+        # SUBMITTED-голоса уже означает, что судья был назначен на пул,
+        # поэтому отдельный фильтр назначения здесь не нужен.
+        submitted = len(rounds_with_submitted)
         in_progress = 0
         not_started = 0
         for r in open_rounds:
@@ -1707,8 +1733,9 @@ async def get_jury_progress(
             if not await _is_assigned(pool):
                 continue
             if r.id in rounds_with_submitted:
-                submitted += 1
-            elif r.id in rounds_with_draft:
+                # уже учтён в submitted — не задваиваем
+                continue
+            if r.id in rounds_with_draft:
                 in_progress += 1
             else:
                 not_started += 1
