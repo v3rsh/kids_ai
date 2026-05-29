@@ -41,7 +41,7 @@
 - `app/services/attachments_archive.py` — полный архив на диск
   `data/archive/bd-full.tar.gz` со всеми BR-ID-каталогами + manifest +
   summary внутри tar и рядом. Pre-flight `ArchiveBudgetExceeded` при
-  >= `DISK_BLOCK_PCT`.
+  >= `ARCHIVE_DISK_CAP_PCT`.
 - `app/handlers/admin_export.py` — `/admin_export_shortlist_files`
   (двухшаговое подтверждение, фоновый `asyncio.Task`),
   `/admin_export_app BR-...` для точечной переотправки. Пауза

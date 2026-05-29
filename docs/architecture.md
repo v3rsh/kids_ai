@@ -70,7 +70,7 @@ app/
 │   ├── notifications.py # автосообщения участникам и в чат модерации + jury-event aggregator
 │   ├── jury.py          # алгоритм раундов + формирование шорт-листа
 │   ├── pools.py         # пулы (Track × AgeCategory) + sync_pool_assignments_from_config
-│   ├── intake_mode.py   # переключение files/links + maybe_auto_switch_to_links
+│   ├── intake_mode.py   # ручное переключение files/links (без авто-перехода)
 │   ├── intake_state.py  # is_intake_open / set_intake_open (закрытие приёма после 15.06)
 │   ├── attachments_export.py # архивная выгрузка шорт-листа в памяти
 │   │                    # (tar.gz по пулам track×age, manifest.csv, links.txt)
@@ -139,9 +139,9 @@ app/
      алёрты дедуплицируются внутри `check_and_alert_disk` через
      таблицу `disk_alerts` (одно уведомление на порог в сутки).
    - иначе — фоновый монитор НЕ запускается; модератор должен
-     полагаться на ручную команду `/disk` и auto-switch в LINKS
-     при достижении блокирующего порога (`DISK_BLOCK_PCT`, по
-     умолчанию 95 %).
+     полагаться на ручную команду `/disk`. При достижении
+     `DISK_WARN_PCT` (45 %) приходит только предупреждение —
+     переключение в LINKS делает админ вручную.
 
 8а. После входа в `lifespan_wrapper(bot)` — `_validate_moderation_chat(bot)`
     (`app/main.py`): если в `app_settings.moderation_chat_id` лежит UUID,
@@ -553,7 +553,7 @@ discovery: команды `/moderator` и `/jury` отправляют адми�
 | 🙋 Пользователи | `/admin_user_find` (FSM: HUID), карточка с resync / apps / назначением роли |
 | 📊 Статистика | `/admin_stats` + шорткаты `/stats today` / `/stats all` |
 | 🛡 Меню модератора | шорткаты `/queue`, `/browse`, `/admin_shortcut_find` (FSM: BR-ID), `/export`, … |
-| ⚠️ Опасные операции | `/admin_danger` → `/admin_confirm` (force LINKS, cleanup disk_alerts, clear chat, flush jury) |
+| ⚠️ Опасные операции | `/admin_danger` → `/admin_confirm` (force LINKS, cleanup disk_alerts, clear chat, flush jury, `purge_rejected_images` — очистка изображений отклонённых) |
 
 Навигация по разделам — скрытая команда `/admin_section` с
 `data={"section": "roles|chat|competition|system|users|stats|moderator|dangerous"}`.
@@ -733,18 +733,31 @@ ATTACHMENTS_DIR/
         BR-2026-NNNN_Фамилия_Имя_Ребёнок/
     02_ai/
     03_refine/
-  99_rejected/                   # отклонённые (только метаданные)
+  99_rejected/                   # отклонённые (вся папка работы)
     <YYYY-MM-DD>/                # дата модерации
-      BR-2026-NNNN_.../
+      BR-2026-NNNN_.../          # файлы работы + метаданные + reason.txt
 ```
 
 Имена файлов внутри папки заявки формируются по шаблону
 `BR-{YEAR}-NNNN_{kind}[N].{ext}` (`original`, `angle-N`, `ai-image`,
 `diptych` — см. перечисление `FileKind` в `app/database/models.py`).
 
-При отклонении заявки физические файлы работы удаляются (`rm`), а в
-`99_rejected/<дата_модерации>/<папка-заявки>/` остаются только
-метаданные — `description.txt`, `meta.txt`, `reason.txt`.
+При отклонении заявки **вся папка работы целиком** переносится
+(`shutil.move`) в `99_rejected/<дата_модерации>/<папка-заявки>/` —
+файлы работы сохраняются для возможных споров вместе с метаданными
+(`description.txt`, `meta.txt`, `reason.txt`). После переноса
+`services.applications.remap_application_file_paths` обновляет
+`relative_path` в БД, поэтому `/files` и `/my_app_files` для
+отклонённых заявок продолжают работать. Физического удаления при
+отклонении больше нет (`move_to_rejected`); `delete_application_files`
+вызывается только при повторной загрузке файлов участником
+(`clear_application_work_files`).
+
+При нехватке места админ может вручную удалить **только изображения**
+отклонённых работ через `/admin_purge_rejected_images`
+(`services.storage.purge_rejected_images`) — метаданные и `reason.txt`
+сохраняются для споров. Счётчик объёма `99_rejected/` показывается в
+`/disk` и `/admin_state` (`get_rejected_storage_stats`).
 
 > Историческая структура с корневой папкой «Безопасные рисунки/» и
 > русскими именами треков (`01_Традиционное_рисование` и т. п.) была
@@ -761,13 +774,18 @@ ATTACHMENTS_DIR/
 
 ### Мониторинг диска
 
-`services/storage.py` экспонирует `get_disk_usage_bytes()` и
-`should_block_intake()`. Пороги — `config.DISK_WARN_PCT` (по умолчанию
-80 %) и `config.DISK_BLOCK_PCT` (95 %). При достижении блокирующего
-порога бот автоматически переключает `intake_mode` в `LINKS`
-(`services/intake_mode.maybe_auto_switch_to_links`). История
-автопредупреждений — в таблице `disk_alerts` (дедупликация: одно
-сообщение на порог в сутки, а не раз в 30 минут).
+`services/storage.py` экспонирует `get_disk_usage_bytes()` /
+`get_disk_usage_pct()`. Единственный порог — `config.DISK_WARN_PCT`
+(по умолчанию 45 %): при достижении бот только шлёт предупреждение в
+чат модерации (`check_and_alert_disk`), **без автоматических
+действий**. Авто-переключения в `LINKS` больше нет — режим приёма
+меняет только админ вручную (`/intake_mode` или
+`/admin_danger → force_links`). Для архива полной базы действует
+отдельный потолок `config.ARCHIVE_DISK_CAP_PCT` (по умолчанию 90 %):
+pre-flight `estimate_archive_budget` отказывает в создании
+`bd-full.tar.gz`, если после архивации диск заполнится на ≥ этого
+процента. История предупреждений — в таблице `disk_alerts`
+(дедупликация: одно сообщение на порог в сутки).
 
 ### Закрытие приёма заявок
 

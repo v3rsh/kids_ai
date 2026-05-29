@@ -117,10 +117,10 @@
 
 | Переменная | Описание | По умолчанию |
 |-----------|----------|-------------|
-| `ATTACHMENTS_DIR` | Корень файлового хранилища заявок; в контейнере — bind-mount `./data/attachments` хоста → `/app/data/attachments`. Структура: `<YYYY-MM-DD>/<01_traditional|02_ai|03_refine>/<возраст>/BR-...`, отклонённые — `99_rejected/<YYYY-MM-DD>/...` | `data/attachments` |
+| `ATTACHMENTS_DIR` | Корень файлового хранилища заявок; в контейнере — bind-mount `./data/attachments` хоста → `/app/data/attachments`. Структура: `<YYYY-MM-DD>/<01_traditional|02_ai|03_refine>/<возраст>/BR-...`, отклонённые — `99_rejected/<YYYY-MM-DD>/...` (вся папка работы сохраняется) | `data/attachments` |
 | `MAX_FILE_SIZE_MB` | Лимит размера одного файла, присылаемого участником | `10` |
-| `DISK_WARN_PCT` | Порог предупреждения в чат модерации | `80` |
-| `DISK_BLOCK_PCT` | Порог блокировки приёма + автопереключение в режим LINKS | `95` |
+| `DISK_WARN_PCT` | Единственный порог предупреждения в чат модерации (без авто-действий; переключение в LINKS — только вручную админом) | `45` |
+| `ARCHIVE_DISK_CAP_PCT` | Потолок для архива полной базы (`bd-full.tar.gz`): pre-flight отказывает, если после архивации диск заполнится на ≥ этого % | `90` |
 | `DISK_CHECK_INTERVAL_SEC` | Интервал фонового монитора диска (запускается только при `ENABLE_SCHEDULER=true`). Сам алёрт дедуплицируется в БД на 24 ч | `1800` |
 | `EXPORT_PAUSE_MS` | Пауза между отправками отдельных архивов в DM-чат админа в `/admin_export_shortlist_files`. Защищает CTS от rate-limit | `800` |
 | `EXPORT_MAX_PART_BYTES` | Мягкий лимит размера одной части `tar.gz`. Пуловые архивы шорт-листа (`trad-7-12.tar.gz` и т.п.) при превышении режутся на части `…part01.tar.gz`/`…part02.tar.gz`; точечный `BR-2026-NNNN.tar.gz` при превышении оставляет только `meta.txt`/`description.txt`/`reason.txt` (статус `oversize_meta_only` в манифесте) | `94371840` (90 МБ) |
