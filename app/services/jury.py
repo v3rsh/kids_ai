@@ -511,6 +511,45 @@ async def is_global_shortlist_ready(
         return True
 
 
+async def fetch_parent_jury_outcomes(
+    *,
+    session: Optional[AsyncSession] = None,
+) -> dict[UUID, bool]:
+    """Итог жюри в разрезе родителя для рассылки «на родителя».
+
+    Возвращает ``parent_huid -> in_top_10``: ``True``, если хотя бы
+    одна работа этого родителя получила ``jury_status=V_TOP_10``;
+    ``False`` — если все его дошедшие до жюри работы со статусом
+    ``NE_VOSHLO_V_TOP_10``.
+
+    В выборку попадают только родители с заявками, реально
+    оценёнными жюри (``V_TOP_10`` / ``NE_VOSHLO_V_TOP_10``).
+    Отклонённые / на исправлении на модерации не учитываются.
+
+    Один ``GROUP BY``-запрос (без N+1).
+    """
+    async with _open_session_ctx(session) as s:
+        stmt = (
+            select(
+                Application.parent_huid,
+                func.bool_or(
+                    Application.jury_status == JuryStatus.V_TOP_10
+                ),
+            )
+            .where(
+                Application.jury_status.in_(
+                    [
+                        JuryStatus.V_TOP_10,
+                        JuryStatus.NE_VOSHLO_V_TOP_10,
+                    ]
+                )
+            )
+            .group_by(Application.parent_huid)
+        )
+        rows = (await s.execute(stmt)).all()
+    return {huid: bool(in_top_10) for huid, in_top_10 in rows}
+
+
 async def maybe_notify_shortlist_ready(
     bot: "Bot | None",
     *,
@@ -526,11 +565,30 @@ async def maybe_notify_shortlist_ready(
         return
     from services import notifications
 
+    async with _open_session_ctx(session) as s:
+        total_works = int(
+            (
+                await s.execute(
+                    select(func.count(Application.id)).where(
+                        Application.jury_status == JuryStatus.V_TOP_10
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+
+    # Авторассылка итогов жюри родителям — один раз. Выполняется до
+    # события shortlist_ready (оно внутри ставит shortlist_announced=true,
+    # что и обеспечивает однократность: повторный вход в функцию
+    # обрежется guard'ом get_shortlist_announced выше).
+    await notifications.broadcast_jury_results(bot)
+
     await notifications.notify_moderation_chat_jury_event(
         bot,
         event_kind="shortlist_ready",
         pools=[],
         round_no=None,
+        pool_top_n=total_works,
     )
 
 
@@ -682,11 +740,13 @@ async def auto_shortlist_undersized_pool(
     if bot is not None:
         from services import notifications
 
-        await notifications.notify_moderation_chat_undersized_pool(
+        await notifications.notify_moderation_chat_jury_event(
             bot,
-            pool_label=pool.as_label(),
-            works_n=count,
-            top_n=TOP_N,
+            event_kind="pool_completed",
+            pools=[(pool.track.value, pool.age_category.value)],
+            round_no=None,
+            pool_top_n=count,
+            source="без голосования",
         )
         await maybe_notify_shortlist_ready(bot, session=session)
     return count
@@ -1209,9 +1269,10 @@ async def close_round(
         )
         pool = PoolKey(track=round_obj.track, age_category=round_obj.age_category)
         fixed_after = fixed_before + len(outcome.above_tie_ids)
-        pool_completed = (
-            not outcome.is_tied and fixed_after >= TOP_N
-        ) or will_apply_lot
+        # Ничья — единственная причина открыть следующий раунд. Если ничьи
+        # нет, пул отработан полностью (включая малые пулы 2..10, где работ
+        # меньше, чем мест в шорт-листе). will_apply_lot закрывает пул жребием.
+        pool_completed = (not outcome.is_tied) or will_apply_lot
 
         close_report = await _build_close_report(
             round_obj,
@@ -1260,6 +1321,20 @@ async def close_round(
         round_obj=round_obj,
         report=close_report,
     )
+
+    # Пул завершён без жребия (нет ничьи) — единая маска «шорт-лист пула
+    # сформирован — N работ». Случай жребия отдельно сообщает apply_lot.
+    if not outcome.is_tied and bot is not None:
+        from services import notifications
+
+        await notifications.notify_moderation_chat_jury_event(
+            bot,
+            event_kind="pool_completed",
+            pools=[(pool.track.value, pool.age_category.value)],
+            round_no=round_obj.round_no,
+            pool_top_n=close_report.pool_top_n,
+            source=f"раунд {round_obj.round_no}",
+        )
 
     if will_apply_lot:
         await apply_lot_if_needed(round_id, session=session, bot=bot)
@@ -1795,6 +1870,7 @@ __all__ = [
     "try_auto_close_rounds_after_revoke",
     "auto_shortlist_undersized_pool",
     "is_global_shortlist_ready",
+    "fetch_parent_jury_outcomes",
     "is_pool_done",
     "maybe_notify_shortlist_ready",
     "_count_dopushcheno_in_pool",

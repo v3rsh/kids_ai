@@ -150,6 +150,93 @@ class TestParticipantNotificationsBubbles:
         fake_bot.send_message.assert_not_awaited()
 
 
+class TestBroadcastJuryResults:
+    """Рассылка итогов жюри «на родителя» (одно сообщение на parent_huid).
+
+    Дедупликация и выбор поздравление/благодарность по родителю — на
+    уровне SQL в ``services.jury.fetch_parent_jury_outcomes`` (родитель
+    с V_TOP_10 + NE_VOSHLO попадает в outcomes как ``in_top_10=True``).
+    Здесь outcomes мокаются — проверяется поведение оркестратора.
+    """
+
+    async def test_sends_one_message_per_parent_with_summary(
+        self, fake_bot: MagicMock
+    ) -> None:
+        parent_top = uuid.uuid4()
+        parent_out = uuid.uuid4()
+        parent_no_chat = uuid.uuid4()
+        chat_top = uuid.uuid4()
+        chat_out = uuid.uuid4()
+
+        outcomes = {
+            parent_top: True,
+            parent_out: False,
+            parent_no_chat: False,
+        }
+        chat_ids = {parent_top: chat_top, parent_out: chat_out}
+
+        with patch(
+            "services.jury.fetch_parent_jury_outcomes",
+            AsyncMock(return_value=outcomes),
+        ), patch.object(
+            notifications,
+            "_resolve_user_chat_ids",
+            AsyncMock(return_value=chat_ids),
+        ), patch.object(
+            notifications, "_send_to_user", AsyncMock()
+        ) as send_user, patch.object(
+            notifications, "_send_to_moderation_chat", AsyncMock()
+        ) as send_mod, patch(
+            "asyncio.sleep", AsyncMock()
+        ):
+            stats = await notifications.broadcast_jury_results(fake_bot)
+
+        assert stats.congrats == 1
+        assert stats.thanks == 1
+        assert stats.skipped_no_chat == 1
+        assert stats.total == 3
+
+        # Одно сообщение на каждого родителя с известным chat_id.
+        assert send_user.await_count == 2
+        bodies = {
+            call.kwargs["huid"]: call.kwargs["body"]
+            for call in send_user.await_args_list
+        }
+        assert bodies[parent_top] == notifications.JURY_RESULT_IN_TOP10_TEMPLATE
+        assert bodies[parent_out] == notifications.JURY_RESULT_NOT_IN_TOP10_TEMPLATE
+
+        # Кнопки — общий набор «на родителя» (без привязки к заявке).
+        for call in send_user.await_args_list:
+            commands = _extract_button_commands(call.kwargs["bubbles"])
+            assert commands == ["/menu_my_applications", "/menu_contacts", "/start"]
+
+        # Сводка в чат модерации с фактическими числами.
+        send_mod.assert_awaited_once()
+        summary_body = send_mod.await_args.kwargs.get("body") or (
+            send_mod.await_args.args[1] if len(send_mod.await_args.args) > 1 else ""
+        )
+        assert "Поздравлений: **1**" in summary_body
+        assert "Благодарностей: **1**" in summary_body
+        assert "Не доставлено (нет chat_id): **1**" in summary_body
+
+    async def test_no_parents_sends_zero_summary(
+        self, fake_bot: MagicMock
+    ) -> None:
+        with patch(
+            "services.jury.fetch_parent_jury_outcomes",
+            AsyncMock(return_value={}),
+        ), patch.object(
+            notifications, "_send_to_user", AsyncMock()
+        ) as send_user, patch.object(
+            notifications, "_send_to_moderation_chat", AsyncMock()
+        ) as send_mod:
+            stats = await notifications.broadcast_jury_results(fake_bot)
+
+        assert stats.total == 0
+        send_user.assert_not_awaited()
+        send_mod.assert_awaited_once()
+
+
 class TestModerationChatOutboundOnly:
     async def test_new_application_sends_without_bubbles(
         self, fake_bot: MagicMock, fake_app: MagicMock
@@ -220,15 +307,14 @@ class TestJuryRoundTemplates:
         assert "Выбыло: 3" in body
         assert "Осталось мест в шорт-листе пула: 4" in body
 
-    def test_pool_completed_tail_renders_lot_label_and_pool_top_n(self) -> None:
-        tail = notifications.JURY_POOL_COMPLETED_TAIL_TEMPLATE.format(
-            top_n=10,
-            lot_label="да",
+    def test_pool_completed_template_renders_count_and_source(self) -> None:
+        body = notifications.JURY_POOL_COMPLETED_TEMPLATE.format(
+            pool="От руки к ИИ / 13–18",
             pool_top_n=10,
+            source="раунд 2",
         )
-        assert "Топ-10 пула определён" in tail
-        assert "жребий: да" in tail
-        assert "В шорт-листе пула: 10 работ" in tail
+        assert "шорт-лист пула сформирован — 10 работ" in body
+        assert "(раунд 2)" in body
 
     def test_round_closed_aggregate_pool_line_includes_all_metrics(self) -> None:
         line = notifications.JURY_ROUND_CLOSED_POOL_LINE.format(
@@ -246,11 +332,30 @@ class TestJuryRoundTemplates:
         assert "выбыло 0" in line
         assert "осталось мест 2" in line
 
-    def test_undersized_pool_template_uses_works_and_top_n(self) -> None:
-        body = notifications.JURY_UNDERSIZED_POOL_TEMPLATE.format(
+    def test_pool_completed_template_unified_mask(self) -> None:
+        body = notifications.JURY_POOL_COMPLETED_TEMPLATE.format(
             pool="ИИ-рисунок / 7–12",
-            works_n=4,
-            top_n=10,
+            pool_top_n=4,
+            source="раунд 1",
         )
-        assert "работ 4 < TOP_N=10" in body
-        assert "Все 4 работ — в шорт-листе." in body
+        assert "шорт-лист пула сформирован — 4 работ" in body
+        assert "(раунд 1)" in body
+
+    def test_pool_completed_template_no_voting_source(self) -> None:
+        body = notifications.JURY_POOL_COMPLETED_TEMPLATE.format(
+            pool="ИИ-рисунок / 7–12",
+            pool_top_n=1,
+            source="без голосования",
+        )
+        assert "сформирован — 1 работ (без голосования)" in body
+
+    def test_empty_pool_template(self) -> None:
+        body = notifications.JURY_EMPTY_POOL_TEMPLATE.format(
+            pool="ИИ-рисунок / 7–12",
+        )
+        assert "нет допущенных работ" in body
+
+    def test_shortlist_ready_template_includes_total(self) -> None:
+        body = notifications.JURY_SHORTLIST_READY_TEMPLATE.format(total=37)
+        assert "всего 37 работ" in body
+        assert "/export_shortlist" in body

@@ -284,6 +284,7 @@ _COMPETITION_JURY_CONFIRM_ACTIONS: frozenset[str] = frozenset(
         "jury_auto_shortlist",
         "jury_close_pool",
         "jury_finalize",
+        "jury_announce_results",
     }
 )
 
@@ -528,6 +529,22 @@ async def cmd_admin_confirm(message: IncomingMessage, bot: Bot) -> None:
             body = (
                 f"🏁 Финализация завершена. В шорт-листе: **{len(result)}** работ."
             )
+        elif action == "jury_announce_results":
+            from services import notifications
+
+            stats = await notifications.broadcast_jury_results(bot)
+            if stats.total == 0:
+                body = (
+                    "ℹ️ Рассылка не выполнена: нет родителей с работами, "
+                    "дошедшими до жюри."
+                )
+            else:
+                body = (
+                    "📣 Рассылка итогов жюри родителям завершена.\n\n"
+                    f"Поздравлений: **{stats.congrats}**\n"
+                    f"Благодарностей: **{stats.thanks}**\n"
+                    f"Не доставлено (нет chat_id): **{stats.skipped_no_chat}**"
+                )
         elif action == "reset_shortlist_announced":
             from services.jury_settings import reset_shortlist_announced
 

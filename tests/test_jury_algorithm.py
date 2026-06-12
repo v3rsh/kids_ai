@@ -106,6 +106,25 @@ class TestJuryAlgorithm(unittest.TestCase):
         self.assertFalse(outcome.is_tied)
         self.assertEqual(len(outcome.top_ids), 5)
 
+    def test_small_pool_two_works_all_in_shortlist_ordered_by_votes(self):
+        """Малый пул 2..10: все работы в шорт-лист (нет ничьи → пул
+        завершён за раунд 1), порядок above_tie — по числу голосов.
+
+        Это основа нового поведения: ``pool_completed = not is_tied``
+        срабатывает для малых пулов, а ``pool_position`` присваивается по
+        порядку ``sorted_app_ids`` (above_tie).
+        """
+        apps = _make_apps(3)
+        counts = {apps[0].id: 1, apps[1].id: 3, apps[2].id: 2}
+        outcome = _compute_outcome_from_data(apps, counts, top_n=10)
+        self.assertFalse(outcome.is_tied)
+        self.assertEqual(outcome.tie_ids, [])
+        # Все три зафиксированы above_tie, отсортированы по убыванию голосов.
+        self.assertEqual(
+            outcome.above_tie_ids,
+            [apps[1].id, apps[2].id, apps[0].id],
+        )
+
     def test_deterministic_sort_by_created_at(self):
         """При равных голосах порядок — по (created_at ASC, id ASC)."""
         apps = _make_apps(5)

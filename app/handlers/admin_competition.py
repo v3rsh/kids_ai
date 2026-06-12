@@ -103,21 +103,20 @@ async def _pool_card_lines(pool: PoolKey, *, session) -> tuple[str, bool, bool, 
         lines.append(
             f"Открыт раунд **{open_round.round_no}** (id `{open_round.id}`)."
         )
-    elif fixed > 0 and dopushcheno <= TOP_N:
+    elif fixed > 0:
         lines.append(f"Пул закрыт без голосования: **{fixed}** работ в шорт-листе.")
-    elif dopushcheno < TOP_N:
-        if dopushcheno == 0:
-            lines.append("Старт заблокирован: нет допущенных работ.")
-        else:
-            lines.append(
-                f"Старт раунда 1 заблокирован: работ **{dopushcheno}** из "
-                f"**{TOP_N}** — ждём допуска или закройте пул без голосования."
-            )
+    elif dopushcheno == 0:
+        lines.append("Старт заблокирован: нет допущенных работ.")
+    elif dopushcheno == 1:
+        lines.append(
+            "Одна допущенная работа — раунд не нужен, "
+            "закройте пул без голосования."
+        )
     else:
         lines.append("Можно открыть раунд 1.")
 
-    can_open = dopushcheno >= TOP_N and fixed == 0 and open_round is None
-    can_auto_shortlist = 1 <= dopushcheno < TOP_N and fixed == 0
+    can_open = dopushcheno >= 2 and fixed == 0 and open_round is None
+    can_auto_shortlist = dopushcheno == 1 and fixed == 0
     has_open_round = open_round is not None
     return "\n".join(lines), can_open, can_auto_shortlist, has_open_round
 
@@ -430,16 +429,23 @@ async def cmd_admin_competition_jury_open_pool(
                 bubbles=admin_competition_jury_bubbles(),
             )
             return
-        if dopushcheno < TOP_N:
+        if dopushcheno < 2:
+            if dopushcheno == 0:
+                body = "Нельзя открыть раунд: нет допущенных работ."
+            else:
+                body = (
+                    "Одна допущенная работа — раунд не нужен. "
+                    "Закройте пул без голосования."
+                )
             await reply_to_user(
                 message,
                 bot,
-                f"Нельзя открыть раунд: работ **{dopushcheno}** из **{TOP_N}**.",
+                body,
                 bubbles=admin_competition_pool_bubbles(
                     track=pool.track.name,
                     age=pool.age_category.name,
                     can_open=False,
-                    can_auto_shortlist=1 <= dopushcheno < TOP_N,
+                    can_auto_shortlist=dopushcheno == 1,
                     has_open_round=False,
                 ),
             )
@@ -483,7 +489,7 @@ async def cmd_admin_competition_jury_auto_shortlist(
         bot,
         (
             f"⚠️ Закрыть пул **{pool.as_label()}** без голосования?\n"
-            f"Все допущенные работы (< {TOP_N}) попадут в шорт-лист."
+            "Единственная допущенная работа попадёт в шорт-лист."
         ),
         bubbles=admin_confirm_bubbles(
             action="jury_auto_shortlist",
@@ -590,24 +596,46 @@ async def cmd_admin_competition_jury_finalize(
     )
 
 
+@collector.command(
+    "/admin_competition_jury_announce_results",
+    description="Рассылка итогов жюри участникам",
+    visible=False,
+    middlewares=[fsm_middleware, cleanup_middleware],
+)
+@admin_only
+async def cmd_admin_competition_jury_announce_results(
+    message: IncomingMessage, bot: Bot
+) -> None:
+    await reply_to_user(
+        message,
+        bot,
+        (
+            "⚠️ **Разослать итоги жюри родителям?**\n\n"
+            "Каждому родителю уйдёт одно сообщение: поздравление, "
+            "если хотя бы одна его работа в топ-10; иначе — "
+            "благодарность.\n\n"
+            "Команда **принудительная**: отправит всем заново, "
+            "независимо от того, была ли уже авторассылка."
+        ),
+        bubbles=admin_confirm_bubbles(action="jury_announce_results"),
+    )
+
+
 async def execute_jury_start_all(bot: Bot) -> str:
-    """Последовательный старт раунда 1 во всех eligible пулах."""
+    """Последовательный старт по всем пулам.
+
+    Порог: 0 работ — блок + уведомление в чат модерации; 1 работа —
+    закрытие без голосования (auto_shortlist); 2+ — открытие раунда 1.
+    """
+    from services import notifications
+
     opened: list[str] = []
-    skipped_small: list[str] = []
+    auto_closed: list[str] = []
     skipped_zero: list[str] = []
     already: list[str] = []
 
     for pool in all_pools():
         async with get_session()() as session:
-            dopushcheno = await jury_service._count_dopushcheno_in_pool(  # noqa: SLF001
-                pool, session=session
-            )
-            if dopushcheno == 0:
-                skipped_zero.append(pool.as_label())
-                continue
-            if dopushcheno < TOP_N:
-                skipped_small.append(f"{pool.as_label()} ({dopushcheno})")
-                continue
             fixed = await jury_service._count_fixed_top_in_pool(  # noqa: SLF001
                 track=pool.track,
                 age_category=pool.age_category,
@@ -615,6 +643,22 @@ async def execute_jury_start_all(bot: Bot) -> str:
             )
             if fixed > 0:
                 already.append(pool.as_label())
+                continue
+            dopushcheno = await jury_service._count_dopushcheno_in_pool(  # noqa: SLF001
+                pool, session=session
+            )
+            if dopushcheno == 0:
+                await notifications.notify_moderation_chat_empty_pool(
+                    bot, pool_label=pool.as_label()
+                )
+                skipped_zero.append(pool.as_label())
+                continue
+            if dopushcheno == 1:
+                count = await jury_service.auto_shortlist_undersized_pool(
+                    pool, session=session, bot=bot
+                )
+                await session.commit()
+                auto_closed.append(f"{pool.as_label()} ({count})")
                 continue
             before = await session.execute(
                 select(JuryRound.id).where(
@@ -624,7 +668,7 @@ async def execute_jury_start_all(bot: Bot) -> str:
                 )
             )
             had_round = before.scalar_one_or_none() is not None
-            round_obj = await jury_service.open_round(
+            await jury_service.open_round(
                 track=pool.track,
                 age_category=pool.age_category,
                 round_no=1,
@@ -642,12 +686,12 @@ async def execute_jury_start_all(bot: Bot) -> str:
     if opened:
         lines.append(f"✅ Открыты ({len(opened)}):")
         lines.extend(f"  • {p}" for p in opened)
+    if auto_closed:
+        lines.append(f"📋 Закрыты без голосования ({len(auto_closed)}):")
+        lines.extend(f"  • {p}" for p in auto_closed)
     if already:
         lines.append(f"ℹ️ Уже были открыты ({len(already)}):")
         lines.extend(f"  • {p}" for p in already)
-    if skipped_small:
-        lines.append(f"⏭ Пропущены (< {TOP_N}):")
-        lines.extend(f"  • {p}" for p in skipped_small)
     if skipped_zero:
         lines.append("⛔ Пустые пулы:")
         lines.extend(f"  • {p}" for p in skipped_zero)

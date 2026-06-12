@@ -563,11 +563,19 @@ FSM-state `admin:menu` перерисовывается диспетчером �
 #### Конкурс и жюри (админ)
 
 - **Раздел «Конкурс»** (`handlers/admin_competition.py`): приём, XLSX, tar.gz шорт-листа, `bd-full.tar.gz` на диск,
-  старт раунда 1 (TOP_N), auto-shortlist для пулов `< TOP_N`, закрытие раунда.
+  старт раунда 1 (TOP_N), auto-shortlist для пулов `< TOP_N`, закрытие раунда, рассылка итогов жюри родителям.
 - **Уведомления судьям** (`services/jury_notifications.py`): DM только при `0→1` открытых
   задач; пулы открываются последовательно (без `asyncio.gather`).
 - **Чат модерации**: детальные `round_opened` / `round_closed`; `shortlist_ready` идемпотентно
   через `app_settings.shortlist_announced`.
+- **Рассылка итогов жюри родителям** (`services.notifications.broadcast_jury_results`): при готовности
+  шорт-листа одно сообщение **на родителя** (`parent_huid`), не на заявку — поздравление, если хоть одна
+  его работа в топ-10, иначе благодарность; конкретная работа/ребёнок не указываются. Группировка/дедуп —
+  одним `GROUP BY`-запросом `services.jury.fetch_parent_jury_outcomes` (родитель с V_TOP_10 + NE_VOSHLO →
+  `in_top_10=True`). chat_id резолвится batch-запросом (`_resolve_user_chat_ids`). Триггеры: авто (один раз,
+  внутри `maybe_notify_shortlist_ready` до `shortlist_ready`) и принудительная админ-команда
+  `/admin_competition_jury_announce_results` (не смотрит на флаг — подстраховка). После рассылки — сводка
+  в чат модерации (поздравлений / благодарностей / не доставлено).
 - **Дедлайнов раунда нет** — `deadline_at` data-only, scheduler автозакрытия не запускает.
 
 ### Chat-gate middleware (`fsm/chat_gate.py`)

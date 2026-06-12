@@ -340,6 +340,32 @@ def participant_dm_bubbles(app: Application) -> BubbleMarkup:
     return bubbles
 
 
+def participant_results_bubbles() -> BubbleMarkup:
+    """DM-кнопки рассылки итогов жюри (без привязки к заявке).
+
+    Используется в ``services.notifications.broadcast_jury_results``:
+    сообщение «на родителя» не относится к конкретной работе, поэтому
+    кнопка ведёт в общий список «Мои заявки», а не в карточку.
+    """
+    bubbles = BubbleMarkup()
+    bubbles.add_button(
+        command="/menu_my_applications",
+        label="📄 Мои заявки",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/menu_contacts",
+        label="📞 Контакты организаторов",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/start",
+        label="◀ Главное меню",
+        new_row=True,
+    )
+    return bubbles
+
+
 # =====================================================================
 # Меню администратора
 # =====================================================================
@@ -618,6 +644,11 @@ def admin_competition_jury_bubbles() -> BubbleMarkup:
     bubbles.add_button(
         command="/admin_competition_jury_finalize",
         label="🏁 Финализация…",
+        new_row=True,
+    )
+    bubbles.add_button(
+        command="/admin_competition_jury_announce_results",
+        label="📣 Объявить итоги участникам…",
         new_row=True,
     )
     bubbles.add_button(
@@ -1052,6 +1083,7 @@ __all__ = [
     "back_to_admin_menu_bubbles",
     "fix_needed_notification_bubbles",
     "participant_dm_bubbles",
+    "participant_results_bubbles",
     "admin_main_menu_bubbles",
     "admin_confirm_bubbles",
     "admin_roles_menu_bubbles",

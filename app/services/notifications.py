@@ -91,19 +91,31 @@ SHORTLIST_TEMPLATE = (
 """Участнику: работа попала в шорт-лист."""
 
 JURY_RESULT_IN_TOP10_TEMPLATE = (
-    "Работа вашего ребёнка вошла в шорт-лист конкурса "
-    "«Безопасные рисунки» (топ-10 в своей категории). "
-    "Итоги — **30 июня**."
+    "🏆 **Итоги конкурса «Безопасные рисунки»**\n\n"
+    "Поздравляем! Работа вашего ребёнка вошла в **шорт-лист** — "
+    "топ-10 в своей категории.\n\n"
+    "Итоги конкурса объявим **30 июня**.\n\n"
+    "Спасибо за участие!"
 )
-"""Участнику: финал жюри — вошла в топ-10."""
+"""Участнику (на родителя): финал жюри — хотя бы одна работа в топ-10."""
 
 JURY_RESULT_NOT_IN_TOP10_TEMPLATE = (
-    "Спасибо за участие в конкурсе «Безопасные рисунки»! По итогам "
-    "работы жюри ваша работа не вошла в шорт-лист. Это не оценка "
-    "таланта — выбор делался по конкретным критериям конкурса. "
-    "Рады, что вы участвовали."
+    "**Итоги конкурса «Безопасные рисунки»**\n\n"
+    "Спасибо за участие в конкурсе!\n\n"
+    "По итогам работы жюри работа не вошла в шорт-лист. "
+    "Это не оценка таланта — выбор делался по конкретным "
+    "критериям конкурса.\n\n"
+    "Мы рады, что вы были с нами."
 )
-"""Участнику: финал жюри — НЕ вошла в топ-10."""
+"""Участнику (на родителя): финал жюри — ни одна работа не вошла в топ-10."""
+
+JURY_RESULTS_BROADCAST_SUMMARY_TEMPLATE = (
+    "📣 **Рассылка итогов жюри родителям завершена**\n\n"
+    "Поздравлений: **{congrats}**\n"
+    "Благодарностей: **{thanks}**\n"
+    "Не доставлено (нет chat_id): **{skipped}**"
+)
+"""Чат модерации: сводка по завершённой рассылке итогов жюри родителям."""
 
 NEW_APPLICATION_MODERATION_TEMPLATE = (
     "**Новая заявка** на конкурс «Безопасные рисунки».\n\n"
@@ -159,15 +171,10 @@ JURY_ROUND_CLOSED_POOL_LINE = (
     "ничья {tie_n}, выбыло {losers_n}, осталось мест {remaining_slots_after}"
 )
 
-JURY_POOL_COMPLETED_TAIL_TEMPLATE = (
-    "\n\nТоп-{top_n} пула определён (жребий: {lot_label}). "
-    "В шорт-листе пула: {pool_top_n} работ."
+JURY_EMPTY_POOL_TEMPLATE = (
+    "Пул `{pool}`: нет допущенных работ — голосование не запускается."
 )
-
-JURY_UNDERSIZED_POOL_TEMPLATE = (
-    "Пул `{pool}`: голосование не проводилось (работ {works_n} < TOP_N={top_n}). "
-    "Все {works_n} работ — в шорт-листе."
-)
+"""Чат модерации: пустой пул на старте голосования (НЕ агрегируется)."""
 
 JURY_LOT_TEMPLATE = (
     "Пул `{pool}`: после раунда {round_no} применён автоматический жребий. "
@@ -176,13 +183,14 @@ JURY_LOT_TEMPLATE = (
 """Чат модерации: срабатывание жребия (НЕ агрегируется, индивидуально)."""
 
 JURY_POOL_COMPLETED_TEMPLATE = (
-    "Пул `{pool}` завершён: топ-10 определён в раунде {round_no} "
-    "(жребий: {lot_label})."
+    "Пул `{pool}`: шорт-лист пула сформирован — {pool_top_n} работ ({source})."
 )
-"""Чат модерации: пул закрыт (топ-10 собран). НЕ агрегируется."""
+"""Чат модерации: единая маска завершения пула. ``source`` — «раунд N» /
+«жребий, раунд N» / «без голосования». НЕ агрегируется."""
 
 JURY_SHORTLIST_READY_TEMPLATE = (
-    "**Шорт-лист сформирован**, доступен по команде `/export_shortlist`."
+    "**Шорт-лист сформирован**: всего {total} работ. "
+    "Доступен по команде `/export_shortlist`."
 )
 """Чат модерации: готовность шорт-листа (НЕ агрегируется)."""
 
@@ -294,6 +302,35 @@ async def _resolve_user_chat_id(huid: UUID) -> UUID | None:
         )
         row = result.first()
         return row[0] if row else None
+
+
+async def _resolve_user_chat_ids(
+    huids: "list[UUID]",
+) -> dict[UUID, UUID]:
+    """Batch-резолв chat_id для набора huid (один SELECT, без N+1).
+
+    В результат попадают только пользователи, у которых ``chat_id``
+    известен (не ``NULL``). Отсутствующие в словаре huid означают
+    «бот не знает chat_id» — сообщение такому участнику не уйдёт.
+    """
+    if not huids:
+        return {}
+    try:
+        from sqlalchemy import select
+
+        from database.db import get_session
+        from database.models import User
+    except ImportError:  # pragma: no cover
+        return {}
+
+    async with get_session()() as session:
+        result = await session.execute(
+            select(User.huid, User.chat_id).where(
+                User.huid.in_(huids),
+                User.chat_id.is_not(None),
+            )
+        )
+        return {huid: chat_id for huid, chat_id in result.all()}
 
 
 async def _send_to_moderation_chat(
@@ -488,6 +525,122 @@ async def notify_participant_jury_result(
     )
 
 
+@dataclass
+class BroadcastStats:
+    """Итог рассылки итогов жюри родителям."""
+
+    congrats: int = 0
+    thanks: int = 0
+    skipped_no_chat: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.congrats + self.thanks + self.skipped_no_chat
+
+
+async def broadcast_jury_results(bot: "Bot") -> BroadcastStats:
+    """Разослать итоги жюри родителям — одно сообщение на родителя.
+
+    На каждого родителя (``parent_huid``) уходит ровно одно сообщение:
+    поздравление, если хотя бы одна его работа в топ-10; иначе —
+    благодарность. Работа/ребёнок в тексте не упоминаются.
+
+    Аудитория и группировка — ``services.jury.fetch_parent_jury_outcomes``
+    (только родители с работами, дошедшими до жюри). chat_id берётся
+    одним batch-запросом; родители без известного chat_id считаются
+    «не доставлено».
+
+    Функция **не смотрит** на флаг ``shortlist_announced`` — это
+    позволяет использовать её как принудительную админ-рассылку
+    независимо от состояния флага. Однократность авторассылки
+    обеспечивает вызывающий код (``maybe_notify_shortlist_ready``).
+
+    После рассылки отправляет сводку в чат модерации и возвращает
+    статистику для ответа инициатору.
+    """
+    import asyncio
+
+    from keyboards import participant_results_bubbles
+    from services import jury
+
+    outcomes = await jury.fetch_parent_jury_outcomes()
+    stats = BroadcastStats()
+    if not outcomes:
+        logger.info("Рассылка итогов жюри: нет родителей для уведомления")
+        await _send_to_moderation_chat(
+            bot,
+            JURY_RESULTS_BROADCAST_SUMMARY_TEMPLATE.format(
+                congrats=0, thanks=0, skipped=0
+            ),
+            purpose="moderation_jury_results_broadcast_summary",
+        )
+        return stats
+
+    try:
+        from config import EXPORT_PAUSE_MS
+
+        pause_s = max(0, int(EXPORT_PAUSE_MS)) / 1000
+    except Exception:  # pragma: no cover - defensive
+        pause_s = 0.8
+
+    chat_ids = await _resolve_user_chat_ids(list(outcomes.keys()))
+    bubbles = participant_results_bubbles()
+
+    for huid, in_top_10 in outcomes.items():
+        chat_id = chat_ids.get(huid)
+        if chat_id is None:
+            stats.skipped_no_chat += 1
+            logger.warning(
+                "Рассылка итогов жюри: нет chat_id у родителя",
+                huid=str(huid),
+                in_top_10=in_top_10,
+            )
+            continue
+
+        body = (
+            JURY_RESULT_IN_TOP10_TEMPLATE
+            if in_top_10
+            else JURY_RESULT_NOT_IN_TOP10_TEMPLATE
+        )
+        await _send_to_user(
+            bot,
+            huid=huid,
+            chat_id=chat_id,
+            body=body,
+            purpose=(
+                "participant_jury_result_"
+                f"{'top10' if in_top_10 else 'out'}"
+            ),
+            bubbles=bubbles,
+        )
+        if in_top_10:
+            stats.congrats += 1
+        else:
+            stats.thanks += 1
+
+        if pause_s:
+            await asyncio.sleep(pause_s)
+
+    logger.info(
+        "Рассылка итогов жюри родителям завершена",
+        congrats=stats.congrats,
+        thanks=stats.thanks,
+        skipped_no_chat=stats.skipped_no_chat,
+        total=stats.total,
+    )
+
+    await _send_to_moderation_chat(
+        bot,
+        JURY_RESULTS_BROADCAST_SUMMARY_TEMPLATE.format(
+            congrats=stats.congrats,
+            thanks=stats.thanks,
+            skipped=stats.skipped_no_chat,
+        ),
+        purpose="moderation_jury_results_broadcast_summary",
+    )
+    return stats
+
+
 # =====================================================================
 # Сообщения в чат модерации
 # =====================================================================
@@ -639,6 +792,9 @@ class _JuryEvent:
     candidates_n: int | None = None
     slots_n: int | None = None
     close_report: RoundCloseReport | None = None
+    pool_top_n: int | None = None  # pool_completed: размер шорт-листа пула;
+    # shortlist_ready: суммарное число работ
+    source: str | None = None  # pool_completed: «раунд N» / «без голосования»
 
 
 @dataclass
@@ -683,8 +839,6 @@ def _format_round_closed_body(ev: _JuryEvent, *, pool_label: str) -> str:
             losers_n="—",
             remaining_slots_after="—",
         )
-    from config import TOP_N
-
     body = JURY_ROUND_CLOSED_SINGLE_TEMPLATE.format(
         pool=pool_label,
         round_no=ev.round_no or 1,
@@ -694,12 +848,6 @@ def _format_round_closed_body(ev: _JuryEvent, *, pool_label: str) -> str:
         losers_n=report.losers_n,
         remaining_slots_after=report.remaining_slots_after,
     )
-    if report.pool_completed:
-        body += JURY_POOL_COMPLETED_TAIL_TEMPLATE.format(
-            top_n=TOP_N,
-            lot_label="да" if report.lot_applied else "нет",
-            pool_top_n=report.pool_top_n,
-        )
     return body
 
 
@@ -798,8 +946,8 @@ async def _send_jury_event_single(bot: "Bot", ev: _JuryEvent) -> None:
     elif ev.kind == "pool_completed":
         body = JURY_POOL_COMPLETED_TEMPLATE.format(
             pool=pool_label,
-            round_no=ev.round_no or 1,
-            lot_label="да" if ev.lot_applied else "нет",
+            pool_top_n=ev.pool_top_n if ev.pool_top_n is not None else "—",
+            source=ev.source or "раунд 1",
         )
         await _send_to_moderation_chat(
             bot,
@@ -809,7 +957,9 @@ async def _send_jury_event_single(bot: "Bot", ev: _JuryEvent) -> None:
     elif ev.kind == "shortlist_ready":
         await _send_to_moderation_chat(
             bot,
-            JURY_SHORTLIST_READY_TEMPLATE,
+            JURY_SHORTLIST_READY_TEMPLATE.format(
+                total=ev.pool_top_n if ev.pool_top_n is not None else "—"
+            ),
             purpose="moderation_jury_shortlist_ready",
         )
 
@@ -840,23 +990,17 @@ async def _enqueue_jury_event(bot: "Bot", event: _JuryEvent) -> None:
         agg.flush_task = asyncio.create_task(_aggregator_worker())
 
 
-async def notify_moderation_chat_undersized_pool(
+async def notify_moderation_chat_empty_pool(
     bot: "Bot",
     *,
     pool_label: str,
-    works_n: int,
-    top_n: int,
 ) -> None:
-    """Уведомление: пул закрыт без голосования (< TOP_N работ)."""
-    body = JURY_UNDERSIZED_POOL_TEMPLATE.format(
-        pool=pool_label,
-        works_n=works_n,
-        top_n=top_n,
-    )
+    """Уведомление: в пуле нет допущенных работ — голосование не запускается."""
+    body = JURY_EMPTY_POOL_TEMPLATE.format(pool=pool_label)
     await _send_to_moderation_chat(
         bot,
         body,
-        purpose="moderation_jury_undersized_pool",
+        purpose="moderation_jury_empty_pool",
     )
 
 
@@ -897,6 +1041,8 @@ async def notify_moderation_chat_jury_event(
     candidates_n: int | list[int] | None = None,
     slots_n: int | list[int] | None = None,
     close_report: RoundCloseReport | list[RoundCloseReport] | None = None,
+    pool_top_n: int | None = None,
+    source: str | None = None,
 ) -> None:
     """Событие жюри для чата модерации.
 
@@ -906,10 +1052,11 @@ async def notify_moderation_chat_jury_event(
       секунд (если за это время прилетят ещё события того же типа и
       номера раунда — они склеятся в одно сообщение).
     - ``lot_applied`` — индивидуально, без агрегации.
-    - ``pool_completed`` — индивидуально; ``extra`` передаётся как
-      ``"lot"`` или ``"no_lot"`` (используется в шаблоне).
+    - ``pool_completed`` — индивидуально, единая маска «шорт-лист пула
+      сформирован — N работ (источник)»: ``pool_top_n`` — размер шорт-листа
+      пула, ``source`` — «раунд N» / «жребий, раунд N» / «без голосования».
     - ``shortlist_ready`` — индивидуально, без агрегации; ``pools``
-      игнорируется.
+      игнорируется, ``pool_top_n`` — суммарное число работ в шорт-листе.
 
     Args:
         event_kind: ``round_opened`` / ``round_closed`` / ``lot_applied`` /
@@ -917,11 +1064,13 @@ async def notify_moderation_chat_jury_event(
         pools: ``[(track_label, age_label), ...]`` — для жребия и
             завершения пула достаточно одного элемента; для шорт-листа
             можно передать пустой список.
-        round_no: номер раунда (1..N) или None для shortlist_ready.
+        round_no: номер раунда (1..N) или None.
         deadline_text: человекочитаемый дедлайн раунда — для round_opened.
         extra: произвольная строка для шаблона (например, число претендентов
-            при одиночном round_opened; для ``pool_completed`` — ``"lot"``
-            если пул закрыт жребием, иначе ``"no_lot"``).
+            при одиночном round_opened).
+        pool_top_n: для ``pool_completed`` — размер шорт-листа пула; для
+            ``shortlist_ready`` — суммарное число работ.
+        source: для ``pool_completed`` — источник формирования шорт-листа.
     """
     if event_kind not in (
         "round_opened",
@@ -948,6 +1097,7 @@ async def notify_moderation_chat_jury_event(
                 kind="shortlist_ready",
                 pool=("", ""),
                 round_no=None,
+                pool_top_n=pool_top_n,
             ),
         )
         await set_shortlist_announced(announced=True)
@@ -977,7 +1127,9 @@ async def notify_moderation_chat_jury_event(
                 kind="pool_completed",
                 pool=pools[0],
                 round_no=round_no,
-                lot_applied=(extra or "").strip().lower() == "lot",
+                lot_applied=(source or "").strip().lower().startswith("жребий"),
+                pool_top_n=pool_top_n,
+                source=source,
             ),
         )
         return
@@ -1025,6 +1177,7 @@ __all__ = [
     "SHORTLIST_TEMPLATE",
     "JURY_RESULT_IN_TOP10_TEMPLATE",
     "JURY_RESULT_NOT_IN_TOP10_TEMPLATE",
+    "JURY_RESULTS_BROADCAST_SUMMARY_TEMPLATE",
     # Шаблоны в чат модерации
     "NEW_APPLICATION_MODERATION_TEMPLATE",
     "JURY_ROUND_OPENED_TEMPLATE",
@@ -1034,8 +1187,8 @@ __all__ = [
     "JURY_LOT_TEMPLATE",
     "JURY_ROUND_OPENED_POOL_LINE",
     "JURY_ROUND_CLOSED_POOL_LINE",
-    "JURY_POOL_COMPLETED_TAIL_TEMPLATE",
-    "JURY_UNDERSIZED_POOL_TEMPLATE",
+    "JURY_POOL_COMPLETED_TEMPLATE",
+    "JURY_EMPTY_POOL_TEMPLATE",
     "JURY_SHORTLIST_READY_TEMPLATE",
     "DISK_ALERT_WARN_TEMPLATE",
     # Функции участнику
@@ -1045,9 +1198,11 @@ __all__ = [
     "notify_participant_fix_needed",
     "notify_participant_shortlist",
     "notify_participant_jury_result",
+    "broadcast_jury_results",
+    "BroadcastStats",
     # Функции в чат модерации
     "notify_moderation_chat_new_application",
-    "notify_moderation_chat_undersized_pool",
+    "notify_moderation_chat_empty_pool",
     "notify_moderation_chat_jury_event",
     "notify_moderation_chat_disk_alert",
     # Утилиты

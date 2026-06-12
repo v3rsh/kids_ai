@@ -279,7 +279,8 @@ _SHORTLIST_COLUMNS: list[tuple[str, int, bool]] = [
     ("Команда/ссылка просмотра файлов", 32, False),          # 10
     ("Определено жребием", 12, False),                       # 11
     ("Позиция в пуле", 10, False),                           # 12
-    ("Потенциал для мерча", 18, False),                      # 13
+    ("Голоса «Достоин» (раунд 1)", 14, False),               # 13
+    ("Потенциал для мерча", 18, False),                      # 14
 ]
 
 # Текст пустого пула на листе `Шорт-лист`.
@@ -663,6 +664,23 @@ async def _fetch_round_aggregates(
     return by_app
 
 
+async def _fetch_round1_yes(session) -> dict[uuid_pkg.UUID, int]:
+    """Собрать ``application_id → yes_count`` только за раунд 1.
+
+    Для листа `Шорт-лист`: один JOIN ``jury_round_aggregates`` ×
+    ``jury_rounds`` с фильтром ``round_no == 1``. Работы без раунда 1
+    (пул из 1 работы, закрыт без голосования) в словарь не попадают —
+    в Excel у них колонка останется пустой.
+    """
+    stmt = (
+        select(JuryRoundAggregate.application_id, JuryRoundAggregate.yes_count)
+        .join(JuryRound, JuryRound.id == JuryRoundAggregate.round_id)
+        .where(JuryRound.round_no == 1)
+    )
+    rows = (await session.execute(stmt)).all()
+    return {app_id: int(yes) for app_id, yes in rows}
+
+
 # =====================================================================
 # Публичный API (контракт RegistryService)
 # =====================================================================
@@ -717,8 +735,12 @@ async def build_registry_xlsx() -> bytes:
 # =====================================================================
 
 
-def _row_for_shortlist(app: Application) -> list:
-    """13 значений одной строки шорт-листа."""
+def _row_for_shortlist(app: Application, round1_yes: int | None) -> list:
+    """14 значений одной строки шорт-листа.
+
+    ``round1_yes`` — число голосов «Достоин» в раунде 1 (поз. 13). Пусто,
+    если раунда 1 не было (пул из 1 работы закрыт без голосования).
+    """
     return [
         app.br_id,                                                 # 1
         app.parent_full_name,                                      # 2
@@ -732,7 +754,8 @@ def _row_for_shortlist(app: Application) -> list:
         view_command_or_link(app),                                 # 10
         _yesno_or_blank(app.jury_decided_by_lot),                  # 11
         app.pool_position if app.pool_position is not None else "",  # 12
-        app.merch_potential or "",                                 # 13
+        round1_yes if round1_yes is not None else "",              # 13
+        app.merch_potential or "",                                 # 14
     ]
 
 
@@ -760,6 +783,7 @@ def _build_shortlist_sheet(
     pool_list: Sequence[PoolKey],
     apps_by_pool: dict[tuple, list[Application]],
     top_n: int,
+    round1_yes_by_app: dict[uuid_pkg.UUID, int],
 ) -> tuple[int, int]:
     """Заполнить лист `Шорт-лист`. Возвращает (n_rows, n_cols).
 
@@ -799,7 +823,10 @@ def _build_shortlist_sheet(
             ),
         )
         for app in apps_sorted:
-            for col_idx, value in enumerate(_row_for_shortlist(app), start=1):
+            row_values = _row_for_shortlist(
+                app, round1_yes_by_app.get(app.id)
+            )
+            for col_idx, value in enumerate(row_values, start=1):
                 ws.cell(row=current_row, column=col_idx, value=value)
             _apply_wrap_text(ws, current_row, _SHORTLIST_COLUMNS)
             current_row += 1
@@ -813,12 +840,15 @@ def _render_shortlist_workbook(
     pool_list: Sequence[PoolKey],
     apps_by_pool: dict[tuple, list[Application]],
     top_n: int,
+    round1_yes_by_app: dict[uuid_pkg.UUID, int],
 ) -> tuple[bytes, int, int]:
     """Собрать `shortlist.xlsx` в bytes; вернуть (bytes, n_cols, n_rows)."""
     wb = Workbook()
     ws = wb.active
     ws.title = "Шорт-лист"
-    n_rows, n_cols = _build_shortlist_sheet(ws, pool_list, apps_by_pool, top_n)
+    n_rows, n_cols = _build_shortlist_sheet(
+        ws, pool_list, apps_by_pool, top_n, round1_yes_by_app
+    )
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue(), n_cols, n_rows
@@ -858,7 +888,7 @@ async def build_shortlist_xlsx() -> bytes:
 
     Структура:
         - один лист ``Шорт-лист``;
-        - 13 колонок (см. ``docs/registry-spec.md``);
+        - 14 колонок (см. ``docs/registry-spec.md``);
         - строки сгруппированы по пулам в порядке
           ``services.pools.all_pools()``; число пулов не зашивается;
         - внутри пула — сортировка `pool_position ASC, br_id ASC`;
@@ -873,6 +903,7 @@ async def build_shortlist_xlsx() -> bytes:
 
     async with get_session()() as session:
         top_apps = await _fetch_top10_applications(session)
+        round1_yes_by_app = await _fetch_round1_yes(session)
         pool_list = pools_service.all_pools()
 
     apps_by_pool: dict[tuple, list[Application]] = {}
@@ -881,7 +912,10 @@ async def build_shortlist_xlsx() -> bytes:
         apps_by_pool.setdefault(key, []).append(app)
 
     payload, n_cols, n_rows = _render_shortlist_workbook(
-        pool_list=pool_list, apps_by_pool=apps_by_pool, top_n=TOP_N,
+        pool_list=pool_list,
+        apps_by_pool=apps_by_pool,
+        top_n=TOP_N,
+        round1_yes_by_app=round1_yes_by_app,
     )
 
     duration_ms = (time.perf_counter() - t0) * 1000

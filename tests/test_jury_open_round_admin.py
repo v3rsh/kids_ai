@@ -57,12 +57,17 @@ async def test_auto_shortlist_assigns_v_top_10() -> None:
         "services.jury.maybe_notify_shortlist_ready",
         AsyncMock(),
     ), patch(
-        "services.notifications.notify_moderation_chat_undersized_pool",
+        "services.notifications.notify_moderation_chat_jury_event",
         AsyncMock(),
-    ):
+    ) as notify_event:
         from services import jury
 
         count = await jury.auto_shortlist_undersized_pool(
             pool, bot=MagicMock(), session=AsyncMock()
         )
         assert count == 1
+        notify_event.assert_awaited_once()
+        kwargs = notify_event.await_args.kwargs
+        assert kwargs["event_kind"] == "pool_completed"
+        assert kwargs["pool_top_n"] == 1
+        assert kwargs["source"] == "без голосования"
